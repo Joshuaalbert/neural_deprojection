@@ -4,3 +4,6 @@ tensorflow_probability
 matplotlib
 scipy
 pytest
+tensorflow_addons
+PIL
+shutil
