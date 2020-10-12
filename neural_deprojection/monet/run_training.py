@@ -3,6 +3,9 @@ import argparse,  sys
 
 
 def main(arg0, arg1, arg2):
+    # construct the model
+    # run training
+    # save model
     print(arg0, arg1, arg2)
 
 
