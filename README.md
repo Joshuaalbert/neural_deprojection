@@ -13,7 +13,7 @@ conda activate tf_py
 ```
 Install all required packages
 ```bash
-pip install numpy tensorflow tensorflow_probability matplotlib scipy pyttest
+pip install numpy tensorflow tensorflow_probability matplotlib scipy pytest
 ```
 
 Note that AMUSE may require it's own special environment, with differences from this setup. 
