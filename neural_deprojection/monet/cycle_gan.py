@@ -1,11 +1,7 @@
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras import layers
-import tensorflow_addons as tfa
-import matplotlib.pyplot as plt
-import numpy as np
 
-#Try to use a TPU if available
+# Try to use a TPU if available
 try:
     tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
     print('Device:', tpu.master())

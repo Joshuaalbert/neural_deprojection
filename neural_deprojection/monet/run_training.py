@@ -1,18 +1,16 @@
 import argparse,  sys
 #imports
 import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
 import numpy as np
 import PIL
 import shutil
 
 #import py files
-from read_tfrec import *
-from build_gen_dis import *
-from cycle_gan import *
+from neural_deprojection.monet.read_tfrec import load_dataset
+from neural_deprojection.monet.build_gen_dis import Generator, Discriminator
+from neural_deprojection.monet.cycle_gan import CycleGan, discriminator_loss, generator_loss, calc_cycle_loss,\
+    identity_loss
 
 def main(arg0, arg1, arg2):
     '''
