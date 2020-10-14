@@ -1,16 +1,6 @@
 import tensorflow as tf
 from tensorflow import keras
 
-# Try to use a TPU if available
-try:
-    tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
-    print('Device:', tpu.master())
-    tf.config.experimental_connect_to_cluster(tpu)
-    tf.tpu.experimental.initialize_tpu_system(tpu)
-    strategy = tf.distribute.experimental.TPUStrategy(tpu)
-except:
-    strategy = tf.distribute.get_strategy()
-
 class CycleGan(keras.Model):
     def __init__(
             self,
@@ -18,7 +8,6 @@ class CycleGan(keras.Model):
             photo_generator,
             monet_discriminator,
             photo_discriminator,
-            strategy,
             lambda_cycle=10,
     ):
         super(CycleGan, self).__init__()
@@ -27,7 +16,6 @@ class CycleGan(keras.Model):
         self.m_disc = monet_discriminator
         self.p_disc = photo_discriminator
         self.lambda_cycle = lambda_cycle
-        self.strategy = strategy
 
     def compile(
             self,
@@ -124,29 +112,39 @@ class CycleGan(keras.Model):
         }
 
 
-
 def build_discriminator_loss(strategy):
     with strategy.scope():
         def discriminator_loss(real, generated):
-            real_loss = tf.keras.losses.BinaryCrossentropy(from_logits=True, reduction=tf.keras.losses.Reduction.NONE)(tf.ones_like(real), real)
+            real_loss = tf.keras.losses.BinaryCrossentropy(from_logits=True, reduction=tf.keras.losses.Reduction.NONE)(
+                tf.ones_like(real), real)
 
-            generated_loss = tf.keras.losses.BinaryCrossentropy(from_logits=True, reduction=tf.keras.losses.Reduction.NONE)(tf.zeros_like(generated), generated)
+            generated_loss = tf.keras.losses.BinaryCrossentropy(from_logits=True,
+                                                                reduction=tf.keras.losses.Reduction.NONE)(
+                tf.zeros_like(generated), generated)
 
             total_disc_loss = real_loss + generated_loss
 
             return total_disc_loss * 0.5
     return discriminator_loss
 
-with strategy.scope():
-    def generator_loss(generated):
-        return tf.keras.losses.BinaryCrossentropy(from_logits=True, reduction=tf.keras.losses.Reduction.NONE)(tf.ones_like(generated), generated)
 
-with strategy.scope():
-    def calc_cycle_loss(real_image, cycled_image, LAMBDA):
-        loss1 = tf.reduce_mean(tf.abs(real_image - cycled_image))
-        return LAMBDA * loss1
+def build_generator_loss(strategy):
+    with strategy.scope():
+        def generator_loss(generated):
+            return tf.keras.losses.BinaryCrossentropy(from_logits=True, reduction=tf.keras.losses.Reduction.NONE)(
+                tf.ones_like(generated), generated)
+    return generator_loss
 
-with strategy.scope():
-    def identity_loss(real_image, same_image, LAMBDA):
-        loss = tf.reduce_mean(tf.abs(real_image - same_image))
-        return LAMBDA * 0.5 * loss
+def build_calc_cycle_loss(strategy):
+    with strategy.scope():
+        def calc_cycle_loss(real_image, cycled_image, LAMBDA):
+            loss1 = tf.reduce_mean(tf.abs(real_image - cycled_image))
+            return LAMBDA * loss1
+    return  calc_cycle_loss
+
+def build_identity_loss(strategy):
+    with strategy.scope():
+        def identity_loss(real_image, same_image, LAMBDA):
+            loss = tf.reduce_mean(tf.abs(real_image - same_image))
+            return LAMBDA * 0.5 * loss
+    return identity_loss

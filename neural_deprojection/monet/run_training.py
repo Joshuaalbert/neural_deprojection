@@ -9,8 +9,8 @@ import shutil
 #import py files
 from neural_deprojection.monet.read_tfrec import load_dataset
 from neural_deprojection.monet.build_gen_dis import Generator, Discriminator
-from neural_deprojection.monet.cycle_gan import CycleGan, build_discriminator_loss, generator_loss, calc_cycle_loss,\
-    identity_loss
+from neural_deprojection.monet.cycle_gan import CycleGan, build_discriminator_loss, build_generator_loss,\
+    build_calc_cycle_loss, build_identity_loss
 
 def main(arg0, arg1, arg2):
     '''
@@ -99,10 +99,10 @@ def main(arg0, arg1, arg2):
             p_gen_optimizer=photo_generator_optimizer,
             m_disc_optimizer=monet_discriminator_optimizer,
             p_disc_optimizer=photo_discriminator_optimizer,
-            gen_loss_fn=generator_loss,
+            gen_loss_fn=build_generator_loss(strategy),
             disc_loss_fn=build_discriminator_loss(strategy),
-            cycle_loss_fn=calc_cycle_loss,
-            identity_loss_fn=identity_loss
+            cycle_loss_fn=build_calc_cycle_loss(strategy),
+            identity_loss_fn=build_identity_loss(strategy)
         )
 
     cycle_gan_model.fit(
