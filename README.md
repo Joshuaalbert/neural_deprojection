@@ -15,6 +15,8 @@ Install all required packages
 ```bash
 pip install numpy tensorflow tensorflow_probability matplotlib scipy pytest
 ```
+and for `yt` we need the git master for now which has particle data volume rendering,
+```pip install -e git+https://github.com/yt-project/yt.git#egg=yt```
 
 Note that AMUSE may require it's own special environment, with differences from this setup. 
 You should still be able to follow the same method of modularising that environment.
