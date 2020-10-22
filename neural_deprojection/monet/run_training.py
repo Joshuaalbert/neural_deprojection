@@ -1,6 +1,7 @@
 import argparse,  sys
 #imports
 import tensorflow as tf
+from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 import numpy as np
 import PIL
@@ -11,6 +12,13 @@ from neural_deprojection.monet.read_tfrec import load_dataset
 from neural_deprojection.monet.build_gen_dis import Generator, Discriminator
 from neural_deprojection.monet.cycle_gan import CycleGan, build_discriminator_loss, build_generator_loss,\
     build_calc_cycle_loss, build_identity_loss
+
+# hyperparameters
+lr = 2e-4
+optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.5)
+ds_activation = layers.LeakyReLU()
+us_activation = layers.ReLU()
+kernel_size = 4
 
 def main(arg0, arg1, arg2):
     '''
@@ -64,11 +72,11 @@ def main(arg0, arg1, arg2):
     # CONSTRUCT MODEL
 
     with strategy.scope():
-        monet_generator = Generator()  # transforms photos to Monet-esque paintings
-        photo_generator = Generator()  # transforms Monet paintings to be more like photos
+        monet_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms photos to Monet-esque paintings
+        photo_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms Monet paintings to be more like photos
 
-        monet_discriminator = Discriminator()  # differentiates real Monet paintings and generated Monet paintings
-        photo_discriminator = Discriminator()  # differentiates real photos and generated photos
+        monet_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real Monet paintings and generated Monet paintings
+        photo_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real photos and generated photos
 
     to_monet = monet_generator(example_photo)
 
@@ -83,11 +91,11 @@ def main(arg0, arg1, arg2):
 
     # TRAINING
     with strategy.scope():
-        monet_generator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
-        photo_generator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
+        monet_generator_optimizer = optimizer
+        photo_generator_optimizer = optimizer
 
-        monet_discriminator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
-        photo_discriminator_optimizer = tf.keras.optimizers.Adam(2e-4, beta_1=0.5)
+        monet_discriminator_optimizer = optimizer
+        photo_discriminator_optimizer = optimizer
 
     with strategy.scope():
         cycle_gan_model = CycleGan(

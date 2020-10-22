@@ -6,7 +6,7 @@ import tensorflow_addons as tfa
 OUTPUT_CHANNELS = 3
 
 
-def downsample(filters, size, apply_instancenorm=True):
+def downsample(filters, size, ds_activation, apply_instancenorm=True):
     initializer = tf.random_normal_initializer(0., 0.02)
     gamma_init = keras.initializers.RandomNormal(mean=0.0, stddev=0.02)
 
@@ -17,12 +17,12 @@ def downsample(filters, size, apply_instancenorm=True):
     if apply_instancenorm:
         result.add(tfa.layers.InstanceNormalization(gamma_initializer=gamma_init))
 
-    result.add(layers.LeakyReLU())
+    result.add(ds_activation)
 
     return result
 
 
-def upsample(filters, size, apply_dropout=False):
+def upsample(filters, size, us_activation, apply_dropout=False):
     initializer = tf.random_normal_initializer(0., 0.02)
     gamma_init = keras.initializers.RandomNormal(mean=0.0, stddev=0.02)
 
@@ -37,34 +37,34 @@ def upsample(filters, size, apply_dropout=False):
     if apply_dropout:
         result.add(layers.Dropout(0.5))
 
-    result.add(layers.ReLU())
+    result.add(us_activation)
 
     return result
 
 
-def Generator():
+def Generator(us_activation, ds_activation, kernel_size):
     inputs = layers.Input(shape=[256, 256, 3])
 
     # bs = batch size
     down_stack = [
-        downsample(64, 4, apply_instancenorm=False),  # (bs, 128, 128, 64)
-        downsample(128, 4),  # (bs, 64, 64, 128)
-        downsample(256, 4),  # (bs, 32, 32, 256)
-        downsample(512, 4),  # (bs, 16, 16, 512)
-        downsample(512, 4),  # (bs, 8, 8, 512)
-        downsample(512, 4),  # (bs, 4, 4, 512)
-        downsample(512, 4),  # (bs, 2, 2, 512)
-        downsample(512, 4),  # (bs, 1, 1, 512)
+        downsample(64, size=kernel_size, apply_instancenorm=False, ds_activation=ds_activation),  # (bs, 128, 128, 64)
+        downsample(128, size=kernel_size, ds_activation=ds_activation),  # (bs, 64, 64, 128)
+        downsample(256, size=kernel_size, ds_activation=ds_activation),  # (bs, 32, 32, 256)
+        downsample(512, size=kernel_size, ds_activation=ds_activation),  # (bs, 16, 16, 512)
+        downsample(512, size=kernel_size, ds_activation=ds_activation),  # (bs, 8, 8, 512)
+        downsample(512, size=kernel_size, ds_activation=ds_activation),  # (bs, 4, 4, 512)
+        downsample(512, size=kernel_size, ds_activation=ds_activation),  # (bs, 2, 2, 512)
+        downsample(512, size=kernel_size, ds_activation=ds_activation),  # (bs, 1, 1, 512)
     ]
 
     up_stack = [
-        upsample(512, 4, apply_dropout=True),  # (bs, 2, 2, 1024)
-        upsample(512, 4, apply_dropout=True),  # (bs, 4, 4, 1024)
-        upsample(512, 4, apply_dropout=True),  # (bs, 8, 8, 1024)
-        upsample(512, 4),  # (bs, 16, 16, 1024)
-        upsample(256, 4),  # (bs, 32, 32, 512)
-        upsample(128, 4),  # (bs, 64, 64, 256)
-        upsample(64, 4),  # (bs, 128, 128, 128)
+        upsample(512, size=kernel_size, apply_dropout=True, us_activation=us_activation),  # (bs, 2, 2, 1024)
+        upsample(512, size=kernel_size, apply_dropout=True, us_activation=us_activation),  # (bs, 4, 4, 1024)
+        upsample(512, size=kernel_size, apply_dropout=True, us_activation=us_activation),  # (bs, 8, 8, 1024)
+        upsample(512, size=kernel_size, us_activation=us_activation),  # (bs, 16, 16, 1024)
+        upsample(256, size=kernel_size, us_activation=us_activation),  # (bs, 32, 32, 512)
+        upsample(128, size=kernel_size, us_activation=us_activation),  # (bs, 64, 64, 256)
+        upsample(64, size=kernel_size, us_activation=us_activation),  # (bs, 128, 128, 128)
     ]
 
     initializer = tf.random_normal_initializer(0., 0.02)
@@ -94,7 +94,7 @@ def Generator():
     return keras.Model(inputs=inputs, outputs=x)
 
 
-def Discriminator():
+def Discriminator(ds_activation, kernel_size):
     initializer = tf.random_normal_initializer(0., 0.02)
     gamma_init = keras.initializers.RandomNormal(mean=0.0, stddev=0.02)
 
@@ -102,9 +102,9 @@ def Discriminator():
 
     x = inp
 
-    down1 = downsample(64, 4, False)(x)  # (bs, 128, 128, 64)
-    down2 = downsample(128, 4)(down1)  # (bs, 64, 64, 128)
-    down3 = downsample(256, 4)(down2)  # (bs, 32, 32, 256)
+    down1 = downsample(64, size=kernel_size, apply_instancenorm=False, ds_activation=ds_activation)(x)  # (bs, 128, 128, 64)
+    down2 = downsample(128, size=kernel_size, ds_activation=ds_activation)(down1)  # (bs, 64, 64, 128)
+    down3 = downsample(256, size=kernel_size, ds_activation=ds_activation)(down2)  # (bs, 32, 32, 256)
 
     zero_pad1 = layers.ZeroPadding2D()(down3)  # (bs, 34, 34, 256)
     conv = layers.Conv2D(512, 4, strides=1,
