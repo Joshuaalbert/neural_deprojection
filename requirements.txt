@@ -5,5 +5,5 @@ matplotlib
 scipy
 pytest
 tensorflow_addons
-PIL
+Pillow
 shutil
