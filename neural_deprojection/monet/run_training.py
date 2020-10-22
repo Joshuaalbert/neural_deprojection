@@ -1,6 +1,7 @@
 import argparse,  sys
 #imports
 import tensorflow as tf
+import tensorflow_addons as tfa
 from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,23 +15,43 @@ from neural_deprojection.monet.cycle_gan import CycleGan, build_discriminator_lo
     build_calc_cycle_loss, build_identity_loss
 
 # hyperparameters
-lr = 2e-4
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.5)
-ds_activation = layers.LeakyReLU()
-us_activation = layers.ReLU()
-kernel_size = 4
 
-def main(arg0, arg1, arg2):
-    '''
+
+def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
+    """
 
     Args:
-        arg0:
-        arg1:
-        arg2:
+        lr:
+        optimizer:
+        ds_activation:
+        us_activation:
+        kernel_size:
+        sync_period:
 
     Returns:
 
-    '''
+    """
+
+    if optimizer == 'adam':
+        optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.5)
+    elif optimizer == 'ranger':
+        optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(lr, beta_1=0.5), sync_period=sync_period)
+    if ds_activation == 'leaky_relu':
+        ds_activation = layers.LeakyReLU()
+    if ds_activation == 'relu':
+        ds_activation = layers.ReLU()
+    if ds_activation == 'mish':
+        raise NotImplemented()
+    else:
+        raise ValueError(f"{ds_activation} doesn't exist")
+    if us_activation == 'leaky_relu':
+        us_activation = layers.LeakyReLU()
+    if us_activation == 'relu':
+        us_activation = layers.ReLU()
+    if us_activation == 'mish':
+        raise NotImplemented()
+    else:
+        raise ValueError(f"{us_activation} doesn't exist")
 
     #Try to use a TPU if available
     try:
@@ -147,9 +168,8 @@ def main(arg0, arg1, arg2):
 
 def add_args(parser):
     parser.register("type", "bool", lambda v: v.lower() == "true")
-    parser.add_argument('--arg0', help='Obs number L*',default=0, type=int, required=False)
-    parser.add_argument('--arg1', help='Obs number L*',default=0, type=int, required=False)
-    parser.add_argument('--arg2', help='Obs number L*',default=0, type=int, required=False)
+    #lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
+    parser.add_argument('--lr', help='Which optimizer to use',default='adam', type=str, required=False)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
