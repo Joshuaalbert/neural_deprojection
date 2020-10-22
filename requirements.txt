@@ -6,4 +6,3 @@ scipy
 pytest
 tensorflow_addons
 Pillow
-shutil
