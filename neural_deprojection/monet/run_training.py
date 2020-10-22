@@ -41,15 +41,15 @@ def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
     if ds_activation == 'relu':
         ds_activation = layers.ReLU()
     if ds_activation == 'mish':
-        raise NotImplemented()
+        ds_activation = lambda x : x * tf.math.tanh(tf.nn.softplus(x))
     else:
         raise ValueError(f"{ds_activation} doesn't exist")
     if us_activation == 'leaky_relu':
         us_activation = layers.LeakyReLU()
-    if us_activation == 'relu':
+    elif us_activation == 'relu':
         us_activation = layers.ReLU()
-    if us_activation == 'mish':
-        raise NotImplemented()
+    elif us_activation == 'mish':
+        us_activation = lambda x : x * tf.math.tanh(tf.nn.softplus(x))
     else:
         raise ValueError(f"{us_activation} doesn't exist")
 
