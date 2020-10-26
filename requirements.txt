@@ -2,7 +2,7 @@ numpy<1.19.0
 tensorflow
 tensorflow_probability
 matplotlib
-scipy
+scipy==1.4.1
 pytest
 tensorflow_addons
 Pillow
