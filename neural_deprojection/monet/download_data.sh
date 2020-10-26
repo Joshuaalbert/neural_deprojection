@@ -1,4 +1,4 @@
-#!/usr/env bash
+#!/usr/bin/bash
 
 kaggle competitions download -c gan-getting-started
 mkdir data
