@@ -3,6 +3,21 @@ Using neural networks to deprojection astronomical observables
 
 # Install
 
+Install miniconda.
+```bash
+DOWNLOAD_DIR=$HOME
+GIT_DIR=$HOME/git
+INSTALL_DIR=$HOME
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O $DOWNLOAD_DIR/miniconda.sh
+bash $DOWNLOAD_DIR/miniconda.sh -b -p $INSTALL_DIR/miniconda3
+. $INSTALL_DIR/miniconda3/etc/profile.d/conda.sh
+echo ". $INSTALL_DIR/miniconda3/etc/profile.d/conda.sh" >> $HOME/.bashrc
+hash -r 
+conda config --set auto_activate_base false --set always_yes yes
+conda update -q conda
+conda info -a
+```
+
 Make a conda environment for this project. I'll call it `tf_py` because it will contain tensorflow.
 ``` bach
 conda create -n tf_py python=3.8
