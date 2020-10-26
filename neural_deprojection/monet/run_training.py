@@ -38,9 +38,9 @@ def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
         optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(lr, beta_1=0.5), sync_period=sync_period)
     if ds_activation == 'leaky_relu':
         ds_activation = layers.LeakyReLU()
-    if ds_activation == 'relu':
+    elif ds_activation == 'relu':
         ds_activation = layers.ReLU()
-    if ds_activation == 'mish':
+    elif ds_activation == 'mish':
         ds_activation = lambda x : x * tf.math.tanh(tf.nn.softplus(x))
     else:
         raise ValueError(f"{ds_activation} doesn't exist")
@@ -169,7 +169,15 @@ def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
 def add_args(parser):
     parser.register("type", "bool", lambda v: v.lower() == "true")
     #lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
-    parser.add_argument('--lr', help='Which optimizer to use',default='adam', type=str, required=False)
+    parser.add_argument('--lr', help='Which learning rate to use',default=10e-2, type=float, required=False)
+    parser.add_argument('--optimizer', help='Which optimizer to use', default='adam', type=str, required=False)
+    parser.add_argument('--ds_activation', help='Which downsample activation function to use', default='leaky_relu',
+                        type=str, required=False)
+    parser.add_argument('--us_activation', help='Which upsample activation function to use', default='relu',
+                        type=str, required=False)
+    parser.add_argument('--kernel_size', help='Which kernel size to use', default=4, type=int, required=False)
+    parser.add_argument('--sync_period', help='Which sync period to use with ranger optimizer', default=20, type=int,
+                        required=False)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
