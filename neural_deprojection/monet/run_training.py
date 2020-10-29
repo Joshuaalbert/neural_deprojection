@@ -33,7 +33,7 @@ def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
 
     """
 
-    os.makedirs('./images', exists_ok=True)
+    os.makedirs('./images', exist_ok=True)
 
     if optimizer == 'adam':
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.5)
