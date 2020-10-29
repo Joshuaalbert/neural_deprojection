@@ -1,0 +1,59 @@
+BootStrap: docker
+From: tensorflow/tensorflow:2.1.2-gpu
+
+%help
+# help section
+
+%runscript
+# what happens when you run the image
+#TODO: put arg parsing here to run the whole script from here once debugging done.
+
+exec python "$@"
+
+%post
+# Build instructions
+###
+# Install our repo
+
+apt-get update
+apt-get install -y software-properties-common
+apt-get install -y less vim build-essential manpages-dev wget git ffmpeg htop feh mplayer nano vim
+
+
+cd /opt
+mkdir git
+cd git
+git clone https://github.com/Joshuaalbert/neural_deprojection.git
+cd neural_deprojection
+pip install tensorflow_probability matplotlib tensorflow_addons Pillow
+python setup.py install
+
+%test
+# gets called to test build went correct
+
+%setup
+# run before build (can access $SINGULARITY_ROOTFS)
+
+%files
+# These get copied <src> <dst> with cp
+
+%labels
+#These get stored in meta data. singularity inspect this.simg
+
+
+%startscript
+#These are sourced at start instance (not used)
+
+
+%environment
+
+export EDITOR=vim
+export VISUAL=$EDITOR
+
+alias ls='ls --color=always'
+alias ll='ls -ltr --color=always'
+export PS1='\u@\h:\w\$ '
+
+
+
+
