@@ -7,6 +7,10 @@ From: ubuntu:latest
 %runscript
 # what happens when you run the image
 #TODO: put arg parsing here to run the whole script from here once debugging done.
+
+. /opt/miniconda3/etc/profile.d/conda.sh
+conda activate amuse_py
+
 exec "$@"
 
 %post
@@ -68,6 +72,7 @@ pip install amuse-athena amuse-bhtree amuse-brutus amuse-bse amuse-capreole amus
 # These are currently failing to build because of PEP 517
 # pip install amuse-fi amuse-galaxia
 
+
 %test
 # gets called to test build went correct
 #/usr/local/bin/mpirun --allow-run-as-root /usr/bin/mpi_test
@@ -83,11 +88,13 @@ pip install amuse-athena amuse-bhtree amuse-brutus amuse-bse amuse-capreole amus
 
 
 %startscript
-export OMP_NUM_THREADS=$(grep -c ^processor /proc/cpuinfo)
-export NUMEXPR_MAX_THREADS=${OMP_NUM_THREADS}
+#These are sourced at start instance (not used)
+
 
 %environment
-#These are sourced at runtime
+
+export OMP_NUM_THREADS=$(grep -c ^processor /proc/cpuinfo)
+export NUMEXPR_MAX_THREADS=${OMP_NUM_THREADS}
 
 export EDITOR=vim
 export VISUAL=$EDITOR
@@ -97,5 +104,5 @@ alias ll='ls -ltr --color=always'
 export PS1='\u@\h:\w\$ '
 
 
-. /opt/miniconda3/etc/profile.d/conda.sh
-conda activate amuse_py
+
+
