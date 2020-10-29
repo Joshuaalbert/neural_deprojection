@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import PIL
 import shutil
+import os
 
 #import py files
 from neural_deprojection.monet.read_tfrec import load_dataset
@@ -31,6 +32,8 @@ def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
     Returns:
 
     """
+
+    os.makedirs('./images', exists_ok=True)
 
     if optimizer == 'adam':
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.5)
