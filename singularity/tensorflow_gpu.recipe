@@ -1,14 +1,13 @@
 BootStrap: docker
-From: tensorflow/tensorflow:2.1.2-gpu
+From: tensorflow/tensorflow:2.3.1-gpu
 
 %help
 # help section
 
 %runscript
 # what happens when you run the image
-#TODO: put arg parsing here to run the whole script from here once debugging done.
 
-exec python "$@"
+exec "$@"
 
 %post
 # Build instructions
