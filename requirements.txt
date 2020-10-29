@@ -1,5 +1,5 @@
 numpy<1.19.0
-tensorflow
+tensorflow-gpu
 tensorflow_probability
 matplotlib
 scipy==1.4.1
