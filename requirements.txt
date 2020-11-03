@@ -1,5 +1,6 @@
 numpy<1.19.0
 tensorflow
+tensorflow_datasets
 tensorflow_probability
 matplotlib
 scipy==1.4.1
@@ -9,3 +10,4 @@ Pillow
 mayavi
 PyQt5
 pynbody
+kaggle
