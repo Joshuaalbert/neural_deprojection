@@ -6,3 +6,5 @@ scipy==1.4.1
 pytest
 tensorflow_addons
 Pillow
+mayavi
+PyQt5
