@@ -172,6 +172,7 @@ def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
 def add_args(parser):
     parser.register("type", "bool", lambda v: v.lower() == "true")
     #lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
+    parser.add_argument('--data_dir', help='Where monet data is stored', type=str, required=True)
     parser.add_argument('--lr', help='Which learning rate to use',default=1e-2, type=float, required=False)
     parser.add_argument('--optimizer', help='Which optimizer to use', default='ranger', type=str, required=False)
     parser.add_argument('--ds_activation', help='Which downsample activation function to use', default='mish',
