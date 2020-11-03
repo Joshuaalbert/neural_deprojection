@@ -18,7 +18,7 @@ from neural_deprojection.monet.cycle_gan import CycleGan, build_discriminator_lo
 # hyperparameters
 
 
-def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
+def main(data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
     """
 
     Args:
@@ -72,10 +72,10 @@ def main(lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
     print(tf.__version__)
 
     # LOAD DATA
-    MONET_FILENAMES = tf.io.gfile.glob(str('data/monet_tfrec/*.tfrec'))
+    MONET_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir, 'monet_tfrec/*.tfrec')))
     print('Monet TFRecord Files:', len(MONET_FILENAMES))
 
-    PHOTO_FILENAMES = tf.io.gfile.glob(str('data/photo_tfrec/*.tfrec'))
+    PHOTO_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir,'photo_tfrec/*.tfrec')))
     print('Photo TFRecord Files:', len(PHOTO_FILENAMES))
 
     monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1)
