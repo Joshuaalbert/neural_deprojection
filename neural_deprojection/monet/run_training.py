@@ -92,12 +92,18 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
 
         with strategy.scope():
             # k_fold, num_folds = tf.convert_to_tensor(k_fold, dtype=tf.int64), tf.convert_to_tensor(num_folds, dtype=tf.int64)
-            train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
-                lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
-                lambda i, image: image).batch(batch_size)
-            train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
-                lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
-                lambda i, image: image).batch(batch_size)
+            # train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
+            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
+            #     lambda i, image: image).batch(batch_size)
+            # train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
+            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
+            #     lambda i, image: image).batch(batch_size)
+
+            train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
+            train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
+            train_images_ds = tf.data.Dataset.zip((train_monet_ds, train_photo_ds)).enumerate().filter(
+                lambda i, images, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
+                lambda i, images: images).batch(batch_size)
 
             # test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
             #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(
@@ -143,14 +149,12 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
                 identity_loss_fn=build_identity_loss(strategy)
             )
 
-            cycle_gan_model.fit(
-                tf.data.Dataset.zip((train_monet_ds, train_photo_ds)),
-                epochs=25
-            )
+            cycle_gan_model.fit(train_images_ds,
+                epochs=25)
 
             output = cycle_gan_model.evaluate(test_images_ds, return_dict=True)
 
-        save_predicted_test_images(monet_generator, test_photo_ds)
+        save_predicted_test_images(monet_generator, test_photo_ds.batch(1))
 
         return output["monet_gen_loss"] + output["photo_gen_loss"] + output["monet_disc_loss"] + output[
             "photo_disc_loss"]
