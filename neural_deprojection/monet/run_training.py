@@ -15,10 +15,21 @@ from neural_deprojection.monet.build_gen_dis import Generator, Discriminator
 from neural_deprojection.monet.cycle_gan import CycleGan, build_discriminator_loss, build_generator_loss,\
     build_calc_cycle_loss, build_identity_loss
 
-# hyperparameters
+
+def save_predicted_test_images(monet_generator, test_photo_ds):
+    # SAVE MODEL
+    i = 1
+    for img in test_photo_ds:
+        prediction = monet_generator(img, training=False)[0].numpy()
+        prediction = (prediction * 127.5 + 127.5).astype(np.uint8)
+        im = PIL.Image.fromarray(prediction)
+        im.save("images/" + str(i) + ".jpg")
+        i += 1
+
+        # shutil.make_archive("/kaggle/working/images", 'zip', "/kaggle/images") ???????????????
 
 
-def main(data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
+def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
     """
 
     Args:
@@ -78,95 +89,66 @@ def main(data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, syn
     PHOTO_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir,'photo_tfrec/*.tfrec')))
     print('Photo TFRecord Files:', len(PHOTO_FILENAMES))
 
-    monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1)
-    photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1)
+    k_fold = 0
+    def run_fold_training(k_fold):
+        train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
+            lambda i, image: i % num_folds != k_fold).map(lambda i, image: image)
+        train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
+            lambda i, image: i % num_folds != k_fold).map(lambda i, image: image)
 
-    example_monet = next(iter(monet_ds))
-    example_photo = next(iter(photo_ds))
+        test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
+            lambda i, image: i % num_folds == k_fold).map(lambda i, image: image)
+        test_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
+            lambda i, image: i % num_folds == k_fold).map(lambda i, image: image)
 
-    plt.subplot(121)
-    plt.title('Photo')
-    plt.imshow(example_photo[0] * 0.5 + 0.5)
+        # CONSTRUCT MODEL
 
-    plt.subplot(122)
-    plt.title('Monet')
-    plt.imshow(example_monet[0] * 0.5 + 0.5)
-    plt.show()
+        with strategy.scope():
+            monet_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms photos to Monet-esque paintings
+            photo_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms Monet paintings to be more like photos
 
-    # CONSTRUCT MODEL
+            monet_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real Monet paintings and generated Monet paintings
+            photo_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real photos and generated photos
 
-    with strategy.scope():
-        monet_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms photos to Monet-esque paintings
-        photo_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms Monet paintings to be more like photos
+        # TRAINING
+        with strategy.scope():
+            monet_generator_optimizer = optimizer
+            photo_generator_optimizer = optimizer
 
-        monet_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real Monet paintings and generated Monet paintings
-        photo_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real photos and generated photos
+            monet_discriminator_optimizer = optimizer
+            photo_discriminator_optimizer = optimizer
 
-    to_monet = monet_generator(example_photo)
+        with strategy.scope():
+            cycle_gan_model = CycleGan(
+                monet_generator, photo_generator, monet_discriminator, photo_discriminator
+            )
 
-    plt.subplot(1, 2, 1)
-    plt.title("Original Photo")
-    plt.imshow(example_photo[0] * 0.5 + 0.5)
+            cycle_gan_model.compile(
+                m_gen_optimizer=monet_generator_optimizer,
+                p_gen_optimizer=photo_generator_optimizer,
+                m_disc_optimizer=monet_discriminator_optimizer,
+                p_disc_optimizer=photo_discriminator_optimizer,
+                gen_loss_fn=build_generator_loss(strategy),
+                disc_loss_fn=build_discriminator_loss(strategy),
+                cycle_loss_fn=build_calc_cycle_loss(strategy),
+                identity_loss_fn=build_identity_loss(strategy)
+            )
 
-    plt.subplot(1, 2, 2)
-    plt.title("Monet-esque Photo")
-    plt.imshow(to_monet[0] * 0.5 + 0.5)
-    plt.show()
-
-    # TRAINING
-    with strategy.scope():
-        monet_generator_optimizer = optimizer
-        photo_generator_optimizer = optimizer
-
-        monet_discriminator_optimizer = optimizer
-        photo_discriminator_optimizer = optimizer
-
-    with strategy.scope():
-        cycle_gan_model = CycleGan(
-            monet_generator, photo_generator, monet_discriminator, photo_discriminator
+        cycle_gan_model.fit(
+            tf.data.Dataset.zip((train_monet_ds, train_photo_ds)),
+            epochs=25
         )
 
-        cycle_gan_model.compile(
-            m_gen_optimizer=monet_generator_optimizer,
-            p_gen_optimizer=photo_generator_optimizer,
-            m_disc_optimizer=monet_discriminator_optimizer,
-            p_disc_optimizer=photo_discriminator_optimizer,
-            gen_loss_fn=build_generator_loss(strategy),
-            disc_loss_fn=build_discriminator_loss(strategy),
-            cycle_loss_fn=build_calc_cycle_loss(strategy),
-            identity_loss_fn=build_identity_loss(strategy)
-        )
+        save_predicted_test_images(monet_generator, test_photo_ds)
 
-    cycle_gan_model.fit(
-        tf.data.Dataset.zip((monet_ds, photo_ds)),
-        epochs=25
-    )
+        output = cycle_gan_model.evaluate(tf.data.Dataset.zip((test_monet_ds, test_photo_ds)))
 
-    _, ax = plt.subplots(5, 2, figsize=(12, 12))
-    for i, img in enumerate(photo_ds.take(5)):
-        prediction = monet_generator(img, training=False)[0].numpy()
-        prediction = (prediction * 127.5 + 127.5).astype(np.uint8)
-        img = (img[0] * 127.5 + 127.5).numpy().astype(np.uint8)
+        return output["monet_gen_loss"] + output["photo_gen_loss"] + output["monet_disc_loss"] + output["photo_disc_loss"]
 
-        ax[i, 0].imshow(img)
-        ax[i, 1].imshow(prediction)
-        ax[i, 0].set_title("Input Photo")
-        ax[i, 1].set_title("Monet-esque")
-        ax[i, 0].axis("off")
-        ax[i, 1].axis("off")
-    plt.show()
-
-    # SAVE MODEL
-
-    i = 1
-    for img in photo_ds:
-        prediction = monet_generator(img, training=False)[0].numpy()
-        prediction = (prediction * 127.5 + 127.5).astype(np.uint8)
-        im = PIL.Image.fromarray(prediction)
-        im.save("images/" + str(i) + ".jpg")
-        i += 1
-
-        # shutil.make_archive("/kaggle/working/images", 'zip', "/kaggle/images") ???????????????
+    cv_loss = sum([run_fold_training(k) for k in range(num_folds)])/num_folds
+    print(f"Final {num_folds}-fold cross validation score is: {cv_loss}")
+    #TODO(MVG,Hendrix): use cv_loss as a metric for Bayesian optimisation with GPyOpt
+    #TODO(MVG,Hendrix): expose a different learning rate for discriminator and generator (so two in total)
 
 
 def add_args(parser):
@@ -174,6 +156,7 @@ def add_args(parser):
     parser.register("type", "path", lambda v: os.path.expanduser(v))
     #lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
     parser.add_argument('--data_dir', help='Where monet data is stored', type='path', required=True)
+    parser.add_argument('--num_folds', help='How many folds of K-folds CV to do.', default=3, type=int, required=False)
     parser.add_argument('--lr', help='Which learning rate to use',default=1e-2, type=float, required=False)
     parser.add_argument('--optimizer', help='Which optimizer to use', default='ranger', type=str, required=False)
     parser.add_argument('--ds_activation', help='Which downsample activation function to use', default='mish',
