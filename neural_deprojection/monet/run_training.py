@@ -43,7 +43,7 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     Returns:
 
     """
-
+    print(f"Will perform {num_folds}-fold cross validation.")
     os.makedirs('./images', exist_ok=True)
 
     if optimizer == 'adam':
@@ -89,17 +89,17 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     PHOTO_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir,'photo_tfrec/*.tfrec')))
     print('Photo TFRecord Files:', len(PHOTO_FILENAMES))
 
-    k_fold = 0
-    def run_fold_training(k_fold):
+    def run_fold_training(k_fold, num_folds):
+        # k_fold, num_folds = tf.convert_to_tensor(k_fold, dtype=tf.int64), tf.convert_to_tensor(num_folds, dtype=tf.int64)
         train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image: i % num_folds != k_fold).map(lambda i, image: image)
+            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(lambda i, image: image)
         train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image: i % num_folds != k_fold).map(lambda i, image: image)
+            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(lambda i, image: image)
 
         test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image: i % num_folds == k_fold).map(lambda i, image: image)
+            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(lambda i, image: image)
         test_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image: i % num_folds == k_fold).map(lambda i, image: image)
+            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(lambda i, image: image)
 
         # CONSTRUCT MODEL
 
@@ -145,7 +145,7 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
 
         return output["monet_gen_loss"] + output["photo_gen_loss"] + output["monet_disc_loss"] + output["photo_disc_loss"]
 
-    cv_loss = sum([run_fold_training(k) for k in range(num_folds)])/num_folds
+    cv_loss = sum([run_fold_training(k, num_folds) for k in range(num_folds)])/num_folds
     print(f"Final {num_folds}-fold cross validation score is: {cv_loss}")
     #TODO(MVG,Hendrix): use cv_loss as a metric for Bayesian optimisation with GPyOpt
     #TODO(MVG,Hendrix): expose a different learning rate for discriminator and generator (so two in total)
