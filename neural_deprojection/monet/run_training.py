@@ -171,7 +171,7 @@ def add_args(parser):
     # lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
     parser.add_argument('--data_dir', help='Where monet data is stored', type='path', required=True)
     parser.add_argument('--num_folds', help='How many folds of K-folds CV to do.', default=3, type=int, required=False)
-    parser.add_argument('--batch_size', help='Batch size of training and evaluation.', default=8, type=int,
+    parser.add_argument('--batch_size', help='Batch size of training and evaluation.', default=4, type=int,
                         required=False)
     parser.add_argument('--lr', help='Which learning rate to use', default=1e-2, type=float, required=False)
     parser.add_argument('--optimizer', help='Which optimizer to use', default='ranger', type=str, required=False)
