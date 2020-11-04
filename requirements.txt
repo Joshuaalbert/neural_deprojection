@@ -11,3 +11,4 @@ mayavi
 PyQt5
 pynbody
 kaggle
+GPyOpt
