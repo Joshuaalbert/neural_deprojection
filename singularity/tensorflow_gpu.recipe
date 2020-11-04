@@ -24,7 +24,7 @@ mkdir git
 cd git
 git clone https://github.com/Joshuaalbert/neural_deprojection.git
 cd neural_deprojection
-pip install tensorflow_probability matplotlib tensorflow_addons Pillow
+pip install `cat requirements.txt | grep -v 'tensorflow$'`
 python setup.py install
 
 %test
