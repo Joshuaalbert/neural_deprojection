@@ -1,18 +1,16 @@
-import argparse,  sys
-#imports
+import argparse
+# imports
 import tensorflow as tf
 import tensorflow_addons as tfa
 from tensorflow.keras import layers
-import matplotlib.pyplot as plt
 import numpy as np
 import PIL
-import shutil
 import os
 
-#import py files
-from neural_deprojection.monet.read_tfrec import load_dataset
-from neural_deprojection.monet.build_gen_dis import Generator, Discriminator
-from neural_deprojection.monet.cycle_gan import CycleGan, build_discriminator_loss, build_generator_loss,\
+# import locally (note no neural_deprojection before them)
+from read_tfrec import load_dataset
+from build_gen_dis import Generator, Discriminator
+from cycle_gan import CycleGan, build_discriminator_loss, build_generator_loss, \
     build_calc_cycle_loss, build_identity_loss
 
 
@@ -29,7 +27,7 @@ def save_predicted_test_images(monet_generator, test_photo_ds):
         # shutil.make_archive("/kaggle/working/images", 'zip', "/kaggle/images") ???????????????
 
 
-def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period):
+def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period, batch_size):
     """
 
     Args:
@@ -47,15 +45,15 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     os.makedirs('./images', exist_ok=True)
 
     if optimizer == 'adam':
-        optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.5)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
     elif optimizer == 'ranger':
-        optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(lr, beta_1=0.5), sync_period=sync_period)
+        optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(lr), sync_period=sync_period)
     if ds_activation == 'leaky_relu':
         ds_activation = layers.LeakyReLU()
     elif ds_activation == 'relu':
         ds_activation = layers.ReLU()
     elif ds_activation == 'mish':
-        ds_activation = layers.Lambda(lambda x : x * tf.math.tanh(tf.nn.softplus(x)))
+        ds_activation = layers.Lambda(lambda x: x * tf.math.tanh(tf.nn.softplus(x)))
     else:
         raise ValueError(f"{ds_activation} doesn't exist")
     if us_activation == 'leaky_relu':
@@ -63,11 +61,11 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     elif us_activation == 'relu':
         us_activation = layers.ReLU()
     elif us_activation == 'mish':
-        us_activation = layers.Lambda(lambda x : x * tf.math.tanh(tf.nn.softplus(x)))
+        us_activation = layers.Lambda(lambda x: x * tf.math.tanh(tf.nn.softplus(x)))
     else:
         raise ValueError(f"{us_activation} doesn't exist")
 
-    #Try to use a TPU if available
+    # Try to use a TPU if available
     try:
         tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
         print('Device:', tpu.master())
@@ -80,45 +78,56 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
 
     AUTOTUNE = tf.data.experimental.AUTOTUNE
 
-    print(tf.__version__)
+    print("TF version:", tf.__version__)
 
     # LOAD DATA
     MONET_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir, 'monet_tfrec/*.tfrec')))
     print('Monet TFRecord Files:', len(MONET_FILENAMES))
 
-    PHOTO_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir,'photo_tfrec/*.tfrec')))
+    PHOTO_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir, 'photo_tfrec/*.tfrec')))
     print('Photo TFRecord Files:', len(PHOTO_FILENAMES))
 
     def run_fold_training(k_fold, num_folds):
-        # k_fold, num_folds = tf.convert_to_tensor(k_fold, dtype=tf.int64), tf.convert_to_tensor(num_folds, dtype=tf.int64)
-        train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(lambda i, image: image)
-        train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(lambda i, image: image)
-
-        test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(lambda i, image: image)
-        test_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).batch(1).enumerate().filter(
-            lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(lambda i, image: image)
-
         # CONSTRUCT MODEL
 
         with strategy.scope():
-            monet_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms photos to Monet-esque paintings
-            photo_generator = Generator(us_activation=us_activation, ds_activation=ds_activation, kernel_size=kernel_size)  # transforms Monet paintings to be more like photos
+            # k_fold, num_folds = tf.convert_to_tensor(k_fold, dtype=tf.int64), tf.convert_to_tensor(num_folds, dtype=tf.int64)
+            train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
+                lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
+                lambda i, image: image).batch(batch_size)
+            train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
+                lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
+                lambda i, image: image).batch(batch_size)
 
-            monet_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real Monet paintings and generated Monet paintings
-            photo_discriminator = Discriminator(ds_activation=ds_activation, kernel_size=kernel_size)  # differentiates real photos and generated photos
+            # test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
+            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(
+            #     lambda i, image: image).batch(batch_size)
+            # test_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
+            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(
+            #     lambda i, image: image).batch(batch_size)
 
-        # TRAINING
-        with strategy.scope():
+            test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
+            test_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
+            test_images_ds = tf.data.Dataset.zip((test_monet_ds, test_photo_ds)).enumerate().filter(
+                lambda i, images, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(
+                lambda i, images: images).batch(batch_size)
+
+            monet_generator = Generator(us_activation=us_activation, ds_activation=ds_activation,
+                                        kernel_size=kernel_size)  # transforms photos to Monet-esque paintings
+            photo_generator = Generator(us_activation=us_activation, ds_activation=ds_activation,
+                                        kernel_size=kernel_size)  # transforms Monet paintings to be more like photos
+
+            monet_discriminator = Discriminator(ds_activation=ds_activation,
+                                                kernel_size=kernel_size)  # differentiates real Monet paintings and generated Monet paintings
+            photo_discriminator = Discriminator(ds_activation=ds_activation,
+                                                kernel_size=kernel_size)  # differentiates real photos and generated photos
+
             monet_generator_optimizer = optimizer
             photo_generator_optimizer = optimizer
 
             monet_discriminator_optimizer = optimizer
             photo_discriminator_optimizer = optimizer
 
-        with strategy.scope():
             cycle_gan_model = CycleGan(
                 monet_generator, photo_generator, monet_discriminator, photo_discriminator
             )
@@ -134,30 +143,33 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
                 identity_loss_fn=build_identity_loss(strategy)
             )
 
-        cycle_gan_model.fit(
-            tf.data.Dataset.zip((train_monet_ds, train_photo_ds)),
-            epochs=25
-        )
+            cycle_gan_model.fit(
+                tf.data.Dataset.zip((train_monet_ds, train_photo_ds)),
+                epochs=25
+            )
+
+            output = cycle_gan_model.evaluate(test_images_ds, return_dict=True)
 
         save_predicted_test_images(monet_generator, test_photo_ds)
 
-        output = cycle_gan_model.evaluate(tf.data.Dataset.zip((test_monet_ds, test_photo_ds)))
+        return output["monet_gen_loss"] + output["photo_gen_loss"] + output["monet_disc_loss"] + output[
+            "photo_disc_loss"]
 
-        return output["monet_gen_loss"] + output["photo_gen_loss"] + output["monet_disc_loss"] + output["photo_disc_loss"]
-
-    cv_loss = sum([run_fold_training(k, num_folds) for k in range(num_folds)])/num_folds
+    cv_loss = sum([run_fold_training(k, num_folds) for k in range(num_folds)]) / num_folds
     print(f"Final {num_folds}-fold cross validation score is: {cv_loss}")
-    #TODO(MVG,Hendrix): use cv_loss as a metric for Bayesian optimisation with GPyOpt
-    #TODO(MVG,Hendrix): expose a different learning rate for discriminator and generator (so two in total)
+    # TODO(MVG,Hendrix): use cv_loss as a metric for Bayesian optimisation with GPyOpt
+    # TODO(MVG,Hendrix): expose a different learning rate for discriminator and generator (so two in total)
 
 
 def add_args(parser):
     parser.register("type", "bool", lambda v: v.lower() == "true")
     parser.register("type", "path", lambda v: os.path.expanduser(v))
-    #lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
+    # lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
     parser.add_argument('--data_dir', help='Where monet data is stored', type='path', required=True)
     parser.add_argument('--num_folds', help='How many folds of K-folds CV to do.', default=3, type=int, required=False)
-    parser.add_argument('--lr', help='Which learning rate to use',default=1e-2, type=float, required=False)
+    parser.add_argument('--batch_size', help='Batch size of training and evaluation.', default=8, type=int,
+                        required=False)
+    parser.add_argument('--lr', help='Which learning rate to use', default=1e-2, type=float, required=False)
     parser.add_argument('--optimizer', help='Which optimizer to use', default='ranger', type=str, required=False)
     parser.add_argument('--ds_activation', help='Which downsample activation function to use', default='mish',
                         type=str, required=False)
@@ -166,6 +178,7 @@ def add_args(parser):
     parser.add_argument('--kernel_size', help='Which kernel size to use', default=4, type=int, required=False)
     parser.add_argument('--sync_period', help='Which sync period to use with ranger optimizer', default=20, type=int,
                         required=False)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
