@@ -37,9 +37,33 @@ class CycleGan(keras.Model):
         self.disc_loss_fn = disc_loss_fn
         self.cycle_loss_fn = cycle_loss_fn
         self.identity_loss_fn = identity_loss_fn
+        self.loss_trackers = dict(
+            monet_gen_loss=keras.metrics.Mean(name="monet_gen_loss"),
+            monet_disc_loss=keras.metrics.Mean(name="monet_disc_loss"),
+            photo_gen_loss=keras.metrics.Mean(name="photo_gen_loss"),
+            photo_disc_loss=keras.metrics.Mean(name="photo_disc_loss")
+                                  )
 
+    @property
+    def metrics(self):
+        # We list our `Metric` objects here so that `reset_states()` can be
+        # called automatically at the start of each epoch
+        # or at the start of `evaluate()`.
+        # If you don't implement this property, you have to call
+        # `reset_states()` yourself at the time of your choosing.
+        return [self.loss_trackers[key] for key in sorted(self.loss_trackers.keys())]
+
+    @tf.function
     def train_step(self, batch_data):
         real_monet, real_photo = batch_data
+
+        if self.compiled_loss is not None:
+            ValueError("You passed a loss function to `model.compile` however we are defining our own losses inside the"
+                       "training loop. Passed loss: {}".format(self.compiled_loss))
+        if self.compiled_metrics is not None:
+            ValueError("You passed metrics to the compile function, however we are defining our own metrics in the "
+                       "training loop. Passed metrics: {}".format(self.compiled_metrics))
+
 
         with tf.GradientTape(persistent=True) as tape:
             # photo to monet back to photo
@@ -103,13 +127,71 @@ class CycleGan(keras.Model):
 
         self.p_disc_optimizer.apply_gradients(zip(photo_discriminator_gradients,
                                                   self.p_disc.trainable_variables))
+        #These keep track of the mean loss over the epoch. THey are reset in the model.fit function at the start of each
+        # epoch automatically.
+        self.loss_trackers["monet_gen_loss"].update_state(total_monet_gen_loss)
+        self.loss_trackers["photo_gen_loss"].update_state(total_photo_gen_loss)
+        self.loss_trackers["monet_disc_loss"].update_state(monet_disc_loss)
+        self.loss_trackers["photo_disc_loss"].update_state(photo_disc_loss)
+        return {k:v.result() for k,v in self.loss_trackers.items()}
 
-        return {
-            "monet_gen_loss": total_monet_gen_loss,
-            "photo_gen_loss": total_photo_gen_loss,
-            "monet_disc_loss": monet_disc_loss,
-            "photo_disc_loss": photo_disc_loss
-        }
+    @tf.function
+    def test_step(self, batch_data):
+        #similar to the train_step except for skipping the optimisation
+        real_monet, real_photo = batch_data
+
+        if self.compiled_loss is not None:
+            ValueError("You passed a loss function to `model.compile` however we are defining our own losses inside the"
+                       "training loop. Passed loss: {}".format(self.compiled_loss))
+        if self.compiled_metrics is not None:
+            ValueError("You passed metrics to the compile function, however we are defining our own metrics in the "
+                       "training loop. Passed metrics: {}".format(self.compiled_metrics))
+
+        # photo to monet back to photo
+        fake_monet = self.m_gen(real_photo, training=True)
+        cycled_photo = self.p_gen(fake_monet, training=True)
+
+        # monet to photo back to monet
+        fake_photo = self.p_gen(real_monet, training=True)
+        cycled_monet = self.m_gen(fake_photo, training=True)
+
+        # generating itself
+        same_monet = self.m_gen(real_monet, training=True)
+        same_photo = self.p_gen(real_photo, training=True)
+
+        # discriminator used to check, inputing real images
+        disc_real_monet = self.m_disc(real_monet, training=True)
+        disc_real_photo = self.p_disc(real_photo, training=True)
+
+        # discriminator used to check, inputing fake images
+        disc_fake_monet = self.m_disc(fake_monet, training=True)
+        disc_fake_photo = self.p_disc(fake_photo, training=True)
+
+        # evaluates generator loss
+        monet_gen_loss = self.gen_loss_fn(disc_fake_monet)
+        photo_gen_loss = self.gen_loss_fn(disc_fake_photo)
+
+        # evaluates total cycle consistency loss
+        total_cycle_loss = self.cycle_loss_fn(real_monet, cycled_monet, self.lambda_cycle) + self.cycle_loss_fn(
+            real_photo, cycled_photo, self.lambda_cycle)
+
+        # evaluates total generator loss
+        total_monet_gen_loss = monet_gen_loss + total_cycle_loss + self.identity_loss_fn(real_monet, same_monet,
+                                                                                         self.lambda_cycle)
+        total_photo_gen_loss = photo_gen_loss + total_cycle_loss + self.identity_loss_fn(real_photo, same_photo,
+                                                                                         self.lambda_cycle)
+
+        # evaluates discriminator loss
+        monet_disc_loss = self.disc_loss_fn(disc_real_monet, disc_fake_monet)
+        photo_disc_loss = self.disc_loss_fn(disc_real_photo, disc_fake_photo)
+
+        # These keep track of the mean loss over the epoch. THey are reset in the model.fit function at the start of each
+        # epoch automatically.
+        self.loss_trackers["monet_gen_loss"].update_state(total_monet_gen_loss)
+        self.loss_trackers["photo_gen_loss"].update_state(total_photo_gen_loss)
+        self.loss_trackers["monet_disc_loss"].update_state(monet_disc_loss)
+        self.loss_trackers["photo_disc_loss"].update_state(photo_disc_loss)
+        return {k: v.result() for k, v in self.loss_trackers.items()}
 
 
 def build_discriminator_loss(strategy):
