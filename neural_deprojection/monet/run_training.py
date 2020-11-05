@@ -27,7 +27,8 @@ def save_predicted_test_images(monet_generator, test_photo_ds):
         # shutil.make_archive("/kaggle/working/images", 'zip', "/kaggle/images") ???????????????
 
 
-def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period, batch_size):
+def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period, batch_size,
+         num_epochs):
     """
 
     Args:
@@ -44,29 +45,6 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     print(f"Will perform {num_folds}-fold cross validation.")
     os.makedirs('./images', exist_ok=True)
 
-    if optimizer == 'adam':
-        optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-    elif optimizer == 'ranger':
-        optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(lr), sync_period=sync_period)
-    if ds_activation == 'leaky_relu':
-        ds_activation = layers.LeakyReLU()
-    elif ds_activation == 'relu':
-        ds_activation = layers.ReLU()
-    elif ds_activation == 'mish':
-        ds_activation = layers.Lambda(lambda x: x * tf.math.tanh(tf.nn.softplus(x)))
-    else:
-        raise ValueError(f"{ds_activation} doesn't exist")
-    if us_activation == 'leaky_relu':
-        us_activation = layers.LeakyReLU()
-    elif us_activation == 'relu':
-        us_activation = layers.ReLU()
-    elif us_activation == 'mish':
-        us_activation = layers.Lambda(lambda x: x * tf.math.tanh(tf.nn.softplus(x)))
-    else:
-        raise ValueError(f"{us_activation} doesn't exist")
-
-
-
     AUTOTUNE = tf.data.experimental.AUTOTUNE
 
     print("TF version:", tf.__version__)
@@ -78,7 +56,10 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     PHOTO_FILENAMES = tf.io.gfile.glob(str(os.path.join(data_dir, 'photo_tfrec/*.tfrec')))
     print('Photo TFRecord Files:', len(PHOTO_FILENAMES))
 
-    def run_fold_training(k_fold, num_folds):
+    def run_fold_training(k_fold, num_folds,
+                          optimizer=optimizer,
+                          ds_activation=ds_activation,
+                          us_activation=us_activation):
         # CONSTRUCT MODEL
         tf.keras.backend.clear_session()
         # Try to use a TPU if available
@@ -93,26 +74,32 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
         print('Number of replicas:', strategy.num_replicas_in_sync)
 
         with strategy.scope():
-            # k_fold, num_folds = tf.convert_to_tensor(k_fold, dtype=tf.int64), tf.convert_to_tensor(num_folds, dtype=tf.int64)
-            # train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
-            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
-            #     lambda i, image: image).batch(batch_size)
-            # train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
-            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
-            #     lambda i, image: image).batch(batch_size)
+            if optimizer == 'adam':
+                optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+            elif optimizer == 'ranger':
+                optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(lr), sync_period=sync_period)
+            if ds_activation == 'leaky_relu':
+                ds_activation = layers.LeakyReLU()
+            elif ds_activation == 'relu':
+                ds_activation = layers.ReLU()
+            elif ds_activation == 'mish':
+                ds_activation = layers.Lambda(lambda x: x * tf.math.tanh(tf.nn.softplus(x)))
+            else:
+                raise ValueError(f"{ds_activation} doesn't exist")
+            if us_activation == 'leaky_relu':
+                us_activation = layers.LeakyReLU()
+            elif us_activation == 'relu':
+                us_activation = layers.ReLU()
+            elif us_activation == 'mish':
+                us_activation = layers.Lambda(lambda x: x * tf.math.tanh(tf.nn.softplus(x)))
+            else:
+                raise ValueError(f"{us_activation} doesn't exist")
 
             train_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
             train_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
             train_images_ds = tf.data.Dataset.zip((train_monet_ds, train_photo_ds)).enumerate().filter(
                 lambda i, images, num_folds=num_folds, k_fold=k_fold: i % num_folds != k_fold).map(
                 lambda i, images: images).batch(batch_size)
-
-            # test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
-            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(
-            #     lambda i, image: image).batch(batch_size)
-            # test_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE).enumerate().filter(
-            #     lambda i, image, num_folds=num_folds, k_fold=k_fold: i % num_folds == k_fold).map(
-            #     lambda i, image: image).batch(batch_size)
 
             test_monet_ds = load_dataset(MONET_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
             test_photo_ds = load_dataset(PHOTO_FILENAMES, labeled=True, AUTOTUNE=AUTOTUNE)
@@ -152,14 +139,15 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
             )
 
             cycle_gan_model.fit(train_images_ds,
-                epochs=25)
+                epochs=num_epochs,
+                callbacks=[tf.keras.callbacks.EarlyStopping(monitor='total_loss',patience=3, mode='min',
+                                                            restore_best_weights=True)])
 
             output = cycle_gan_model.evaluate(test_images_ds, return_dict=True)
 
         save_predicted_test_images(monet_generator, test_photo_ds.batch(1))
 
-        return output["monet_gen_loss"] + output["photo_gen_loss"] + output["monet_disc_loss"] + output[
-            "photo_disc_loss"]
+        return output["total_loss"]
 
     cv_loss = sum([run_fold_training(k, num_folds) for k in range(num_folds)]) / num_folds
     print(f"Final {num_folds}-fold cross validation score is: {cv_loss}")
@@ -175,6 +163,8 @@ def add_args(parser):
     parser.add_argument('--data_dir', help='Where monet data is stored', type='path', required=True)
     parser.add_argument('--num_folds', help='How many folds of K-folds CV to do.', default=3, type=int, required=False)
     parser.add_argument('--batch_size', help='Batch size of training and evaluation.', default=2, type=int,
+                        required=False)
+    parser.add_argument('--num_epochs', help='How many epochs to run.', default=25, type=int,
                         required=False)
     parser.add_argument('--lr', help='Which learning rate to use', default=1e-2, type=float, required=False)
     parser.add_argument('--optimizer', help='Which optimizer to use', default='ranger', type=str, required=False)

@@ -41,7 +41,8 @@ class CycleGan(keras.Model):
             monet_gen_loss=keras.metrics.Mean(name="monet_gen_loss"),
             monet_disc_loss=keras.metrics.Mean(name="monet_disc_loss"),
             photo_gen_loss=keras.metrics.Mean(name="photo_gen_loss"),
-            photo_disc_loss=keras.metrics.Mean(name="photo_disc_loss")
+            photo_disc_loss=keras.metrics.Mean(name="photo_disc_loss"),
+            total_loss=keras.metrics.Mean(name="total_loss"),
                                   )
 
     @property
@@ -133,6 +134,7 @@ class CycleGan(keras.Model):
         self.loss_trackers["photo_gen_loss"].update_state(total_photo_gen_loss)
         self.loss_trackers["monet_disc_loss"].update_state(monet_disc_loss)
         self.loss_trackers["photo_disc_loss"].update_state(photo_disc_loss)
+        self.loss_trackers["total_loss"].update_state(total_monet_gen_loss+total_photo_gen_loss+monet_disc_loss+photo_disc_loss)
         return {k:v.result() for k,v in self.loss_trackers.items()}
 
     @tf.function
@@ -191,6 +193,8 @@ class CycleGan(keras.Model):
         self.loss_trackers["photo_gen_loss"].update_state(total_photo_gen_loss)
         self.loss_trackers["monet_disc_loss"].update_state(monet_disc_loss)
         self.loss_trackers["photo_disc_loss"].update_state(photo_disc_loss)
+        self.loss_trackers["total_loss"].update_state(
+            total_monet_gen_loss + total_photo_gen_loss + monet_disc_loss + photo_disc_loss)
         return {k: v.result() for k, v in self.loss_trackers.items()}
 
 
