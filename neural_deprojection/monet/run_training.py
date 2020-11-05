@@ -65,16 +65,7 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     else:
         raise ValueError(f"{us_activation} doesn't exist")
 
-    # Try to use a TPU if available
-    try:
-        tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
-        print('Device:', tpu.master())
-        tf.config.experimental_connect_to_cluster(tpu)
-        tf.tpu.experimental.initialize_tpu_system(tpu)
-        strategy = tf.distribute.experimental.TPUStrategy(tpu)
-    except:
-        strategy = tf.distribute.get_strategy()
-    print('Number of replicas:', strategy.num_replicas_in_sync)
+
 
     AUTOTUNE = tf.data.experimental.AUTOTUNE
 
@@ -89,6 +80,17 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
 
     def run_fold_training(k_fold, num_folds):
         # CONSTRUCT MODEL
+        tf.keras.backend.clear_session()
+        # Try to use a TPU if available
+        try:
+            tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
+            print('Device:', tpu.master())
+            tf.config.experimental_connect_to_cluster(tpu)
+            tf.tpu.experimental.initialize_tpu_system(tpu)
+            strategy = tf.distribute.experimental.TPUStrategy(tpu)
+        except:
+            strategy = tf.distribute.get_strategy()
+        print('Number of replicas:', strategy.num_replicas_in_sync)
 
         with strategy.scope():
             # k_fold, num_folds = tf.convert_to_tensor(k_fold, dtype=tf.int64), tf.convert_to_tensor(num_folds, dtype=tf.int64)
@@ -163,6 +165,7 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     print(f"Final {num_folds}-fold cross validation score is: {cv_loss}")
     # TODO(MVG,Hendrix): use cv_loss as a metric for Bayesian optimisation with GPyOpt
     # TODO(MVG,Hendrix): expose a different learning rate for discriminator and generator (so two in total)
+    return cv_loss
 
 
 def add_args(parser):
@@ -171,7 +174,7 @@ def add_args(parser):
     # lr, optimizer, ds_activation, us_activation, kernel_size, sync_period
     parser.add_argument('--data_dir', help='Where monet data is stored', type='path', required=True)
     parser.add_argument('--num_folds', help='How many folds of K-folds CV to do.', default=3, type=int, required=False)
-    parser.add_argument('--batch_size', help='Batch size of training and evaluation.', default=4, type=int,
+    parser.add_argument('--batch_size', help='Batch size of training and evaluation.', default=2, type=int,
                         required=False)
     parser.add_argument('--lr', help='Which learning rate to use', default=1e-2, type=float, required=False)
     parser.add_argument('--optimizer', help='Which optimizer to use', default='ranger', type=str, required=False)
