@@ -12,6 +12,7 @@ from read_tfrec import load_dataset
 from build_gen_dis import Generator, Discriminator
 from cycle_gan import CycleGan, build_discriminator_loss, build_generator_loss, \
     build_calc_cycle_loss, build_identity_loss
+from mi_fid import mi_fid
 
 
 def save_predicted_test_images(monet_generator, test_photo_ds):
@@ -143,11 +144,11 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
                 callbacks=[tf.keras.callbacks.EarlyStopping(monitor='total_loss',patience=3, mode='min',
                                                             restore_best_weights=True)])
 
-            output = cycle_gan_model.evaluate(test_images_ds, return_dict=True)
+            # output = cycle_gan_model.evaluate(test_images_ds, return_dict=True)
+            mifid_metric = mi_fid(test_images_ds, monet_generator)
+        # save_predicted_test_images(monet_generator, test_photo_ds.batch(1))
 
-        save_predicted_test_images(monet_generator, test_photo_ds.batch(1))
-
-        return output["total_loss"]
+        return mifid_metric
 
     cv_loss = sum([run_fold_training(k, num_folds) for k in range(num_folds)]) / num_folds
     print(f"Final {num_folds}-fold cross validation score is: {cv_loss}")
