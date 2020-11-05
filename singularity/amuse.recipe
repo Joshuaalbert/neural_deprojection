@@ -63,14 +63,20 @@ python setup.py install
 ###
 # Install amuse
 pip install numpy docutils mpi4py h5py wheel scipy astropy jupyter pandas seaborn
-pip install amuse-framework
-pip install amuse-athena amuse-bhtree amuse-brutus amuse-bse amuse-capreole amuse-evtwin \
-  amuse-fastkick amuse-fractalcluster amuse-gadget2 amuse-galactics amuse-halogen amuse-hermite amuse-hop \
-  amuse-huayno amuse-kepler amuse-kepler-orbiters amuse-mameclot amuse-mercury amuse-mmams amuse-ph4 amuse-seba \
-  amuse-secularmultiple amuse-smalln amuse-sphray amuse-sse amuse-twobody
+# pip install amuse-framework
+#  pip install amuse-athena amuse-bhtree amuse-brutus amuse-bse amuse-capreole amuse-evtwin \
+#  amuse-fastkick amuse-fractalcluster amuse-gadget2 amuse-galactics amuse-halogen amuse-hermite amuse-hop \
+#  amuse-huayno amuse-kepler amuse-kepler-orbiters amuse-mameclot amuse-mercury amuse-mmams amuse-ph4 amuse-seba \
+#  amuse-secularmultiple amuse-smalln amuse-sphray amuse-sse amuse-twobody
 
 # These are currently failing to build because of PEP 517
 # pip install amuse-fi amuse-galaxia
+cd /opt
+cd git
+git clone https://github.com/amusecode/amuse.git
+cd amuse
+pip install -e .
+python setup.py develop_build
 
 
 %test
