@@ -6,6 +6,7 @@ from tensorflow.keras import layers
 import numpy as np
 import PIL
 import os
+import GPyOpt
 
 # import locally (note no neural_deprojection before them)
 from read_tfrec import load_dataset
@@ -157,6 +158,71 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     return cv_loss
 
 
+def func_to_minimize(x):
+    num_folds = 3
+    data_dir = 'data/'
+    num_epochs = 25
+
+    lr = x[0][0]
+
+    if x[0][1] == 0:
+        optimizer = 'adam'
+    elif x[0][1] == 1:
+        optimizer = 'ranger'
+
+    if x[0][2] == 0:
+        ds_activation = 'relu'
+    elif x[0][2] == 1:
+        ds_activation = 'leaky_relu'
+    elif x[0][2] == 2:
+        ds_activation = 'mish'
+
+    if x[0][3] == 0:
+        us_activation = 'relu'
+    elif x[0][3] == 1:
+        us_activation = 'leaky_relu'
+    elif x[0][3] == 2:
+        us_activation = 'mish'
+
+    kernel_size = int(x[0][4])
+    sync_period = int(x[0][5])
+    batch_size = int(x[0][6])
+    cv_score = main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period,
+                    batch_size, num_epochs)
+    return cv_score
+
+def bayesian_optimizer():
+    print('Bayesian Optimization...')
+    logresults = open('log_bayesian_results.txt', 'a')
+    logresults.write('')
+    # make a loop to run multiple times
+
+    bounds2d = [{'name': 'lr', 'type': 'continuous', 'domain': (1e-3, 0.1)},
+                {'name': 'optimizer', 'type': 'discrete', 'domain': (0, 1)},
+                {'name': 'ds_activation', 'type': 'discrete', 'domain': (0, 1, 2)},
+                {'name': 'us_activation', 'type': 'discrete', 'domain': (0, 1, 2)},
+                {'name': 'kernel_size', 'type': 'discrete', 'domain': (3, 4, 5)},
+                {'name': 'sync_period', 'type': 'discrete', 'domain': (10, 20, 30)},
+                {'name': 'batch_size', 'type': 'discrete', 'domain': (2, 4, 8)},
+                ]
+
+    maxiter = 10
+
+    myBopt_2d = GPyOpt.methods.BayesianOptimization(func_to_minimize, domain=bounds2d)
+    myBopt_2d.run_optimization(max_iter=maxiter)
+    print("=" * 20)
+    print("Value that minimises the objective:" + str(myBopt_2d.x_opt))
+    print("Minimum value of the objective: " + str(myBopt_2d.fx_opt))
+    print("=" * 20)
+
+    logresults.write("Value that minimises the objective:" + str(myBopt_2d.x_opt))
+    logresults.write('\n')
+    logresults.write("Minimum value of the objective: " + str(myBopt_2d.fx_opt))
+    logresults.write('\n')
+    logresults.write('\n')
+    logresults.close()
+
+
 def add_args(parser):
     parser.register("type", "bool", lambda v: v.lower() == "true")
     parser.register("type", "path", lambda v: os.path.expanduser(v))
@@ -187,4 +253,6 @@ if __name__ == '__main__':
     print("Running with:")
     for option, value in vars(flags).items():
         print("    {} -> {}".format(option, value))
-    main(**vars(flags))
+
+    bayesian_optimizer()
+    # main(**vars(flags))
