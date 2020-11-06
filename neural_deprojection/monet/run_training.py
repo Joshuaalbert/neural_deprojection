@@ -155,6 +155,7 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
     print(f"Final {num_folds}-fold cross validation score is: {cv_loss}")
     # TODO(MVG,Hendrix): use cv_loss as a metric for Bayesian optimisation with GPyOpt
     # TODO(MVG,Hendrix): expose a different learning rate for discriminator and generator (so two in total)
+    # TODO(MVG,Hendrix): expose cycle_lambda as a hyperparam
     return cv_loss
 
 
