@@ -29,7 +29,7 @@ def save_predicted_test_images(monet_generator, test_photo_ds):
         # shutil.make_archive("/kaggle/working/images", 'zip', "/kaggle/images") ???????????????
 
 
-def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period, batch_size,
+def main(num_folds, data_dir, gen_lr, disc_lr, optimizer, ds_activation, us_activation, kernel_size, sync_period, batch_size,
          num_epochs):
     """
 
@@ -77,9 +77,11 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
 
         with strategy.scope():
             if optimizer == 'adam':
-                optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+                gen_optimizer = tf.keras.optimizers.Adam(learning_rate=gen_lr)
+                disc_optimizer = tf.keras.optimizers.Adam(learning_rate=disc_lr)
             elif optimizer == 'ranger':
-                optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(lr), sync_period=sync_period)
+                gen_optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(gen_lr), sync_period=sync_period)
+                disc_optimizer = tfa.optimizers.Lookahead(tfa.optimizers.RectifiedAdam(disc_lr), sync_period=sync_period)
             if ds_activation == 'leaky_relu':
                 ds_activation = layers.LeakyReLU()
             elif ds_activation == 'relu':
@@ -119,11 +121,11 @@ def main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kerne
             photo_discriminator = Discriminator(ds_activation=ds_activation,
                                                 kernel_size=kernel_size)  # differentiates real photos and generated photos
 
-            monet_generator_optimizer = optimizer
-            photo_generator_optimizer = optimizer
+            monet_generator_optimizer = gen_optimizer
+            photo_generator_optimizer = gen_optimizer
 
-            monet_discriminator_optimizer = optimizer
-            photo_discriminator_optimizer = optimizer
+            monet_discriminator_optimizer = disc_optimizer
+            photo_discriminator_optimizer = disc_optimizer
 
             cycle_gan_model = CycleGan(
                 monet_generator, photo_generator, monet_discriminator, photo_discriminator
@@ -164,31 +166,32 @@ def func_to_minimize(x):
     data_dir = 'data/'
     num_epochs = 25
 
-    lr = x[0][0]
-
-    if x[0][1] == 0:
-        optimizer = 'adam'
-    elif x[0][1] == 1:
-        optimizer = 'ranger'
+    gen_lr = x[0][0]
+    disc_lr = x[0][1]
 
     if x[0][2] == 0:
-        ds_activation = 'relu'
+        optimizer = 'adam'
     elif x[0][2] == 1:
-        ds_activation = 'leaky_relu'
-    elif x[0][2] == 2:
-        ds_activation = 'mish'
+        optimizer = 'ranger'
 
     if x[0][3] == 0:
-        us_activation = 'relu'
+        ds_activation = 'relu'
     elif x[0][3] == 1:
-        us_activation = 'leaky_relu'
+        ds_activation = 'leaky_relu'
     elif x[0][3] == 2:
+        ds_activation = 'mish'
+
+    if x[0][4] == 0:
+        us_activation = 'relu'
+    elif x[0][4] == 1:
+        us_activation = 'leaky_relu'
+    elif x[0][4] == 2:
         us_activation = 'mish'
 
-    kernel_size = int(x[0][4])
-    sync_period = int(x[0][5])
-    batch_size = int(x[0][6])
-    cv_score = main(num_folds, data_dir, lr, optimizer, ds_activation, us_activation, kernel_size, sync_period,
+    kernel_size = int(x[0][5])
+    sync_period = int(x[0][6])
+    batch_size = int(x[0][7])
+    cv_score = main(num_folds, data_dir, gen_lr, disc_lr, optimizer, ds_activation, us_activation, kernel_size, sync_period,
                     batch_size, num_epochs)
     return cv_score
 
@@ -198,7 +201,8 @@ def bayesian_optimizer():
     logresults.write('')
     # make a loop to run multiple times
 
-    bounds2d = [{'name': 'lr', 'type': 'continuous', 'domain': (1e-3, 0.1)},
+    bounds2d = [{'name': 'gen_lr', 'type': 'continuous', 'domain': (1e-3, 0.1)},
+                {'name': 'disc_lr', 'type': 'continuous', 'domain': (1e-3, 0.1)},
                 {'name': 'optimizer', 'type': 'discrete', 'domain': (0, 1)},
                 {'name': 'ds_activation', 'type': 'discrete', 'domain': (0, 1, 2)},
                 {'name': 'us_activation', 'type': 'discrete', 'domain': (0, 1, 2)},
@@ -234,7 +238,8 @@ def add_args(parser):
                         required=False)
     parser.add_argument('--num_epochs', help='How many epochs to run.', default=25, type=int,
                         required=False)
-    parser.add_argument('--lr', help='Which learning rate to use', default=1e-2, type=float, required=False)
+    parser.add_argument('--gen_lr', help='Which generator learning rate to use', default=1e-2, type=float, required=False)
+    parser.add_argument('--disc_lr', help='Which discriminator learning rate to use', default=1e-2, type=float, required=False)
     parser.add_argument('--optimizer', help='Which optimizer to use', default='ranger', type=str, required=False)
     parser.add_argument('--ds_activation', help='Which downsample activation function to use', default='mish',
                         type=str, required=False)
@@ -256,4 +261,4 @@ if __name__ == '__main__':
         print("    {} -> {}".format(option, value))
 
     bayesian_optimizer()
-    # main(**vars(flags))
+    #main(**vars(flags))
