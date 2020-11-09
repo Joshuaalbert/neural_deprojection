@@ -11,4 +11,5 @@ mayavi
 PyQt5
 pynbody
 GPyOpt
+pytools
 pysph
