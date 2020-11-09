@@ -6,7 +6,8 @@ from pysph.base.particle_array import ParticleArray
 from tvtk.util.ctf import PiecewiseFunction, ColorTransferFunction
 from mayavi.tools.pipeline import scalar_field
 
-my_file2 = '/home/julius/Desktop/SCD/hydro_gas_particles_i00905.hdf5'
+#my_file2 = '/home/julius/Desktop/SCD/hydro_gas_particles_i00905.hdf5'
+my_file2 = '/home/matthijs/PycharmProjects/TensorflowTest/hydro_gas_particles_i00905.hdf5'
 
 with h5py.File(my_file2, 'r') as hdf:
     data = hdf['particles']['0000000001']['attributes']
@@ -31,18 +32,29 @@ with h5py.File(my_file2, 'r') as hdf:
     fig = mlab.figure(size=(1000, 1000), bgcolor=(0, 0, 0))
 
     def grid_data_plot(data, dataname):
-        # grid_data = np.log10(data)
-        grid_data = data
-        dynamic_range = 4.0
-        vmin = grid_data.max() - dynamic_range
-        vmax = grid_data.max()
-        otf = PiecewiseFunction()
-        otf.add_point(vmin, 0.0)
-        otf.add_point(vmax, 1.0)
+
+        log = True
+        if log:
+            grid_data = np.log10(data)
+            dynamic_range = 6.0
+            vmin = grid_data.max() - dynamic_range
+            vmax = grid_data.max()
+        else:
+            grid_data = data
+            vmin = np.min(grid_data)
+            vmax = np.max(grid_data)
+
+        #Removes the zeros problem
+        grid_data[grid_data < vmin] = vmin
+        grid_data[grid_data > vmax] = vmax
+
         sf = scalar_field(grid_data)
         V = mlab.pipeline.volume(sf, color=(1.0, 1.0, 1.0), vmin=vmin, vmax=vmax, name=dataname)
         print(type(V))
         V.trait_get('volume_mapper')['volume_mapper'].blend_mode = 'maximum_intensity'
+
+        #Change the values below to change the color
+        #Doing this manually with the mayavi app is hard for small values of vmin and vmax
         ctf = ColorTransferFunction()
         ctf.add_rgb_point(vmin, 107. / 255, 124. / 255, 132. / 255)
         ctf.add_rgb_point(vmin + (vmax - vmin) * 0.8, 200. / 255, 178. / 255, 164. / 255)
@@ -53,13 +65,24 @@ with h5py.File(my_file2, 'r') as hdf:
         V._ctf = ctf
         V.update_ctf = True
 
-        V._otf = otf
+        #Regulates opacity
+        otf = PiecewiseFunction()
+        otf.add_point(vmin, 0.0)
+        otf.add_point(vmax, 1.0)
+
         V._volume_property.set_scalar_opacity(otf)
-        V._volume_property
+        V._otf = otf
         return V
 
     V1 = grid_data_plot(dens, 'density')
     V2 = grid_data_plot(pres, 'pressure')
+
+    #3D contours
+    mlab.contour3d(dens, contours=10, transparent=True)
+
+    # #particle locations
     # mlab.points3d(x, y, z, scale_factor=2e15)
+
+    # #particle velocities
     # mlab.quiver3d(x,y,z,u,v,w)
     mlab.show()
