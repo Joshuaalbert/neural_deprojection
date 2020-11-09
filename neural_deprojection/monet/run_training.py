@@ -60,6 +60,8 @@ def main(num_folds, data_dir, gen_lr, disc_lr, optimizer, ds_activation, us_acti
 
     def run_fold_training(k_fold, num_folds,
                           optimizer=optimizer,
+                          gen_lr=gen_lr,
+                          disc_lr=disc_lr,
                           ds_activation=ds_activation,
                           us_activation=us_activation):
         # CONSTRUCT MODEL
@@ -165,6 +167,7 @@ def func_to_minimize(x):
     num_folds = 3
     data_dir = 'data/'
     num_epochs = 25
+    batch_size = 8
 
     gen_lr = x[0][0]
     disc_lr = x[0][1]
@@ -190,7 +193,6 @@ def func_to_minimize(x):
 
     kernel_size = int(x[0][5])
     sync_period = int(x[0][6])
-    batch_size = int(x[0][7])
     cv_score = main(num_folds, data_dir, gen_lr, disc_lr, optimizer, ds_activation, us_activation, kernel_size, sync_period,
                     batch_size, num_epochs)
     return cv_score
@@ -208,10 +210,9 @@ def bayesian_optimizer():
                 {'name': 'us_activation', 'type': 'discrete', 'domain': (0, 1, 2)},
                 {'name': 'kernel_size', 'type': 'discrete', 'domain': (3, 4, 5)},
                 {'name': 'sync_period', 'type': 'discrete', 'domain': (10, 20, 30)},
-                {'name': 'batch_size', 'type': 'discrete', 'domain': (2, 4, 8)},
                 ]
 
-    maxiter = 10
+    maxiter = 20
 
     myBopt_2d = GPyOpt.methods.BayesianOptimization(func_to_minimize, domain=bounds2d)
     myBopt_2d.run_optimization(max_iter=maxiter)
