@@ -105,6 +105,12 @@ class CycleGan(keras.Model):
             monet_disc_loss = self.disc_loss_fn(disc_real_monet, disc_fake_monet)
             photo_disc_loss = self.disc_loss_fn(disc_real_photo, disc_fake_photo)
 
+            both_disc_loss = monet_disc_loss + photo_disc_loss
+            signal_disc_improving = both_disc_loss < self.loss_trackers['monet_disc_loss'].result() + self.loss_trackers['photo_disc_loss'].result()
+            monet_disc_loss = tf.where(signal_disc_improving, 0., monet_disc_loss)
+            photo_disc_loss = tf.where(signal_disc_improving, 0., photo_disc_loss)
+
+
         # Calculate the gradients for generator and discriminator
         monet_generator_gradients = tape.gradient(total_monet_gen_loss,
                                                   self.m_gen.trainable_variables)
