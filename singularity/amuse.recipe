@@ -1,113 +1,95 @@
 BootStrap: docker
-From: ubuntu:latest
+From: tensorflow/tensorflow:2.3.1-gpu
 
 %help
 # help section
 
 %runscript
-# what happens when you run the image
-#TODO: put arg parsing here to run the whole script from here once debugging done.
+    # what happens when you run the image
+    exec "$@"
 
-. /opt/miniconda3/etc/profile.d/conda.sh
-conda activate amuse_py
-
-exec "$@"
 
 %post
-# Build instructions
-apt-get update
-apt-get install -y software-properties-common
-apt-get install -y less vim build-essential manpages-dev wget git ffmpeg htop feh mplayer nano vim
+    # Build instructions
+    apt-get update
+    apt-get install -y software-properties-common
+    apt-get install -y less vim build-essential manpages-dev wget git ffmpeg htop feh mplayer nano vim
 
-###
-# AMUSE reqs
+    ###
+    # AMUSE reqs
 
-apt-get install -y curl g++ gettext zlib1g-dev \
-  gfortran python3-dev \
-  libopenmpi-dev openmpi-bin \
-  libgsl-dev cmake libfftw3-3 libfftw3-dev \
-  libgmp3-dev libmpfr6 libmpfr-dev \
-  libhdf5-serial-dev hdf5-tools \
-  python3-venv git
+    apt-get install -y curl g++ gettext zlib1g-dev \
+      gfortran python3-dev \
+      libopenmpi-dev openmpi-bin \
+      libgsl-dev cmake libfftw3-3 libfftw3-dev \
+      libgmp3-dev libmpfr6 libmpfr-dev \
+      libhdf5-serial-dev hdf5-tools \
+      python3-venv
 
 
-apt-get clean
+    apt-get clean
 
-###
-# setup python
+    pip install --upgrade pip setuptools wheel
 
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
-bash ~/miniconda.sh -b -p /opt/miniconda3
-. /opt/miniconda3/etc/profile.d/conda.sh
-hash -r
-conda config --set auto_activate_base false --set always_yes yes
-conda update -q conda
-conda info -a
+    ###
+    # Install our repo
 
-conda create -q -n amuse_py python=3.8
-conda activate amuse_py
+    cd /opt
+    mkdir git
+    cd git
+    git clone https://github.com/Joshuaalbert/neural_deprojection.git
+    cd neural_deprojection
+    pip install `cat requirements.txt | grep -v 'tensorflow$'`
+    python setup.py install
 
-pip install --upgrade pip setuptools wheel
+    ###
+    # Install amuse
+    pip install numpy docutils mpi4py h5py wheel scipy astropy jupyter pandas seaborn
+    # pip install amuse-framework
+    #  pip install amuse-athena amuse-bhtree amuse-brutus amuse-bse amuse-capreole amuse-evtwin \
+    #  amuse-fastkick amuse-fractalcluster amuse-gadget2 amuse-galactics amuse-halogen amuse-hermite amuse-hop \
+    #  amuse-huayno amuse-kepler amuse-kepler-orbiters amuse-mameclot amuse-mercury amuse-mmams amuse-ph4 amuse-seba \
+    #  amuse-secularmultiple amuse-smalln amuse-sphray amuse-sse amuse-twobody
 
-###
-# Install out repo
-
-cd /opt
-mkdir git
-cd git
-git clone https://github.com/Joshuaalbert/neural_deprojection.git
-cd neural_deprojection
-pip install -r requirements.txt
-python setup.py install
-
-###
-# Install amuse
-pip install numpy docutils mpi4py h5py wheel scipy astropy jupyter pandas seaborn
-# pip install amuse-framework
-#  pip install amuse-athena amuse-bhtree amuse-brutus amuse-bse amuse-capreole amuse-evtwin \
-#  amuse-fastkick amuse-fractalcluster amuse-gadget2 amuse-galactics amuse-halogen amuse-hermite amuse-hop \
-#  amuse-huayno amuse-kepler amuse-kepler-orbiters amuse-mameclot amuse-mercury amuse-mmams amuse-ph4 amuse-seba \
-#  amuse-secularmultiple amuse-smalln amuse-sphray amuse-sse amuse-twobody
-
-# These are currently failing to build because of PEP 517
-# pip install amuse-fi amuse-galaxia
-cd /opt
-cd git
-git clone https://github.com/amusecode/amuse.git
-cd amuse
-pip install -e .
-python setup.py develop_build
+    # These are currently failing to build because of PEP 517
+    # pip install amuse-fi amuse-galaxia
+    cd /opt
+    cd git
+    git clone https://github.com/amusecode/amuse.git
+    cd amuse
+    pip install -e .
+    python setup.py develop_build
 
 
 %test
-# gets called to test build went correct
-#/usr/local/bin/mpirun --allow-run-as-root /usr/bin/mpi_test
+    # gets called to test build went correct
+    #/usr/local/bin/mpirun --allow-run-as-root /usr/bin/mpi_test
 
 %setup
-# run before build (can access $SINGULARITY_ROOTFS)
+    # run before build (can access $SINGULARITY_ROOTFS)
 
 %files
-# These get copied <src> <dst> with cp
+    # These get copied <src> <dst> with cp
 
 %labels
-#These get stored in meta data. singularity inspect this.simg
+    #These get stored in meta data. singularity inspect this.simg
 
 
 %startscript
-#These are sourced at start instance (not used)
+    #These are sourced at start instance (not used)
 
 
 %environment
 
-export OMP_NUM_THREADS=$(grep -c ^processor /proc/cpuinfo)
-export NUMEXPR_MAX_THREADS=${OMP_NUM_THREADS}
+    export OMP_NUM_THREADS=$(grep -c ^processor /proc/cpuinfo)
+    export NUMEXPR_MAX_THREADS=${OMP_NUM_THREADS}
 
-export EDITOR=vim
-export VISUAL=$EDITOR
+    export EDITOR=vim
+    export VISUAL=$EDITOR
 
-alias ls='ls --color=always'
-alias ll='ls -ltr --color=always'
-export PS1='\u@\h:\w\$ '
+    alias ls='ls --color=always'
+    alias ll='ls -ltr --color=always'
+    export PS1='\u@\h:\w\$ '
 
 
 
