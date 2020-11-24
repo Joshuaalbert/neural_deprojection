@@ -20,6 +20,7 @@ From: tensorflow/tensorflow:2.3.1-gpu
     # libopenmpi-dev openmpi-bin \
 
     apt-get install -y curl g++ gettext zlib1g-dev \
+      libblas-dev liblapack-dev\
       gfortran python3-dev \
       mpich libmpich-dev \
       libgsl-dev cmake libfftw3-3 libfftw3-dev \
