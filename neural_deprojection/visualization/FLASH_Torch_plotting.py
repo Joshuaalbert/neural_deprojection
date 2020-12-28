@@ -2,7 +2,7 @@ import yt
 yt.funcs.mylog.setLevel(40) # Surpresses YT status output.
 
 folder_path = '~/Desktop/SCD/SeanData/'
-filename = 'turbsph_hdf5_plt_cnt_2117'  # only plt file, will automatically find part file
+filename = 'turbsph_hdf5_plt_cnt_3136'  # only plt file, will automatically find part file
 
 file_path = folder_path + filename
 print(file_path)
@@ -12,10 +12,12 @@ ad = ds.all_data() # Can call on the data set's property .all_data() to generate
                    # e.g. print ad['mass'] will print the list of all cell masses.
                    # if particles exist, print ad['particle_position'] gives a list of each particle [x,y,z]
 
-print(ad['x'])
+# print(ad['temperature'])
 
 # To see all the possible field values contained within the hydro (plt) and particle (part) files:
-#print(ds.derived_field_list)
+for e in ds.derived_field_list:
+    print(e)
+# print(ds.derived_field_list)
 
 # Say I want to make a slice plot of the density field.
 field ='pressure' # dens, temp, and pres are some shorthand strings recognized by yt.
@@ -31,7 +33,7 @@ plot_.annotate_title('Testplot')
 plot_.annotate_scale()
 #plot_.annotate_magnetic_field()
 
-plot_.save('~/Desktop/SCD/SeanData/testplot2.png')
+plot_.save('~/Desktop/SCD/SeanData/testplot02.png')
 #plot_.show()
 
 
