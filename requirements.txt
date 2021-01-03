@@ -13,4 +13,7 @@ pynbody
 GPyOpt
 pytools
 pysph
+graph_nets
+dm_sonnet
+tqdm
 yt
