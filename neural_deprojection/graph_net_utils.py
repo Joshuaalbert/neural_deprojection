@@ -29,12 +29,12 @@ class AbstractModule(snt.Module):
     def _build(self, *args, **kwargs):
         """Similar to Sonnet 1 ._build method."""
 
-class Training(Module):
+class TrainOneEpoch(Module):
     _model:AbstractModule
     _opt:Optimizer
 
     def __init__(self, model:AbstractModule, loss, opt:Optimizer, name=None):
-        super(Training, self).__init__(name=name)
+        super(TrainOneEpoch, self).__init__(name=name)
         self.epoch = tf.Variable(0, dtype=tf.int32)
         self._model = model
         self._opt = opt
@@ -52,6 +52,15 @@ class Training(Module):
         return self._loss(model_output, batch)
 
     def train_step(self, batch):
+        """
+        Trains on a single batch.
+
+        Args:
+            batch: user defined batch from a dataset.
+
+        Returns:
+            loss
+        """
         with tf.GradientTape() as tape:
             model_output = self.model(batch)
             loss = self.loss(model_output, batch)
@@ -60,46 +69,43 @@ class Training(Module):
         self.opt.apply(grads, params)
         return loss
 
-    def step(self, train_batches):
+    def one_epoch_step(self, train_dataset):
         """
         Updates a model with one epoch of training, and returns a dictionary of values to monitor, i.e. metrics.
 
         Returns:
-            metrics: dict of scalar metrics
+            average loss
         """
         self.epoch.assign_add(1)
         # metrics = None
         loss = 0.
         num_batches = 0.
-        for train_batch in train_batches:
+        for train_batch in train_dataset:
             _loss = self.train_step(train_batch)
             loss += _loss
             num_batches += 1.
         return loss/num_batches
 
 
-def vanilla_training_loop(training_dataset, training:Training, num_epochs, debug=False):
+def vanilla_training_loop(training_dataset, training:TrainOneEpoch, num_epochs, debug=False):
 
-    # We'll turn the step function which updates our models into a tf.function using
+    # We'll turn the one_epoch_step function which updates our models into a tf.function using
     # autograph. This makes training much faster. If debugging, you can turn this
     # off by setting `debug = True`.
-    step = training.step
+    step = training.one_epoch_step
     if not debug:
         step = tf.function(step)
-    train_dataset = iter(training_dataset)
-    batch_size = next(train_dataset)[0].shape[0]
 
-    steps_with_progress = tqdm.tqdm(range(num_epochs),
+    fancy_progress_bar = tqdm.tqdm(range(num_epochs),
                                     unit='images',
                                     position=0)
 
-    for step_num in steps_with_progress:
+    for step_num in fancy_progress_bar:
         loss = step(iter(training_dataset))
         if step_num >= 0:
             tqdm.tqdm.write(
                 '\nEpoch = {}/{} (loss = {:.02f}) done.'.format(
                     training.epoch.numpy(), num_epochs, loss))
-            # print(training.model.trainable_variables)
 
     # print('Epoch = {}/{} (lr_mult = {:0.02f}, loss = {}) done.'.format(
     #     num_epochs, num_epochs, lr_mult.numpy(), loss.numpy()))
@@ -163,6 +169,7 @@ def save_graph_examples(graphs:List[GraphsTuple], save_dir=None, examples_per_fi
         if count == examples_per_file:
             count = 0
             file_idx += 1
+        #schema
         features = dict(nodes=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.nodes).numpy()])),
                         edges=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.edges).numpy()])),
                         senders=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.senders).numpy()])),
@@ -190,7 +197,6 @@ def decode_graph_examples(record_bytes):
     parsed_example = tf.io.parse_single_example(
         # Data
         record_bytes,
-
         # Schema
         dict(
             nodes=tf.io.FixedLenFeature([],dtype=tf.string),

@@ -1,7 +1,7 @@
 import tensorflow as tf
 from graph_nets.graphs import GraphsTuple
 
-from neural_deprojection.graph_net_utils import AbstractModule, Training, vanilla_training_loop, save_graph_examples, \
+from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, save_graph_examples, \
     decode_graph_examples, save_graph_and_image_examples, decode_graph_and_image_examples
 
 
@@ -43,7 +43,8 @@ def test_vanillia_training_loop():
 
 
     dataset = tf.data.Dataset.from_tensor_slices((tf.random.normal((100,5)), tf.random.normal((100,1)))).batch(10)
-    training = Training(Model(), loss, snt.optimizers.Adam(1e-4))
+
+    training = TrainOneEpoch(Model(), loss, snt.optimizers.Adam(1e-4))
     vanilla_training_loop(dataset, training, 100, debug = False)
 
 
@@ -58,6 +59,7 @@ def test_graph_encode_decode():
                         n_edge=30)
 
     tfrecords = save_graph_examples([graph])
+    #loading the data into tf.data.Dataset object (same as TFDS makes)
     dataset = tf.data.TFRecordDataset(tfrecords).map(decode_graph_examples)
     loaded_graph = next(iter(dataset))
     for a,b in zip(graph, loaded_graph):
