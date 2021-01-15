@@ -12,6 +12,7 @@ from tqdm import tqdm
 from scipy.optimize import bisect
 import pylab as plt
 
+
 def find_screen_length(distance_matrix, k_mean):
     """
     Get optimal screening length.
@@ -34,6 +35,11 @@ def find_screen_length(distance_matrix, k_mean):
     def loss(length):
         return get_k_mean(length) - k_mean
 
+    if loss(0.) * loss(dist_max) >= 0.:
+        # When there are fewer than k_mean+1 nodes in the list,
+        # it's impossible for the average degree to be equal to k_mean.
+        # So choose max screening length. Happens when f(low) and f(high) have same sign.
+        return dist_max
     return bisect(loss, 0., dist_max, xtol=0.001)
 
 
@@ -43,27 +49,32 @@ def make_virtual_node(positions, properties):
 
     Args:
         positions: [N, 3]
-        properties: [N, F]
+        properties: [N, F0,...Fd]
 
-    Returns: [3], [F]
+    Returns: [3], [F0,...,Fd]
     """
     return np.mean(positions, axis=0), np.mean(properties, axis=0)
 
-def generate_example(positions, properties, k_mean=26):
+
+def generate_example(positions, properties, k_mean=26, plot=False):
     """
     Generate a geometric graph from positions.
 
     Args:
-        positions: [num_points, 3]
-        properties: [num_points, F]
+        positions: [num_points, 3] positions used for graph constrution.
+        properties: [num_points, F0,...,Fd] each node will have these properties of shape [F0,...,Fd]
         k_mean: float
+        plot: whether to plot graph.
 
     Returns: GraphTuple
     """
     graph = nx.DiGraph()
-    edge_colours = []
+    sibling_edgelist = []
+    parent_edgelist = []
+    pos = dict()  # for plotting node positions.
+    real_nodes = list(np.arange(positions.shape[0]))
     while positions.shape[0] > 1:
-        #n_nodes, n_nodes
+        # n_nodes, n_nodes
         dist = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=-1)
         opt_screen_length = find_screen_length(dist, k_mean)
         print("Found optimal screening length {}".format(opt_screen_length))
@@ -74,41 +85,45 @@ def generate_example(positions, properties, k_mean=26):
         senders, receivers = np.where(A)
         n_edge = senders.size
         # [1,0] for siblings, [0,1] for parent-child
-        sibling_edges = np.tile([[1.,0.]], [n_edge, 1])
+        sibling_edges = np.tile([[1., 0.]], [n_edge, 1])
 
-        # num_points, 3+F
-        sibling_nodes = np.concatenate([positions, properties], axis=-1)
+        # num_points, F0,...Fd
+        # if positions is to be part of features then this should already be set in properties.
+        # We don't concatentate here. Mainly because properties could be an image, etc.
+        sibling_nodes = properties
         n_nodes = sibling_nodes.shape[0]
 
         sibling_node_offset = len(graph.nodes)
-        for node, feature in zip(np.arange(sibling_node_offset, sibling_node_offset+n_nodes), sibling_nodes):
+        for node, feature, position in zip(np.arange(sibling_node_offset, sibling_node_offset + n_nodes), sibling_nodes,
+                                           positions):
             graph.add_node(node, features=feature)
+            pos[node] = position[:2]
 
         # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
-        for u,v in zip(senders+sibling_node_offset, receivers+sibling_node_offset):
-            graph.add_edge(u,v,features=np.array([1., 0.]))
-            graph.add_edge(v,u,features=np.array([1., 0.]))
-            edge_colours.append('blue')
-            edge_colours.append('blue')
+        for u, v in zip(senders + sibling_node_offset, receivers + sibling_node_offset):
+            graph.add_edge(u, v, features=np.array([1., 0.]))
+            graph.add_edge(v, u, features=np.array([1., 0.]))
+            sibling_edgelist.append((u, v))
+            sibling_edgelist.append((v, u))
 
         # for virtual nodes
-        sibling_graph = GraphsTuple(nodes=sibling_nodes,
-                            edges=sibling_edges,
-                            senders=senders,
-                            receivers=receivers,
-                            globals=None,
-                            n_node=np.array([n_nodes]),
-                            n_edge=np.array([n_edge]))
+        sibling_graph = GraphsTuple(nodes=None,  # sibling_nodes,
+                                    edges=None,
+                                    senders=senders,
+                                    receivers=receivers,
+                                    globals=None,
+                                    n_node=np.array([n_nodes]),
+                                    n_edge=np.array([n_edge]))
 
         sibling_graph = graphs_tuple_to_networkxs(sibling_graph)[0]
         # completely connect
         connected_components = sorted(nx.connected_components(nx.Graph(sibling_graph)), key=len)
         _positions = []
         _properties = []
-        print(list(connected_components))
         for connected_component in connected_components:
+            print("Found connected component {}".format(connected_component))
             indices = list(sorted(list(connected_component)))
-            virtual_position, virtual_property = make_virtual_node(positions[indices, :], properties[indices, :])
+            virtual_position, virtual_property = make_virtual_node(positions[indices, :], properties[indices, ...])
             _positions.append(virtual_position)
             _properties.append(virtual_property)
 
@@ -118,50 +133,43 @@ def generate_example(positions, properties, k_mean=26):
         ###
         # add virutal nodes
         # num_parents, 3+F
-        parent_nodes = np.concatenate([virtual_positions, virtual_properties], axis=-1)
+        parent_nodes = virtual_properties
         n_nodes = parent_nodes.shape[0]
         parent_node_offset = len(graph.nodes)
         parent_indices = np.arange(parent_node_offset, parent_node_offset + n_nodes)
         # adding the nodes to global graph
-        for node, feature in zip(parent_indices, parent_nodes):
+        for node, feature, virtual_position in zip(parent_indices, parent_nodes, virtual_positions):
             graph.add_node(node, features=feature)
-            print("new virtual", node)
+            print("new virtual {}".format(node))
+            pos[node] = virtual_position[:2]
 
         for parent_idx, connected_component in zip(parent_indices, connected_components):
 
             child_node_indices = [idx + sibling_node_offset for idx in list(sorted(list(connected_component)))]
-            print(child_node_indices)
             for child_node_idx in child_node_indices:
                 graph.add_edge(parent_idx, child_node_idx, features=np.array([0., 1.]))
                 graph.add_edge(child_node_idx, parent_idx, features=np.array([0., 1.]))
-                edge_colours.append('red')
-                edge_colours.append('red')
-                print(parent_idx, child_node_idx)
+                parent_edgelist.append((parent_idx, child_node_idx))
+                parent_edgelist.append((child_node_idx, parent_idx))
+                print("connecting {}<->{}".format(parent_idx, child_node_idx))
 
         positions = virtual_positions
         properties = virtual_properties
 
-    [print(graph.nodes[n]['features']) for n in graph.nodes]
+    # plotting
 
-    draw(graph, pos={n:graph.nodes[n]['features'][:2] for n in graph.nodes}, edge_color=edge_colours)
-    plt.show()
-    return graph
+    virutal_nodes = list(set(graph.nodes) - set(real_nodes))
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+        draw(graph, ax=ax, pos=pos, node_color='green', edgelist=[], nodelist=real_nodes)
+        draw(graph, ax=ax, pos=pos, node_color='purple', edgelist=[], nodelist=virutal_nodes)
+        draw(graph, ax=ax, pos=pos, edge_color='blue', edgelist=sibling_edgelist, nodelist=[])
+        draw(graph, ax=ax, pos=pos, edge_color='red', edgelist=parent_edgelist, nodelist=[])
+        plt.show()
 
-
-def generate_data(data_dir, num_examples):
-    target_graphs, graphs, rank = [], [], []
-    for i in range(num_examples):
-        n_nodes = np.random.randint(100, 120)
-        k_mean = np.log(n_nodes)  # np.random.randint(-n_nodes//2, n_nodes//2))
-        _target_graph, _graphs, _rank = generate_example(n_nodes, k_mean, dim=2)
-        target_graphs = target_graphs + [_target_graph] * len(_rank)
-        graphs = graphs + _graphs
-        rank = rank + _rank
-    graphs = networkxs_to_graphs_tuple(graphs)
-    target_graphs = networkxs_to_graphs_tuple(target_graphs)
-    train_tfrecords = save_examples(target_graphs, graphs, rank, data_dir, examples_per_file=32, prefix='train')
-
-    return train_tfrecords
+    return networkxs_to_graphs_tuple([graph],
+                                     node_shape_hint=[positions.shape[1] + properties.shape[1]],
+                                     edge_shape_hint=[2])
 
 
 def graph_tuple_to_feature(graph: GraphsTuple, name=''):
@@ -176,48 +184,48 @@ def graph_tuple_to_feature(graph: GraphsTuple, name=''):
             bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(graph.receivers, tf.int64)).numpy()]))}
 
 
-def save_examples(target_graphs: GraphsTuple, graphs: GraphsTuple, rank: List[tf.Tensor], save_dir=None,
-                  examples_per_file=32, prefix='train'):
+def save_examples(generator, save_dir=None,
+                  examples_per_file=32, num_examples=1, prefix='train'):
     """
     Saves a list of GraphTuples to tfrecords.
 
     Args:
-        graphs: list of GraphTuples
-        images: list of images
-        save_dir: dir to save in
+        generator: generator (or list) of (GraphTuples, image).
+            Generator is more efficient.
+        save_dir: dir to save tfrecords in
         examples_per_file: int, max number examples per file
 
     Returns: list of tfrecord files.
     """
+    print("Saving data in tfrecords.")
     if save_dir is None:
         save_dir = os.getcwd()
     os.makedirs(save_dir, exist_ok=True)
-    count = 0
-    file_idx = 0
-    files = set()
-    # file = os.path.join(save_dir, 'train_{:03d}.tfrecords'.format(file_idx))
-    file = os.path.join(save_dir, f'{prefix}_all.tfrecords')
-
-    with tf.io.TFRecordWriter(file) as writer:
-        for i in tqdm(range(target_graphs.n_node.shape[0])):
-            target_graph = get_graph(target_graphs, i)
-            graph = get_graph(graphs, i)
-            r = rank[i]
-            if count == examples_per_file:
-                count = 0
-                file_idx += 1
-            features = dict(
-                rank=tf.train.Feature(
-                    bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(r, tf.float32)).numpy()])),
-                **graph_tuple_to_feature(target_graph, name='target_graph'),
-                **graph_tuple_to_feature(graph, name='graph')
-            )
-            features = tf.train.Features(feature=features)
-            example = tf.train.Example(features=features)
-            files.add(file)
-            writer.write(example.SerializeToString())
-            count += 1
-    files = list(files)
+    files = []
+    data_iterable = iter(generator)
+    data_left = True
+    pbar = tqdm(total=num_examples)
+    while data_left:
+        file_idx = len(files)
+        file = os.path.join(save_dir, 'train_{:04d}.tfrecords'.format(file_idx))
+        files.append(file)
+        with tf.io.TFRecordWriter(file) as writer:
+            for i in range(examples_per_file):
+                try:
+                    (graph, image) = next(data_iterable)
+                except StopIteration:
+                    data_left = False
+                    break
+                graph = get_graph(graph, 0)
+                features = dict(
+                    image=tf.train.Feature(
+                        bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(image, tf.float32)).numpy()])),
+                    **graph_tuple_to_feature(graph, name='graph')
+                )
+                features = tf.train.Features(feature=features)
+                example = tf.train.Example(features=features)
+                writer.write(example.SerializeToString())
+                pbar.update(1)
     print("Saved in tfrecords: {}".format(files))
     return files
 
@@ -229,11 +237,14 @@ def feature_to_graph_tuple(name=''):
             f'{name}_receivers': tf.io.FixedLenFeature([], dtype=tf.string)}
 
 
-def decode_examples(record_bytes):
+def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=None):
     """
     Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a GraphTuple and image
     Args:
         record_bytes: raw bytes
+        node_shape: shape of nodes if known.
+        edge_shape: shape of edges if known.
+        image_shape: shape of image if known.
 
     Returns: (GraphTuple, image)
     """
@@ -243,31 +254,18 @@ def decode_examples(record_bytes):
 
         # Schema
         dict(
-            rank=tf.io.FixedLenFeature([], dtype=tf.string),
-            **feature_to_graph_tuple('target_graph'),
+            image=tf.io.FixedLenFeature([], dtype=tf.string),
             **feature_to_graph_tuple('graph')
         )
     )
-    rank = tf.io.parse_tensor(parsed_example['rank'], tf.float32)
-    rank.set_shape([])
-    rank = rank[None]
-    target_graph_nodes = tf.io.parse_tensor(parsed_example['target_graph_nodes'], tf.float32)
-    target_graph_nodes.set_shape([None,2])
-    target_graph_edges = tf.io.parse_tensor(parsed_example['target_graph_edges'], tf.float32)
-    receivers = tf.io.parse_tensor(parsed_example['target_graph_receivers'], tf.int64)
-    receivers.set_shape([None])
-    senders = tf.io.parse_tensor(parsed_example['target_graph_senders'], tf.int64)
-    senders.set_shape([None])
-    target_graph = GraphsTuple(nodes=target_graph_nodes,
-                               edges=target_graph_edges,
-                               globals=None,
-                               receivers=receivers,
-                               senders=senders,
-                               n_node=tf.shape(target_graph_nodes)[0:1],
-                               n_edge=tf.shape(target_graph_edges)[0:1])
+    image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
+    image.set_shape(image_shape)
     graph_nodes = tf.io.parse_tensor(parsed_example['graph_nodes'], tf.float32)
-    graph_nodes.set_shape([None,2])
+    if node_shape is not None:
+        graph_nodes.set_shape([None] + list(node_shape))
     graph_edges = tf.io.parse_tensor(parsed_example['graph_edges'], tf.float32)
+    if edge_shape is not None:
+        graph_edges.set_shape([None] + list(edge_shape))
     receivers = tf.io.parse_tensor(parsed_example['graph_receivers'], tf.int64)
     receivers.set_shape([None])
     senders = tf.io.parse_tensor(parsed_example['graph_senders'], tf.int64)
@@ -279,16 +277,54 @@ def decode_examples(record_bytes):
                         senders=senders,
                         n_node=tf.shape(graph_nodes)[0:1],
                         n_edge=tf.shape(graph_edges)[0:1])
-    return (target_graph, graph, rank)
+    return (graph, image)
+
+
+def generate_data(data_dirs, save_dir):
+    """
+    Routine for generating train data in tfrecords
+
+    Args:
+        data_dirs: where simulation data is.
+        save_dir: where tfrecords will go.
+
+    Returns: list of tfrecords.
+    """
+
+    def data_generator():
+        def _get_data(dir):
+            """
+            Should return the information for a single simulation.
+
+            Args:
+                dir: directory with sim data.
+
+            Returns:
+                positions for building graph
+                properties for putting in nodes and aggregating upwards
+                image corresponding to the graph
+
+            """
+            print("Generating fake data.")
+            positions = np.random.uniform(0., 1., size=(50, 3))
+            properties = np.random.uniform(0., 1., size=(50, 5))
+            image = np.random.uniform(size=(24,24,1))
+            return positions, properties, image
+
+        print("Making graphs.")
+        for dir in tqdm(data_dirs):
+            print("Generating data from {}".format(dir))
+            positions, properties, image = _get_data(dir)
+            graph = generate_example(positions, properties, k_mean=26)
+            yield (graph, image)
+    train_tfrecords = save_examples(data_generator(), save_dir, examples_per_file=32, num_examples=len(data_dirs), prefix='train')
+    return train_tfrecords
 
 
 if __name__ == '__main__':
-    positions = np.random.uniform(0.,1.,size=(50, 3))
-    properties = positions
-    generate_example(positions, properties, k_mean=3)
-#     generate_example(500, 5, dim=2)
-#     # tfrecords = generate_data('./test_data', 100)
-#     # dataset = tf.data.TFRecordDataset(tfrecords).map(decode_examples)
-#     # loaded_graph = iter(dataset)
-#     # for (target_graph, graph, rank) in loaded_graph:
-#     #     print(target_graph, graph, rank)
+    tfrecords = generate_data(['dir1', 'dir2', 'dir3'], 'test_train_data')
+    dataset = tf.data.TFRecordDataset(tfrecords).map(
+        lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
+    loaded_graph = iter(dataset)
+    for (graph, image) in iter(dataset):
+        print(graph.nodes.shape, image.shape)
