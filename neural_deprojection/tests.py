@@ -1,6 +1,8 @@
+import numpy as np
 import tensorflow as tf
 from graph_nets.graphs import GraphsTuple
 
+from neural_deprojection.geometric_graph import find_screen_length
 from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, save_graph_examples, \
     decode_graph_examples, save_graph_and_image_examples, decode_graph_and_image_examples
 
@@ -88,3 +90,14 @@ def test_graph_image_encode_decode():
         if b is None:
             continue
         assert np.allclose(a,b.numpy())
+
+
+def test_find_screen_length():
+    n_nodes = 100
+    k_mean = 10.
+    dim = 2
+    R = np.sqrt(k_mean / (np.pi * n_nodes))
+    nodes = np.random.uniform(size=(n_nodes, dim))
+    # n_nodes, n_nodes
+    dist = np.linalg.norm(nodes[:, None, :] - nodes[None, :, :], axis=-1)
+    assert np.abs(R -find_screen_length(dist, k_mean))< 0.05
