@@ -52,7 +52,7 @@ field ='density' # dens, temp, and pres are some shorthand strings recognized by
 # ax = 'y' # the axis our slice plot will be "looking down on".
 L = [1,0,0] # vector normal to cutting plane
 v_elements = [-1, 0, 1]
-folder_path = '~/Desktop/SCD/SeanData/test_pos_prop_im/'
+folder_path = '/home/julius/Desktop/SCD/SeanData/test_pos_prop_im/'
 
 print('making projections and pos_prop_array...')
 counter = 0
@@ -65,6 +65,8 @@ for x_e in v_elements:
             L = [x_e, y_e, z_e]
             print('projection {}, [ {} / {} ]'.format(L, counter, len(v_elements)**3))
             plot_ = yt.OffAxisProjectionPlot(ds, L, field)
+            plot_.hide_axes()
+            plot_.hide_colorbar()
             im_name = folder_path + 'axis_{}_snapshot_{}.png'.format(str(x_e)+str(y_e)+str(z_e), snapshot)
             plot_.save(im_name)
             rot_mat = rotation_matrix_from_vectors([1, 0, 0], L)
@@ -129,6 +131,6 @@ for x_e in v_elements:
                     positions.append([mean_x, mean_y, mean_z])
 
             pos_array = np.array(positions)
-            pos_array.save(folder_path + 'pos_axis_{}_snapshot_{}.npy')
             prop_array = np.array(properties)
-            prop_array.save(folder_path + 'prop_axis_{}_snapshot_{}.npy')
+            np.savez(folder_path + 'pos_prop_axis_{}_snapshot_{}'.format(L, snapshot),
+                     positions=pos_array, properties=prop_array)
