@@ -10,11 +10,13 @@ from multiprocessing import Pool
 yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
 
 # folder_path = '~/Desktop/SCD/SeanData/'
-folder_path = '/home/s1825216/data/SeanData/M3f2/'
-examples_dir = '/home/s1825216/data/SeanData/examples/'
-snapshot = 3136
-snapshot_list = np.arange(0, 3137)[::-1]
-
+# folder_path = '/home/s1825216/data/SeanData/M3f2/'
+# examples_dir = '/home/s1825216/data/SeanData/examples/'
+# snapshot = 3136
+# snapshot_list = np.arange(0, 3137)[::-1]
+snapshot_list = [3136]
+folder_path = '/disks/extern_collab_data/lewis/run3/'
+examples_dir = '/home/hendrix/data/examples/'
 
 def rotation_matrix_from_vectors(vec1, vec2):
     """ Find the rotation matrix that aligns vec1 to vec2
