@@ -1,6 +1,8 @@
 import yt
 import numpy as np
 from tqdm import tqdm
+from timeit import default_timer
+from random import gauss
 
 yt.funcs.mylog.setLevel(40)  # Surpresses YT status output.
 
@@ -18,6 +20,21 @@ def rotation_matrix_from_vectors(vec1, vec2):
     rotation_matrix = np.eye(3) + kmat + kmat.dot(kmat) * ((1 - c) / (s ** 2))
     return rotation_matrix
 
+
+def make_rand_vector(dims):
+    """
+    Make unit vector in random direction
+    Args:
+        dims: dimension
+
+    Returns: random unit vector
+
+    """
+    vec = [gauss(0, 1) for i in range(dims)]
+    mag = sum(x**2 for x in vec) ** .5
+    return [x/mag for x in vec]
+
+
 folder_path = '~/Desktop/SCD/SeanData/'
 # folder_path = '~/data/SeanData/M3f2/'
 snapshot = 3136
@@ -30,107 +47,50 @@ ad = ds.all_data()  # Can call on the data set's property .all_data() to generat
 # e.g. print ad['mass'] will print the list of all cell masses.
 # if particles exist, print ad['particle_position'] gives a list of each particle [x,y,z]
 
-print("making positions & properties...")
-# one_scale = ad.cut_region("obj['grid_level'] == 6")
+max_cell_ind = np.max(ad['grid_indices']).to_value()
 
-print('finding amount of particles per cell...')
-alloc_list = [0, []]
-for cell_ind in range(0, 2250):
-    if len(ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))['grid_indices']) != 0:
-        particle_gridsize = round(len(ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))['x'])**(1/3.))
-        print('particle_gridsize = {}'.format(particle_gridsize), '\nmaking allocation list...')
-        alloc_list[0] = particle_gridsize
-        for x in range(particle_gridsize):
-            for y in range(particle_gridsize):
-                for z in range(particle_gridsize):
-                    alloc_list[1].append([x, y, z])
-        print('done!')
+print('find feature_array_length...')
+for cell_ind in tqdm(range(0, 1+max_cell_ind)):
+    cell_region = ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))
+    if len(cell_region['grid_indices']) != 0:
+        feature_array_length = round(len(cell_region['x'])**(1/3.))
         break
+print('done')
 
+num_of_projections = 30
+resolution = 512
+field ='density'
+width = np.max(ad['x'].to_value()) - np.min(ad['x'].to_value())
 
-field ='density' # dens, temp, and pres are some shorthand strings recognized by yt.
-# ax = 'y' # the axis our slice plot will be "looking down on".
-L = [1,0,0] # vector normal to cutting plane
-v_elements = [-1, 0, 1]
-folder_path = '/home/julius/Desktop/SCD/SeanData/test_pos_prop_im/'
+property_values = []
+property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
+                       np.log10, np.log10, np.log10, np.log10, lambda x: x]
+property_names = ['x', 'y', 'z', 'velocity_x', 'velocity_y', 'velocity_z', 'density',
+                  'temperature', 'cell_mass', 'cell_volume', 'gravitational_potential']
 
-print('making projections and pos_prop_array...')
-counter = 0
-for x_e in v_elements:
-    for y_e in v_elements:
-        for z_e in v_elements:
-            if x_e == y_e == z_e == 0:
-                continue
-            counter += 1
-            L = [x_e, y_e, z_e]
-            print('projection {}, [ {} / {} ]'.format(L, counter, len(v_elements)**3))
-            plot_ = yt.OffAxisProjectionPlot(ds, L, field)
-            plot_.hide_axes()
-            plot_.hide_colorbar()
-            im_name = folder_path + 'axis_{}_snapshot_{}.png'.format(str(x_e)+str(y_e)+str(z_e), snapshot)
-            plot_.save(im_name)
-            rot_mat = rotation_matrix_from_vectors([1, 0, 0], L)
+for cell_ind in tqdm(range(0, 1+max_cell_ind)):
+    cell_region = ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))
+    if len(cell_region['grid_indices']) != 0:
+        _values = []
+        for name, transform in zip(property_names, property_transforms):
+            _values.append(transform(cell_region[name].to_value().reshape((feature_array_length, feature_array_length,
+                                                                           feature_array_length))))
+        property_values.append(np.stack(_values, axis=-1))      # list 16 16 16 f
 
-            positions = []
-            properties = []
+property_values = np.stack(property_values, axis=0)     # n 16 16 16 f
 
-            for cell_ind in tqdm(range(0, 2250)):
-                if len(ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))['grid_indices']) != 0:
-                    particles_in_cell = ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))
-                    feature_array = np.zeros(shape=(alloc_list[0], alloc_list[0], alloc_list[0], 10))
-                    for i, alloc in enumerate(alloc_list[1]):
-                        i_x, i_y, i_z = alloc[0], alloc[1], alloc[2]
+projections = 0
+while projections < num_of_projections:
+    viewing_vec = make_rand_vector(3)
+    rot_mat = rotation_matrix_from_vectors([1,0,0], viewing_vec)
 
-                        pos = [particles_in_cell['x'][i].to_value(),
-                               particles_in_cell['y'][i].to_value(),
-                               particles_in_cell['z'][i].to_value()]
+    image = yt.off_axis_projection(ds, center=[0, 0, 0], normal_vector=viewing_vec, item=field, width=width,
+                                   resolution=resolution)
+    xyz = property_values[:, :, :, :, :3]
+    velocity_xyz = property_values[:, :, :, :, 3:6]
+    xyz = np.einsum('ap,ijklp->ijkla', rot_mat, xyz)
+    velocity_xyz = np.einsum('ap,ijklp->ijkla', rot_mat, velocity_xyz)
 
-                        vel = [particles_in_cell['velocity_x'][i].to_value(),
-                               particles_in_cell['velocity_y'][i].to_value(),
-                               particles_in_cell['velocity_z'][i].to_value()]
+    positions = np.mean(xyz, axis=(1, 2, 3))
 
-                        pos_rot = rot_mat.dot(pos)      # rotate to off axis coordinate frame
-                        vel_rot = rot_mat.dot(vel)
-
-                        feature_array[i_x, i_y, i_z, 0] = pos_rot[0]
-                        feature_array[i_x, i_y, i_z, 1] = pos_rot[1]
-                        feature_array[i_x, i_y, i_z, 2] = pos_rot[2]
-                        feature_array[i_x, i_y, i_z, 3] = vel_rot[0]
-                        feature_array[i_x, i_y, i_z, 4] = vel_rot[1]
-                        feature_array[i_x, i_y, i_z, 5] = vel_rot[2]
-                        feature_array[i_x, i_y, i_z, 6] = np.log10(particles_in_cell['density'][i].to_value())
-                        feature_array[i_x, i_y, i_z, 7] = np.log10(particles_in_cell['temperature'][i].to_value())
-                        feature_array[i_x, i_y, i_z, 8] = np.log10(particles_in_cell['cell_mass'][i].to_value())
-                        feature_array[i_x, i_y, i_z, 9] = particles_in_cell['gravitational_potential'][i].to_value()
-
-                    m_pos = [np.mean(particles_in_cell['x'].to_value()),
-                             np.mean(particles_in_cell['y'].to_value()),
-                             np.mean(particles_in_cell['z'].to_value())]
-
-                    m_vel = [np.mean(particles_in_cell['velocity_x'].to_value()),
-                             np.mean(particles_in_cell['velocity_y'].to_value()),
-                             np.mean(particles_in_cell['velocity_z'].to_value())]
-
-                    m_pos_rot = rot_mat.dot(m_pos)      # rotate to off axis coordinate frame
-                    m_vel_rot = rot_mat.dot(m_vel)
-
-                    mean_x, mean_y, mean_z = m_pos_rot[0], m_pos_rot[1], m_pos_rot[2]
-                    mean_vx, mean_vy, mean_vz = m_vel_rot[0], m_vel_rot[1], m_vel_rot[2]
-                    mean_density = np.mean(particles_in_cell['density'].to_value())
-                    mean_temperature = np.mean(particles_in_cell['temperature'].to_value())
-                    mean_pot = np.mean(particles_in_cell['gravitational_potential'].to_value())
-                    sum_mass = np.sum(particles_in_cell['cell_mass'].to_value())
-
-                    features = [mean_x, mean_y, mean_z,
-                                mean_vx, mean_vy, mean_vz,
-                                mean_density, mean_temperature, mean_pot,
-                                sum_mass, np.log10(particles_in_cell['cell_volume'][0].to_value()),
-                                feature_array]
-
-                    properties.append(features)
-                    positions.append([mean_x, mean_y, mean_z])
-
-            pos_array = np.array(positions)
-            prop_array = np.array(properties)
-            np.savez(folder_path + 'pos_prop_axis_{}_snapshot_{}'.format(L, snapshot),
-                     positions=pos_array, properties=prop_array)
+    projections += 1
