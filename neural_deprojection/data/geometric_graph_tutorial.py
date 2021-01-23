@@ -335,7 +335,8 @@ def generate_data(data_dirs, save_dir):
         for dir in tqdm(data_dirs):
             print("Generating data from {}".format(dir))
             positions, properties, image = _get_data(dir)
-            graph = generate_example(positions, properties, k_mean=26)
+            # graph = generate_example(positions, properties, k_mean=26)
+            graph = generate_example_nn(positions, properties, k=3, plot=True)
             yield (graph, image)
 
     train_tfrecords = save_examples(data_generator(),
@@ -396,7 +397,7 @@ def make_tutorial_data(examples_dir):
 
 if __name__ == '__main__':
     # make_tutorial_data('tutorial_data')
-    tfrecords = generate_data(['dir1', 'dir2', 'dir3'], 'test_train_data')
+    tfrecords = generate_data(glob.glob(os.path.join('tutorial_data','example_*')), 'test_train_data')
     dataset = tf.data.TFRecordDataset(tfrecords).map(
         lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
     loaded_graph = iter(dataset)
