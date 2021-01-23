@@ -127,8 +127,8 @@ def main(data_dir):
     nonshuffeled_dataset = dataset.map(lambda graph, img, idx: (graph, img, tf.constant(1, dtype=tf.int32)))#(graph, img, yes)
     train_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset,nonshuffeled_dataset])
 
-    train_dataset = dataset.shard(2,0)
-    test_dataset = dataset.shard(2,1)
+    train_dataset = train_dataset.shard(2,0)
+    test_dataset = train_dataset.shard(2,1)
 
     model = Model()
 
@@ -136,10 +136,10 @@ def main(data_dir):
         (graph, img, c) = batch
         return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
 
-    opt = snt.optimizers.Adam(0.001)
+    opt = snt.optimizers.Adam(0.0001)
     training = TrainOneEpoch(model, loss, opt)
 
-    vanilla_training_loop(train_dataset, training, 3, False)
+    vanilla_training_loop(train_dataset, training, 10, False)
 
     # for (target_graph, graph, rank) in iter(test_dataset):
     #     predict_rank = tf.sigmoid(model((target_graph, graph, rank)))
