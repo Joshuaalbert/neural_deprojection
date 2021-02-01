@@ -559,7 +559,7 @@ def make_tutorial_data(examples_dir):
 
 
 if __name__ == '__main__':
-    examples_dir = '/data2/hendrix/examples/'
+    examples_dir = '/data2/hendrix/examples_2/'
     train_data_dir = '/data2/hendrix/train_data/'
     tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
     dataset = tf.data.TFRecordDataset(tfrecords).map(
