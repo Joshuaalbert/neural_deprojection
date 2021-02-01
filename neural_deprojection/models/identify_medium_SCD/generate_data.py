@@ -46,7 +46,7 @@ def find_screen_length(distance_matrix, k_mean):
     return bisect(loss, 0., dist_max, xtol=0.001)
 
 
-def generate_example_nn(positions, properties, k=26, resolution=1, plot=True):
+def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
     print('example nn')
 
     resolution = 3.086e18 * resolution  # pc to cm
