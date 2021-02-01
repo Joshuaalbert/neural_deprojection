@@ -10,7 +10,7 @@ from multiprocessing import Pool
 yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
 
 # folder_path = '~/Desktop/SCD/SeanData/'
-folder_path = '/disks/extern_collab_data/lewis/run3/M3f2/'
+folder_path = '/disks/extern_collab_data/lewis/run3/'
 examples_dir = '/data2/hendrix/examples_2/'
 # examples_dir = '/home/julius/Desktop/SCD/SeanData/examples/'
 # snapshot = 3136
