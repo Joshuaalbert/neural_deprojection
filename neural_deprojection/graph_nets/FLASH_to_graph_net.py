@@ -11,7 +11,7 @@ yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
 
 # folder_path = '~/Desktop/SCD/SeanData/'
 folder_path = '/disks/extern_collab_data/lewis/run3/M3f2/'
-examples_dir = '/data2/hendrix/examples/'
+examples_dir = '/data2/hendrix/examples_2/'
 # examples_dir = '/home/julius/Desktop/SCD/SeanData/examples/'
 # snapshot = 3136
 snapshot_list = np.arange(3100, 3137)[::-1]
@@ -67,6 +67,7 @@ def process_snapshot_individual_nodes(snapshot):
     field = 'density'
     width = np.max(ad['x'].to_value()) - np.min(ad['x'].to_value())
     resolution = int(round(width * 3.24078e-19 / resolution_in_pc))
+    resolution = 256
 
     print('making property_values...')
     t_0 = default_timer()
@@ -247,6 +248,6 @@ def process_snapshot_feature_array(snapshot):
 
 if __name__ == '__main__':
     # pool = Pool(os.cpu_count() - 2)
-    pool = Pool(12)
+    pool = Pool(24)
     pool.map(process_snapshot_individual_nodes, snapshot_list)
     # process_snapshot_individual_nodes(3136)
