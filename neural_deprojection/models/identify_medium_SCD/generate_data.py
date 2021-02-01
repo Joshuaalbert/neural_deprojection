@@ -2,7 +2,7 @@ import os
 import glob
 import tensorflow as tf
 
-from itertools import combinations_with_replacement
+from itertools import product
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
 import numpy as np
@@ -55,7 +55,9 @@ def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
     node_positions = []
 
     box_size = (np.max(positions), np.min(positions))  # box that encompasses all of the nodes
-    virtual_node_pos = list(combinations_with_replacement(np.arange(box_size[1], box_size[0], resolution), 3))
+    axis = np.arange(box_size[1] + resolution, box_size[0], resolution)
+    lists = [axis]*3
+    virtual_node_pos = [p for p in product(*lists)]
     virtual_kdtree = cKDTree(virtual_node_pos)
     particle_kdtree = cKDTree(positions)
     indices = virtual_kdtree.query_ball_tree(particle_kdtree, np.sqrt(3) / 2. * resolution)
