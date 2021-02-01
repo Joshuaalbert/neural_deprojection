@@ -1,4 +1,8 @@
-from neural_deprojection.models.identify_medium_SCD.generate_data import generate_data, decode_examples
+import sys
+
+sys.path.insert(1, '/data2/hendrix/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD')
+
+from generate_data import generate_data, decode_examples
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule
 import glob, os
 import tensorflow as tf
