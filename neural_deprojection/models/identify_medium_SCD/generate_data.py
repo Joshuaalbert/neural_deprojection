@@ -2,6 +2,7 @@ import os
 import glob
 import tensorflow as tf
 
+from itertools import combinations_with_replacement
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
 import numpy as np
@@ -10,7 +11,9 @@ from networkx.drawing import draw
 from tqdm import tqdm
 from scipy.optimize import bisect
 from scipy.spatial.ckdtree import cKDTree
-import pylab as plt
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 
 def find_screen_length(distance_matrix, k_mean):
@@ -42,36 +45,47 @@ def find_screen_length(distance_matrix, k_mean):
         return dist_max
     return bisect(loss, 0., dist_max, xtol=0.001)
 
-def generate_example_nn(positions, properties, k=1, plot=False):
-    """
-    Generate a k-nn graph from positions.
 
-    Args:
-        positions: [num_points, 3] positions used for graph constrution.
-        properties: [num_points, F0,...,Fd] each node will have these properties of shape [F0,...,Fd]
-        k: int, k nearest neighbours are connected.
-        plot: whether to plot graph.
+def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
+    print('example nn')
 
-    Returns: GraphTuple
-    """
+    resolution = 3.086e18 * resolution  # pc to cm
+
+    node_features = []
+    node_positions = []
+
+    box_size = (np.max(positions), np.min(positions))  # box that encompasses all of the nodes
+    virtual_node_pos = list(combinations_with_replacement(np.arange(box_size[1], box_size[0], resolution), 3))
+    virtual_kdtree = cKDTree(virtual_node_pos)
+    particle_kdtree = cKDTree(positions)
+    indices = virtual_kdtree.query_ball_tree(particle_kdtree, np.sqrt(3) / 2. * resolution)
+
+    for i, p in enumerate(indices):
+        if len(p) == 0:
+            continue
+        virt_pos, virt_prop = make_virtual_node(positions[p], properties[p])
+        node_positions.append(virt_pos)
+        node_features.append(virt_prop)
+
+    node_features = np.array(node_features)
+    node_positions = np.array(node_positions)
+
     graph = nx.DiGraph()
 
-    kdtree = cKDTree(positions)
-    dist, idx = kdtree.query(positions, k=k+1)
-    receivers = idx[:, 1:]#N,k
-    senders = np.arange(positions.shape[0])#N
-    senders = np.tile(senders[:, None], [1,k])#N,k
+    kdtree = cKDTree(node_positions)
+    dist, idx = kdtree.query(node_positions, k=k + 1)
+    receivers = idx[:, 1:]  # N,k
+    senders = np.arange(node_positions.shape[0])  # N
+    senders = np.tile(senders[:, None], [1, k])  # N,k
     receivers = receivers.flatten()
     senders = senders.flatten()
 
-
-
-    n_nodes = positions.shape[0]
+    n_nodes = node_positions.shape[0]
 
     pos = dict()  # for plotting node positions.
     edgelist = []
 
-    for node, feature, position in zip(np.arange(n_nodes), properties, positions):
+    for node, feature, position in zip(np.arange(n_nodes), node_features, node_positions):
         graph.add_node(node, features=feature)
         pos[node] = position[:2]
 
@@ -84,15 +98,121 @@ def generate_example_nn(positions, properties, k=1, plot=False):
 
     graph.graph["features"] = np.array([0.])
     # plotting
-
+    print('len(pos) = {}\nlen(edgelist) = {}'.format(len(pos), len(edgelist)))
     if plot:
         fig, ax = plt.subplots(1, 1, figsize=(12, 12))
         draw(graph, ax=ax, pos=pos, node_color='green', edge_color='red')
         plt.show()
 
     return networkxs_to_graphs_tuple([graph],
-                                     node_shape_hint=[positions.shape[1] + properties.shape[1]],
+                                     node_shape_hint=[node_positions.shape[1] + node_features.shape[1]],
                                      edge_shape_hint=[2])
+
+    # graph = nx.DiGraph()
+    # sibling_edgelist = []
+    # parent_edgelist = []
+    # pos = dict()  # for plotting node positions.
+    # real_nodes = list(np.arange(node_positions.shape[0]))
+    # while node_positions.shape[0] > 1:
+    #     # n_nodes, n_nodes
+    #     dist = np.linalg.norm(node_positions[:, None, :] - node_positions[None, :, :], axis=-1)
+    #     opt_screen_length = find_screen_length(dist, k_mean)
+    #     print("Found optimal screening length {}".format(opt_screen_length))
+    #
+    #     distance_matrix_no_loops = np.where(dist == 0., np.inf, dist)
+    #     A = distance_matrix_no_loops < opt_screen_length
+    #
+    #     senders, receivers = np.where(A)
+    #     n_edge = senders.size
+    #
+    #     # num_points, F0,...Fd
+    #     # if positions is to be part of features then this should already be set in properties.
+    #     # We don't concatentate here. Mainly because properties could be an image, etc.
+    #     sibling_nodes = node_features
+    #     n_nodes = sibling_nodes.shape[0]
+    #
+    #     sibling_node_offset = len(graph.nodes)
+    #     for node, feature, position in zip(np.arange(sibling_node_offset, sibling_node_offset + n_nodes), sibling_nodes,
+    #                                        node_positions):
+    #         graph.add_node(node, features=feature)
+    #         pos[node] = position[:2]
+    #
+    #     # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
+    #     for u, v in zip(senders + sibling_node_offset, receivers + sibling_node_offset):
+    #         graph.add_edge(u, v, features=np.array([1., 0.]))
+    #         graph.add_edge(v, u, features=np.array([1., 0.]))
+    #         sibling_edgelist.append((u, v))
+    #         sibling_edgelist.append((v, u))
+    #
+    #     # for virtual nodes
+    #     sibling_graph = GraphsTuple(nodes=None,  # sibling_nodes,
+    #                                 edges=None,
+    #                                 senders=senders,
+    #                                 receivers=receivers,
+    #                                 globals=None,
+    #                                 n_node=np.array([n_nodes]),
+    #                                 n_edge=np.array([n_edge]))
+    #
+    #     sibling_graph = graphs_tuple_to_networkxs(sibling_graph)[0]
+    #     # completely connect
+    #     connected_components = sorted(nx.connected_components(nx.Graph(sibling_graph)), key=len)
+    #     _positions = []
+    #     _properties = []
+    #     for connected_component in connected_components:
+    #         print("Found connected component {}".format(connected_component))
+    #         indices = list(sorted(list(connected_component)))
+    #         virtual_position, virtual_property = make_virtual_node(node_positions[indices, :], properties[indices, ...])
+    #         _positions.append(virtual_position)
+    #         _properties.append(virtual_property)
+    #
+    #     virtual_positions = np.stack(_positions, axis=0)
+    #     virtual_properties = np.stack(_properties, axis=0)
+    #
+    #     ###
+    #     # add virutal nodes
+    #     # num_parents, 3+F
+    #     parent_nodes = virtual_properties
+    #     n_nodes = parent_nodes.shape[0]
+    #     parent_node_offset = len(graph.nodes)
+    #     parent_indices = np.arange(parent_node_offset, parent_node_offset + n_nodes)
+    #     # adding the nodes to global graph
+    #     for node, feature, virtual_position in zip(parent_indices, parent_nodes, virtual_positions):
+    #         graph.add_node(node, features=feature)
+    #         print("new virtual {}".format(node))
+    #         pos[node] = virtual_position[:2]
+    #
+    #     for parent_idx, connected_component in zip(parent_indices, connected_components):
+    #
+    #         child_node_indices = [idx + sibling_node_offset for idx in list(sorted(list(connected_component)))]
+    #         for child_node_idx in child_node_indices:
+    #             graph.add_edge(parent_idx, child_node_idx, features=np.array([0., 1.]))
+    #             graph.add_edge(child_node_idx, parent_idx, features=np.array([0., 1.]))
+    #             parent_edgelist.append((parent_idx, child_node_idx))
+    #             parent_edgelist.append((child_node_idx, parent_idx))
+    #             print("connecting {}<->{}".format(parent_idx, child_node_idx))
+    #
+    #     node_positions = virtual_positions
+    #     node_features = virtual_properties
+    #
+    # # plotting
+    #
+    # virtual_nodes = list(set(graph.nodes) - set(real_nodes))
+    #
+    # print('plotting:\n {} real_nodes\n {} virtual_nodes\n {} sibling_edges\n {} parent_edges'.format(
+    #     len(real_nodes), len(virtual_nodes), len(sibling_edgelist), len(parent_edgelist)
+    # ))
+    #
+    # if plot:
+    #     fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+    #     draw(graph, ax=ax, pos=pos, node_color='green', edgelist=[], nodelist=real_nodes)
+    #     draw(graph, ax=ax, pos=pos, node_color='purple', edgelist=[], nodelist=virtual_nodes)
+    #     draw(graph, ax=ax, pos=pos, edge_color='blue', edgelist=sibling_edgelist, nodelist=[])
+    #     draw(graph, ax=ax, pos=pos, edge_color='red', edgelist=parent_edgelist, nodelist=[])
+    #     plt.savefig("k_graph.png")
+    #
+    # return networkxs_to_graphs_tuple([graph],
+    #                                  node_shape_hint=[positions.shape[1] + properties.shape[1]],
+    #                                  edge_shape_hint=[2])
 
 
 def generate_example(positions, properties, k_mean=26, plot=False):
@@ -100,7 +220,7 @@ def generate_example(positions, properties, k_mean=26, plot=False):
     Generate a geometric graph from positions.
 
     Args:
-        positions: [num_points, 3] positions used for graph constrution.
+        positions: [num_points, 3] positions used for graph construction.
         properties: [num_points, F0,...,Fd] each node will have these properties of shape [F0,...,Fd]
         k_mean: float
         plot: whether to plot graph.
@@ -123,8 +243,6 @@ def generate_example(positions, properties, k_mean=26, plot=False):
 
         senders, receivers = np.where(A)
         n_edge = senders.size
-        # [1,0] for siblings, [0,1] for parent-child
-        sibling_edges = np.tile([[1., 0.]], [n_edge, 1])
 
         # num_points, F0,...Fd
         # if positions is to be part of features then this should already be set in properties.
@@ -327,7 +445,6 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
 
 
 def generate_data(data_dirs, save_dir):
-
     """
     Routine for generating train data in tfrecords
 
@@ -337,13 +454,13 @@ def generate_data(data_dirs, save_dir):
 
     Returns: list of tfrecords.
     """
+
     def data_generator():
         print("Making graphs.")
         for idx, dir in tqdm(enumerate(data_dirs)):
             print("Generating data from {}".format(dir))
             positions, properties, image = _get_data(dir)
-            # graph = generate_example(positions, properties, k_mean=26)
-            graph = generate_example_nn(positions, properties, k=3, plot=False)
+            graph = generate_example_nn(positions, properties)
             yield (graph, image, idx)
 
     train_tfrecords = save_examples(data_generator(),
@@ -353,8 +470,10 @@ def generate_data(data_dirs, save_dir):
                                     prefix='train')
     return train_tfrecords
 
+
 ###
 # specific to project
+
 
 def make_virtual_node(positions, properties):
     """
@@ -369,6 +488,37 @@ def make_virtual_node(positions, properties):
     return np.mean(positions, axis=0), np.mean(properties, axis=0)
 
 
+def aggregate_lowest_level_cells(positions, properties):
+    '''
+    aggregate the lowest level particles.
+
+    Args:
+        positions: node positions  [n, 3]
+        properties: node properties   [n, f]
+
+    Returns:
+        agg_positions: aggregated node positions [m, 3]
+        agg_properties: aggregated node properties  [m, f]
+    '''
+
+    lowest_level = np.max(properties[:, 11])
+    lowest_level_positions = positions[properties[:, 11] == lowest_level]  # [j, 3]
+    lowest_level_properties = properties[properties[:, 11] == lowest_level]  # [j, f]
+    cell_inds = list(set(lowest_level_properties[:, 12]))  # [m-(n-j)]
+    grouped_ll_positions = [lowest_level_positions[lowest_level_properties[:, 12] == ind] for ind in
+                            cell_inds]  # [m-(n-j), 4096, 3]
+    grouped_ll_properties = [lowest_level_properties[lowest_level_properties[:, 12] == ind] for ind in
+                             cell_inds]  # [m-(n-j), 4096, f]
+
+    agg_positions = positions[properties[:, 11] < lowest_level]  # [n-j, 3]
+    agg_properties = properties[properties[:, 11] < lowest_level]  # [n-j, f]
+
+    agg_positions = np.concatenate((agg_positions, np.mean(grouped_ll_positions, axis=0)))  # [m, 3]
+    agg_properties = np.concatenate((agg_properties, np.mean(grouped_ll_properties, axis=0)))  # [m, f]
+
+    return agg_positions, agg_properties
+
+
 def _get_data(dir):
     """
     Should return the information for a single simulation.
@@ -380,31 +530,36 @@ def _get_data(dir):
         positions for building graph
         properties for putting in nodes and aggregating upwards
         image corresponding to the graph
+        extra info corresponding to the example
 
     """
-    print("Generating fake data.")
+
     f = np.load(os.path.join(dir, 'data.npz'))
     positions = f['positions']
     properties = f['properties']
-    image = f['image']
-    # positions = np.random.uniform(0., 1., size=(50, 3))
-    # properties = np.random.uniform(0., 1., size=(50, 5))
-    # image = np.random.uniform(size=(24, 24, 1))
-    return positions, properties, image
+    image = f['proj_image']
+    # extra_info = f['extra_info']
+
+    # positions, properties = aggregate_lowest_level_cells(positions, properties)
+
+    return positions, properties, image  # , extra_info
+
 
 def make_tutorial_data(examples_dir):
     for i in range(10):
-        example_idx = len(glob.glob(os.path.join(examples_dir,'example_*')))
-        data_dir = os.path.join(examples_dir,'example_{:04d}'.format(example_idx))
+        example_idx = len(glob.glob(os.path.join(examples_dir, 'example_*')))
+        data_dir = os.path.join(examples_dir, 'example_{:04d}'.format(example_idx))
         os.makedirs(data_dir, exist_ok=True)
         positions = np.random.uniform(0., 1., size=(50, 3))
         properties = np.random.uniform(0., 1., size=(50, 5))
         image = np.random.uniform(size=(24, 24, 1))
         np.savez(os.path.join(data_dir, 'data.npz'), positions=positions, properties=properties, image=image)
 
+
 if __name__ == '__main__':
-    make_tutorial_data('tutorial_data')
-    tfrecords = generate_data(glob.glob(os.path.join('tutorial_data','example_*')), 'test_train_data')
+    examples_dir = '/data2/hendrix/examples/'
+    train_data_dir = '/data2/hendrix/train_data/'
+    tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
     dataset = tf.data.TFRecordDataset(tfrecords).map(
         lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
     loaded_graph = iter(dataset)

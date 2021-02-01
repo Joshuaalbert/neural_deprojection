@@ -9,13 +9,13 @@ from multiprocessing import Pool
 
 yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
 
-folder_path = '~/Desktop/SCD/SeanData/'
-# folder_path = '/disks/extern_collab_data/lewis/run3/M3f2/'
-# examples_dir = '/net/dedemsvaart/data2/hendrix/examples2/'
-examples_dir = '/home/julius/Desktop/SCD/SeanData/examples/'
+# folder_path = '~/Desktop/SCD/SeanData/'
+folder_path = '/disks/extern_collab_data/lewis/run3/M3f2/'
+examples_dir = '/data2/hendrix/examples/'
+# examples_dir = '/home/julius/Desktop/SCD/SeanData/examples/'
 # snapshot = 3136
-# snapshot_list = np.arange(3000, 3137)[::-1]
-snapshot_list = [3136]
+snapshot_list = np.arange(3100, 3137)[::-1]
+# snapshot_list = [3136]
 # folder_path = '/disks/extern_collab_data/lewis/run3/'
 # examples_dir = '/home/hendrix/data/examples/'
 
@@ -246,6 +246,7 @@ def process_snapshot_feature_array(snapshot):
 
 
 if __name__ == '__main__':
-    pool = Pool(os.cpu_count() - 2)
+    # pool = Pool(os.cpu_count() - 2)
+    pool = Pool(12)
     pool.map(process_snapshot_individual_nodes, snapshot_list)
     # process_snapshot_individual_nodes(3136)
