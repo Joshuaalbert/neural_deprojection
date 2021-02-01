@@ -46,7 +46,7 @@ def find_screen_length(distance_matrix, k_mean):
     return bisect(loss, 0., dist_max, xtol=0.001)
 
 
-def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
+def generate_example_nn(positions, properties, k=26, resolution=1, plot=True):
     print('example nn')
 
     resolution = 3.086e18 * resolution  # pc to cm
@@ -89,7 +89,7 @@ def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
 
     for node, feature, position in zip(np.arange(n_nodes), node_features, node_positions):
         graph.add_node(node, features=feature)
-        pos[node] = position[:2]
+        pos[node] = (position[:2] - box_size[1]) / (box_size[0] - box_size[1])
 
     # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
     for u, v in zip(senders, receivers):
@@ -100,11 +100,15 @@ def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
 
     graph.graph["features"] = np.array([0.])
     # plotting
+
     print('len(pos) = {}\nlen(edgelist) = {}'.format(len(pos), len(edgelist)))
     if plot:
         fig, ax = plt.subplots(1, 1, figsize=(12, 12))
         draw(graph, ax=ax, pos=pos, node_color='green', edge_color='red')
-        plt.show()
+
+        image_dir = '/data2/hendrix/images/'
+        graph_image_idx = len(glob.glob(os.path.join(image_dir, 'graph_image_*')))
+        plt.savefig(os.path.join(image_dir, 'graph_image_{}'.format(graph_image_idx)))
 
     return networkxs_to_graphs_tuple([graph],
                                      node_shape_hint=[node_positions.shape[1] + node_features.shape[1]],
