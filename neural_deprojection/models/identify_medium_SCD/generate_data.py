@@ -15,6 +15,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+from multiprocessing import Pool
+
 
 def find_screen_length(distance_matrix, k_mean):
     """
@@ -450,7 +452,7 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
     return (graph, image, example_idx)
 
 
-def generate_data(data_dirs, save_dir):
+def generate_data(data_dirs, save_dir='/data2/hendrix/train_data/'):
     """
     Routine for generating train data in tfrecords
 
@@ -565,9 +567,24 @@ def make_tutorial_data(examples_dir):
 if __name__ == '__main__':
     examples_dir = '/data2/hendrix/examples_2/'
     train_data_dir = '/data2/hendrix/train_data/'
-    tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
-    dataset = tf.data.TFRecordDataset(tfrecords).map(
-        lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
-    loaded_graph = iter(dataset)
-    for (graph, image, example_idx) in iter(dataset):
-        print(graph.nodes.shape, image.shape, example_idx)
+
+    example_dirs = glob.glob(os.path.join(examples_dir, 'example_*'))
+    list_of_example_dirs = []
+    temp_lst = []
+    for example_dir in example_dirs:
+        if len(temp_lst) == 32:
+            list_of_example_dirs.append(temp_lst)
+            temp_lst = []
+        else:
+            temp_lst.append(example_dir)
+    list_of_example_dirs.append(temp_lst)
+
+    pool = Pool(24)
+    pool.map(generate_data, list_of_example_dirs)
+
+    # tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
+    # dataset = tf.data.TFRecordDataset(tfrecords).map(
+    #     lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
+    # loaded_graph = iter(dataset)
+    # for (graph, image, example_idx) in iter(dataset):
+    #     print(graph.nodes.shape, image.shape, example_idx)
