@@ -12,10 +12,13 @@ from tqdm import tqdm
 from scipy.optimize import bisect
 from scipy.spatial.ckdtree import cKDTree
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from multiprocessing import Pool
+from multiprocessing import Pool, Lock
+
+mp_lock = Lock()
 
 
 def find_screen_length(distance_matrix, k_mean):
@@ -58,7 +61,7 @@ def generate_example_nn(positions, properties, k=26, resolution=2, plot=False):
 
     box_size = (np.max(positions), np.min(positions))  # box that encompasses all of the nodes
     axis = np.arange(box_size[1] + resolution, box_size[0], resolution)
-    lists = [axis]*3
+    lists = [axis] * 3
     virtual_node_pos = [p for p in product(*lists)]
     virtual_kdtree = cKDTree(virtual_node_pos)
     particle_kdtree = cKDTree(positions)
@@ -372,8 +375,12 @@ def save_examples(generator, save_dir=None,
     data_left = True
     pbar = tqdm(total=num_examples)
     while data_left:
+
+        mp_lock.acquire()       # make sure no duplicate files are made / replaced
         tf_files = glob.glob(os.path.join(save_dir, 'train_*'))
         file_idx = len(tf_files)
+        mp_lock.release()
+
         file = os.path.join(save_dir, 'train_{:04d}.tfrecords'.format(file_idx))
         files.append(file)
         with tf.io.TFRecordWriter(file) as writer:
