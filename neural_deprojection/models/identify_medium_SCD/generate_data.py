@@ -366,12 +366,14 @@ def save_examples(generator, save_dir=None,
     if save_dir is None:
         save_dir = os.getcwd()
     os.makedirs(save_dir, exist_ok=True)
+
     files = []
     data_iterable = iter(generator)
     data_left = True
     pbar = tqdm(total=num_examples)
     while data_left:
-        file_idx = len(files)
+        tf_files = glob.glob(os.path.join(save_dir, 'train_*'))
+        file_idx = len(tf_files)
         file = os.path.join(save_dir, 'train_{:04d}.tfrecords'.format(file_idx))
         files.append(file)
         with tf.io.TFRecordWriter(file) as writer:
