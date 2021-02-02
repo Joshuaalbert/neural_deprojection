@@ -2,7 +2,7 @@ import os
 import glob
 import tensorflow as tf
 
-from itertools import combinations_with_replacement
+from itertools import product
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
 import numpy as np
@@ -55,7 +55,9 @@ def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
     node_positions = []
 
     box_size = (np.max(positions), np.min(positions))  # box that encompasses all of the nodes
-    virtual_node_pos = list(combinations_with_replacement(np.arange(box_size[1], box_size[0], resolution), 3))
+    axis = np.arange(box_size[1] + resolution, box_size[0], resolution)
+    lists = [axis]*3
+    virtual_node_pos = [p for p in product(*lists)]
     virtual_kdtree = cKDTree(virtual_node_pos)
     particle_kdtree = cKDTree(positions)
     indices = virtual_kdtree.query_ball_tree(particle_kdtree, np.sqrt(3) / 2. * resolution)
@@ -87,7 +89,7 @@ def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
 
     for node, feature, position in zip(np.arange(n_nodes), node_features, node_positions):
         graph.add_node(node, features=feature)
-        pos[node] = position[:2]
+        pos[node] = (position[:2] - box_size[1]) / (box_size[0] - box_size[1])
 
     # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
     for u, v in zip(senders, receivers):
@@ -98,11 +100,15 @@ def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
 
     graph.graph["features"] = np.array([0.])
     # plotting
+
     print('len(pos) = {}\nlen(edgelist) = {}'.format(len(pos), len(edgelist)))
     if plot:
         fig, ax = plt.subplots(1, 1, figsize=(12, 12))
         draw(graph, ax=ax, pos=pos, node_color='green', edge_color='red')
-        plt.show()
+
+        image_dir = '/data2/hendrix/images/'
+        graph_image_idx = len(glob.glob(os.path.join(image_dir, 'graph_image_*')))
+        plt.savefig(os.path.join(image_dir, 'graph_image_{}'.format(graph_image_idx)))
 
     return networkxs_to_graphs_tuple([graph],
                                      node_shape_hint=[node_positions.shape[1] + node_features.shape[1]],
@@ -557,7 +563,7 @@ def make_tutorial_data(examples_dir):
 
 
 if __name__ == '__main__':
-    examples_dir = '/data2/hendrix/examples/'
+    examples_dir = '/data2/hendrix/examples_2/'
     train_data_dir = '/data2/hendrix/train_data/'
     tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
     dataset = tf.data.TFRecordDataset(tfrecords).map(

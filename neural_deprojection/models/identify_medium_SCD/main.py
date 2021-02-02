@@ -1,4 +1,8 @@
-from neural_deprojection.models.identify_medium.generate_data import generate_data, decode_examples
+import sys
+
+sys.path.insert(1, '/data2/hendrix/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD')
+
+from generate_data import generate_data, decode_examples
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule
 import glob, os
 import tensorflow as tf
@@ -115,7 +119,7 @@ class Model(AbstractModule):
 def main(data_dir):
     tfrecords = glob.glob(os.path.join(data_dir,'*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
-                                                             node_shape=(5,),
+                                                             node_shape=(13,),
                                                              edge_shape=(2,),
                                                              image_shape=(24,24,1)))# (graph, image, idx)
     _graphs = dataset.map(lambda graph, img, idx: (graph, idx)).shuffle(buffer_size=50)
@@ -160,4 +164,4 @@ def main(data_dir):
 
 
 if __name__ == '__main__':
-    main('test_train_data')
+    main('/data2/hendrix/train_data')
