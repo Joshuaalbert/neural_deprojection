@@ -121,7 +121,7 @@ def main(data_dir):
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
                                                              node_shape=(13,),
                                                              edge_shape=(2,),
-                                                             image_shape=(256, 256, 1)))  # (graph, image, idx)
+                                                             image_shape=(256, 256)))  # (graph, image, idx)
     _graphs = dataset.map(lambda graph, img, idx: (graph, idx)).shuffle(buffer_size=50)
     _images = dataset.map(lambda graph, img, idx: (img, idx)).shuffle(buffer_size=50)
     shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph, idx1), (img, idx2))
@@ -139,8 +139,8 @@ def main(data_dir):
 
     def loss(model_outputs, batch):
         (graph, img, c) = batch
-        # print(f'Model outputs = {model_outputs}')
-        # print(f'Desired outputs = {c[None, None]}')
+        print(f'Model outputs = {model_outputs}')
+        print(f'Desired outputs = {c[None, None]}')
         return tf.reduce_mean(tf.losses.binary_crossentropy(c[None, None], model_outputs,
                                                             from_logits=True))  # tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
 
