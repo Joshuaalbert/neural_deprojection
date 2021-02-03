@@ -12,8 +12,13 @@ from tqdm import tqdm
 from scipy.optimize import bisect
 from scipy.spatial.ckdtree import cKDTree
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+from multiprocessing import Pool, Lock
+
+mp_lock = Lock()
 
 
 def find_screen_length(distance_matrix, k_mean):
@@ -46,7 +51,7 @@ def find_screen_length(distance_matrix, k_mean):
     return bisect(loss, 0., dist_max, xtol=0.001)
 
 
-def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
+def generate_example_nn(positions, properties, k=26, resolution=2, plot=False):
     print('example nn')
 
     resolution = 3.086e18 * resolution  # pc to cm
@@ -56,7 +61,7 @@ def generate_example_nn(positions, properties, k=26, resolution=1, plot=False):
 
     box_size = (np.max(positions), np.min(positions))  # box that encompasses all of the nodes
     axis = np.arange(box_size[1] + resolution, box_size[0], resolution)
-    lists = [axis]*3
+    lists = [axis] * 3
     virtual_node_pos = [p for p in product(*lists)]
     virtual_kdtree = cKDTree(virtual_node_pos)
     particle_kdtree = cKDTree(positions)
@@ -364,12 +369,18 @@ def save_examples(generator, save_dir=None,
     if save_dir is None:
         save_dir = os.getcwd()
     os.makedirs(save_dir, exist_ok=True)
+
     files = []
     data_iterable = iter(generator)
     data_left = True
     pbar = tqdm(total=num_examples)
     while data_left:
-        file_idx = len(files)
+
+        mp_lock.acquire()       # make sure no duplicate files are made / replaced
+        tf_files = glob.glob(os.path.join(save_dir, 'train_*'))
+        file_idx = len(tf_files)
+        mp_lock.release()
+
         file = os.path.join(save_dir, 'train_{:04d}.tfrecords'.format(file_idx))
         files.append(file)
         with tf.io.TFRecordWriter(file) as writer:
@@ -450,7 +461,7 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
     return (graph, image, example_idx)
 
 
-def generate_data(data_dirs, save_dir):
+def generate_data(data_dirs, save_dir='/data2/hendrix/train_data/'):
     """
     Routine for generating train data in tfrecords
 
@@ -565,9 +576,24 @@ def make_tutorial_data(examples_dir):
 if __name__ == '__main__':
     examples_dir = '/data2/hendrix/examples_2/'
     train_data_dir = '/data2/hendrix/train_data/'
-    tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
-    dataset = tf.data.TFRecordDataset(tfrecords).map(
-        lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
-    loaded_graph = iter(dataset)
-    for (graph, image, example_idx) in iter(dataset):
-        print(graph.nodes.shape, image.shape, example_idx)
+
+    example_dirs = glob.glob(os.path.join(examples_dir, 'example_*'))
+    list_of_example_dirs = []
+    temp_lst = []
+    for example_dir in example_dirs:
+        if len(temp_lst) == 32:
+            list_of_example_dirs.append(temp_lst)
+            temp_lst = []
+        else:
+            temp_lst.append(example_dir)
+    list_of_example_dirs.append(temp_lst)
+
+    pool = Pool(24)
+    pool.map(generate_data, list_of_example_dirs)
+
+    # tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
+    # dataset = tf.data.TFRecordDataset(tfrecords).map(
+    #     lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
+    # loaded_graph = iter(dataset)
+    # for (graph, image, example_idx) in iter(dataset):
+    #     print(graph.nodes.shape, image.shape, example_idx)

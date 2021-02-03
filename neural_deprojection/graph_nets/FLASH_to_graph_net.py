@@ -5,9 +5,11 @@ from timeit import default_timer
 from random import gauss
 import os
 import glob
-from multiprocessing import Pool
+from multiprocessing import Pool, Lock
 
 yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
+
+mp_lock = Lock()
 
 # folder_path = '~/Desktop/SCD/SeanData/'
 folder_path = '/disks/extern_collab_data/lewis/run3/'
@@ -116,7 +118,10 @@ def process_snapshot_individual_nodes(snapshot):
         _properties[:, 3:6] = velocity_xyz      # n f
         _positions = xyz        # n 3
 
+        mp_lock.acquire()       # ensure no duplicate files
         example_idx = len(glob.glob(os.path.join(examples_dir, 'example_*')))
+        mp_lock.release()
+
         path_to_example_folder = os.path.join(examples_dir, "example_{:04d}".format(example_idx))
         os.makedirs(path_to_example_folder, exist_ok=True)
         np.savez(os.path.join(path_to_example_folder, "data.npz"), positions=_positions, properties=_properties,
