@@ -139,8 +139,8 @@ def main(data_dir):
 
     def loss(model_outputs, batch):
         (graph, img, c) = batch
-        print(f'Model outputs = {model_outputs}')
-        print(f'Desired outputs = {c[None, None]}')
+        # print(f'Model outputs = {model_outputs}')
+        # print(f'Desired outputs = {c[None, None]}')
         return tf.reduce_mean(tf.losses.binary_crossentropy(c[None, None], model_outputs,
                                                             from_logits=True))  # tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
 
