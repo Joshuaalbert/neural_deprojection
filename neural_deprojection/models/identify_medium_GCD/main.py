@@ -17,6 +17,10 @@ from networkx.drawing import draw
 from networkx.linalg.spectrum import normalized_laplacian_spectrum
 from networkx import Graph
 import pylab as plt
+from typing import Callable, Iterable, Optional, Text
+from sonnet.src import base
+from sonnet.src import initializers
+from sonnet.src import linear
 
 
 class RelationNetwork(AbstractModule):
@@ -79,27 +83,139 @@ class RelationNetwork(AbstractModule):
           ValueError: If any of `graph.nodes`, `graph.receivers` or `graph.senders`
             is `None`.
         """
-        output_graph = self._global_block(self._edge_block(graph))
+        edge_block = self._edge_block(graph)
+        # print(edge_block)
+        output_graph = self._global_block(edge_block)
         return output_graph  # graph.replace(globals=output_graph.globals)
 
 
-class Model(AbstractModule):
-    def __init__(self, image_feature_size=16, name=None):
-        # Model inherits from AbstractModule, which contains a __call__ function which executes a _build function
-        # that is to be specified in the child class. So for example:
-        # model = Model()
-        # then model() returns the output of _build()
-        # AbstractModule inherits from snt.Module, which has useful functions that can return the (trainable) variables,
-        # so the Model class has this functionality as well
-        super(Model, self).__init__(name=name)
-        # An instance of the RelationNetwork class also inherits from AbstractModule,
-        # so it also executes its _build() function when called and it can return its (trainable) variables
-        # RelationNetwork is initialized with two
+class MLP_with_bn(snt.Module):
+    """A multi-layer perceptron module."""
 
-        self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
-        self.encoder_image = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
+    def __init__(self,
+                 output_sizes: Iterable[int],
+                 w_init: Optional[initializers.Initializer] = None,
+                 b_init: Optional[initializers.Initializer] = None,
+                 with_bias: bool = True,
+                 activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.relu,
+                 dropout_rate=None,
+                 activate_final: bool = False,
+                 name: Optional[Text] = None):
+        """Constructs an MLP.
+
+        Args:
+          output_sizes: Sequence of layer sizes.
+          w_init: Initializer for Linear weights.
+          b_init: Initializer for Linear bias. Must be `None` if `with_bias` is
+            `False`.
+          with_bias: Whether or not to apply a bias in each layer.
+          activation: Activation function to apply between linear layers. Defaults
+            to ReLU.
+          dropout_rate: Dropout rate to apply, a rate of `None` (the default) or `0`
+            means no dropout will be applied.
+          activate_final: Whether or not to activate the final layer of the MLP.
+          name: Optional name for this module.
+
+        Raises:
+          ValueError: If with_bias is False and b_init is not None.
+        """
+        if not with_bias and b_init is not None:
+            raise ValueError("When with_bias=False b_init must not be set.")
+
+        super(MLP_with_bn, self).__init__(name=name)
+        self._with_bias = with_bias
+        self._w_init = w_init
+        self._b_init = b_init
+        self._activation = activation
+        self._activate_final = activate_final
+        self._dropout_rate = dropout_rate
+        self._layers = []
+        self._bn = []
+        for index, output_size in enumerate(output_sizes):
+            # Besides a layer for every output_size in output_sizes (which are e.g [32, 32, 16])
+            # also make a batch_normalization object except for the last layer
+            # Create scale determines the scale of the normalization, which is 1 by default
+            # Create offset determines the center of the normalization, which is 0 by default
+            if index < len(output_sizes) - 1:
+                self._bn.append(
+                    snt.BatchNorm(
+                        create_scale=True,
+                        create_offset=False))
+            self._layers.append(
+                linear.Linear(
+                    output_size=output_size,
+                    w_init=w_init,
+                    b_init=b_init,
+                    with_bias=with_bias,
+                    name="linear_%d" % index))
+
+    def __call__(self, inputs: tf.Tensor, is_training=True) -> tf.Tensor:
+        """Connects the module to some inputs.
+
+        Args:
+          inputs: A Tensor of shape `[batch_size, input_size]`.
+          is_training: A bool indicating if we are currently training. Defaults to
+            `None`. Required if using dropout.
+
+        Returns:
+          output: The output of the model of size `[batch_size, output_size]`.
+        """
+
+        num_layers = len(self._layers)
+
+        for i, (layer, bn) in enumerate(zip(self._layers, self._bn)):
+            inputs = layer(inputs)
+
+            # Activation for all but the last layer, unless specified otherwise.
+            if i < (num_layers - 1) or self._activate_final:
+                inputs = self._activation(inputs)
+
+            # Apply batch normalization for all but the last layer.
+            if i < (num_layers - 1):
+                inputs = bn(inputs, is_training=is_training)
+
+        return inputs
+
+
+class Model(AbstractModule):
+    """Model inherits from AbstractModule, which contains a __call__ function which executes a _build function
+    that is to be specified in the child class. So for example:
+    model = Model(), then model() returns the output of _build()
+
+    AbstractModule inherits from snt.Module, which has useful functions that can return the (trainable) variables,
+    so the Model class has this functionality as well
+    An instance of the RelationNetwork class also inherits from AbstractModule,
+    so it also executes its _build() function when called and it can return its (trainable) variables
+
+
+    A RelationNetwork contains an edge block and a global block:
+
+    The edge block generally uses the edge, receiver, sender and global attributes of the input graph
+    to calculate the new edges.
+    In our case we currently only use the receiver and sender attributes to calculate the edges.
+
+    The global block generally uses the aggregated edge, aggregated node and the global attributes of the input graph
+    to calculate the new globals.
+    In our case we currently only use the aggregated edge attributes to calculate the new globals.
+
+
+    As input the RelationNetwork needs two (neural network) functions:
+    one to calculate the new edges from receiver and sender nodes
+    and one to calculate the globals from the aggregated edges.
+
+    The new edges will be a vector with size 16 (i.e. the output of the first function in the RelationNetwork)
+    The new globals will also be a vector with size 16 (i.e. the output of the second function in the RelationNetwork)
+
+    The image_cnn downscales the image (currently from 4880x4880 to 35x35) and encodes the image in 16 channels.
+    So we (currently) go from (4880,4880,1) to (35,35,16)
+    """
+
+    def __init__(self, image_feature_size=16, name=None):
+        super(Model, self).__init__(name=name)
+        self.encoder_graph = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True),
+                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True))
+        self.encoder_image = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True),
+                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True))
         self.image_cnn = snt.Sequential([snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
                                          snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
                                          snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
@@ -107,18 +223,18 @@ class Model(AbstractModule):
                                          snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
                                          snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
                                          snt.Conv2D(image_feature_size, 5, stride=2, padding='valid'), tf.nn.relu])
-        self.compare = snt.Sequential([snt.nets.MLP([32, 1]), tf.nn.sigmoid])
-        self.image_feature_size=image_feature_size
+        self.compare = snt.nets.MLP([32, 1])
+        self.image_feature_size = image_feature_size
 
     def _build(self, batch, *args, **kwargs):
         (graph, img, c) = batch
+        print(f'Virtual particles in cluster : {graph.nodes.shape}')
+        print(f'Original image shape : {img.shape}')
         del c
         encoded_graph = self.encoder_graph(graph)
-        print(encoded_graph.nodes.shape)
-        print(encoded_graph.edges.shape)
         img = self.image_cnn(img[None,...])#1, w,h,c -> w*h, c
+        print(f'Convolutional network output shape : {img.shape}')
         nodes = tf.reshape(img, (-1,self.image_feature_size))
-        print(nodes.shape)
         img_graph = GraphsTuple(nodes=nodes,
                             edges=None,
                             globals=None,
@@ -128,9 +244,14 @@ class Model(AbstractModule):
                             n_edge=tf.constant([0]))
         connected_graph = fully_connect_graph_dynamic(img_graph)
         encoded_img = self.encoder_image(connected_graph)
-        print(encoded_graph.globals)
-        print(encoded_img.globals)
-        return self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1))#[1]
+        print(f'Encoded particle graph nodes shape : {encoded_graph.nodes.shape}')
+        print(f'Encoded particle graph edges shape : {encoded_graph.edges.shape}')
+        print(f'Encoded image graph nodes shape : {encoded_img.nodes.shape}')
+        print(f'Encoded image graph edges shape : {encoded_img.edges.shape}')
+        print(f'Encoded particle graph globals : {encoded_graph.globals}')
+        print(f'Encoded image graph globals : {encoded_img.globals}')
+        distance = self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1)) + self.compare(tf.concat([encoded_img.globals, encoded_graph.globals], axis=1))
+        return distance
 
 
 def main(data_dir):
