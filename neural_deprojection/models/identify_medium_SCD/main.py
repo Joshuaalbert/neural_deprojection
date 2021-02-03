@@ -35,11 +35,11 @@ class RelationNetwork(AbstractModule):
 
     def \
             __init__(self,
-                 edge_model_fn,
-                 global_model_fn,
-                 reducer=tf.math.unsorted_segment_sum,
-                 use_globals=False,
-                 name="relation_network"):
+                     edge_model_fn,
+                     global_model_fn,
+                     reducer=tf.math.unsorted_segment_sum,  # DIFFERENT REDUCER!
+                     use_globals=False,
+                     name="relation_network"):
         """Initializes the RelationNetwork module.
 
         Args:
@@ -57,7 +57,7 @@ class RelationNetwork(AbstractModule):
 
         self._edge_block = blocks.EdgeBlock(
             edge_model_fn=edge_model_fn,
-            use_edges=False,
+            use_edges=False,  # no edges bc they have no features
             use_receiver_nodes=True,
             use_sender_nodes=True,
             use_globals=use_globals)
@@ -91,54 +91,58 @@ class Model(AbstractModule):
     def __init__(self, image_feature_size=16, name=None):
         super(Model, self).__init__(name=name)
         self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
+                                             lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
         self.encoder_image = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
-        self.image_cnn = snt.Sequential([snt.Conv2D(16,5), tf.nn.relu, snt.Conv2D(image_feature_size, 5), tf.nn.relu])
+                                             lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
+        self.image_cnn = snt.Sequential([snt.Conv2D(16, 5), tf.nn.relu, snt.Conv2D(image_feature_size, 5), tf.nn.relu])
         self.compare = snt.nets.MLP([32, 1])
-        self.image_feature_size=image_feature_size
+        self.image_feature_size = image_feature_size
 
     def _build(self, batch, *args, **kwargs):
         (graph, img, c) = batch
         del c
         encoded_graph = self.encoder_graph(graph)
-        img = self.image_cnn(img[None,...])#1, w,h,c -> w*h, c
-        nodes = tf.reshape(img, (-1,self.image_feature_size))
+        img = self.image_cnn(img[None, ...])  # 1, w,h,c -> w*h, c
+        nodes = tf.reshape(img, (-1, self.image_feature_size))
         img_graph = GraphsTuple(nodes=nodes,
-                            edges=None,
-                            globals=None,
-                            receivers=None,
-                            senders=None,
-                            n_node=tf.shape(nodes)[0:1],
-                            n_edge=tf.constant([0]))
+                                edges=None,
+                                globals=None,
+                                receivers=None,
+                                senders=None,
+                                n_node=tf.shape(nodes)[0:1],
+                                n_edge=tf.constant([0]))
         connected_graph = fully_connect_graph_dynamic(img_graph)
         encoded_img = self.encoder_image(connected_graph)
-        return self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1))#[1]
+        return self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1))  # [1]
 
 
 def main(data_dir):
-    tfrecords = glob.glob(os.path.join(data_dir,'*.tfrecords'))
+    tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
                                                              node_shape=(13,),
                                                              edge_shape=(2,),
-                                                             image_shape=(24,24,1)))# (graph, image, idx)
+                                                             image_shape=(256, 256, 1)))  # (graph, image, idx)
     _graphs = dataset.map(lambda graph, img, idx: (graph, idx)).shuffle(buffer_size=50)
     _images = dataset.map(lambda graph, img, idx: (img, idx)).shuffle(buffer_size=50)
-    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images)) #((graph, idx1), (img, idx2))
-    shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], ds1[1]==ds2[1])) #(graph, img, yes/no)
+    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph, idx1), (img, idx2))
+    shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], ds1[1] == ds2[1]))  # (graph, img, yes/no)
     shuffled_dataset = shuffled_dataset.filter(lambda graph, img, c: ~c)
     shuffled_dataset = shuffled_dataset.map(lambda graph, img, c: (graph, img, tf.cast(c, tf.int32)))
-    nonshuffeled_dataset = dataset.map(lambda graph, img, idx: (graph, img, tf.constant(1, dtype=tf.int32)))#(graph, img, yes)
-    train_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset,nonshuffeled_dataset])
+    nonshuffeled_dataset = dataset.map(
+        lambda graph, img, idx: (graph, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
+    train_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
 
-    train_dataset = train_dataset.shard(2,0)
-    test_dataset = train_dataset.shard(2,1)
+    train_dataset = train_dataset.shard(2, 0)
+    test_dataset = train_dataset.shard(2, 1)
 
     model = Model()
 
     def loss(model_outputs, batch):
         (graph, img, c) = batch
-        return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
+        print(f'Model outputs = {model_outputs}')
+        print(f'Desired outputs = {c[None, None]}')
+        return tf.reduce_mean(tf.losses.binary_crossentropy(c[None, None], model_outputs,
+                                                            from_logits=True))  # tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
 
     opt = snt.optimizers.Adam(0.0001)
     training = TrainOneEpoch(model, loss, opt)
