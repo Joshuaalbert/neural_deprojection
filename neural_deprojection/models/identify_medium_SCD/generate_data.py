@@ -555,6 +555,7 @@ def _get_data(dir):
     positions = f['positions']
     properties = f['properties']
     image = f['proj_image']
+    image = image.reshape((256,256,1))
     # extra_info = f['extra_info']
 
     # positions, properties = aggregate_lowest_level_cells(positions, properties)
