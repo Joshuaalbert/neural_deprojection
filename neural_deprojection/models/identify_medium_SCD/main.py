@@ -3,7 +3,10 @@ import sys
 sys.path.insert(1, '/data2/hendrix/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD')
 
 from generate_data import generate_data, decode_examples
-from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule
+
+sys.path.insert(1, '/data2/hendrix/git/neural_deprojection/neural_deprojection')
+
+from graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule
 import glob, os
 import tensorflow as tf
 import numpy as np
@@ -90,68 +93,22 @@ class RelationNetwork(AbstractModule):
         edge_block = self._edge_block(graph)
         # print(edge_block)
         output_graph = self._global_block(edge_block)
+        # print(output_graph)
         return output_graph  # graph.replace(globals=output_graph.globals)
 
 
 class MLP_with_bn(snt.Module):
-    """A multi-layer perceptron module."""
+    """A multi-layer perceptron module with batch norm."""
 
     def __init__(self,
                  output_sizes: Iterable[int],
-                 w_init: Optional[initializers.Initializer] = None,
-                 b_init: Optional[initializers.Initializer] = None,
-                 with_bias: bool = True,
                  activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.relu,
-                 dropout_rate=None,
                  activate_final: bool = False,
                  name: Optional[Text] = None):
-        """Constructs an MLP.
-
-        Args:
-          output_sizes: Sequence of layer sizes.
-          w_init: Initializer for Linear weights.
-          b_init: Initializer for Linear bias. Must be `None` if `with_bias` is
-            `False`.
-          with_bias: Whether or not to apply a bias in each layer.
-          activation: Activation function to apply between linear layers. Defaults
-            to ReLU.
-          dropout_rate: Dropout rate to apply, a rate of `None` (the default) or `0`
-            means no dropout will be applied.
-          activate_final: Whether or not to activate the final layer of the MLP.
-          name: Optional name for this module.
-
-        Raises:
-          ValueError: If with_bias is False and b_init is not None.
-        """
-        if not with_bias and b_init is not None:
-            raise ValueError("When with_bias=False b_init must not be set.")
 
         super(MLP_with_bn, self).__init__(name=name)
-        self._with_bias = with_bias
-        self._w_init = w_init
-        self._b_init = b_init
-        self._activation = activation
-        self._activate_final = activate_final
-        self._dropout_rate = dropout_rate
-        self._layers = []
-        self._bn = []
-        for index, output_size in enumerate(output_sizes):
-            # Besides a layer for every output_size in output_sizes (which are e.g [32, 32, 16])
-            # also make a batch_normalization object except for the last layer
-            # Create scale determines the scale of the normalization, which is 1 by default
-            # Create offset determines the center of the normalization, which is 0 by default
-            if index < len(output_sizes) - 1:
-                self._bn.append(
-                    snt.BatchNorm(
-                        create_scale=True,
-                        create_offset=False))
-            self._layers.append(
-                linear.Linear(
-                    output_size=output_size,
-                    w_init=w_init,
-                    b_init=b_init,
-                    with_bias=with_bias,
-                    name="linear_%d" % index))
+        self._mlp = snt.nets.MLP(output_sizes, activation=activation, activate_final=activate_final)
+        self._bn = snt.BatchNorm(create_offset=False, create_scale=False)
 
     def __call__(self, inputs: tf.Tensor, is_training=True) -> tf.Tensor:
         """Connects the module to some inputs.
@@ -164,21 +121,10 @@ class MLP_with_bn(snt.Module):
         Returns:
           output: The output of the model of size `[batch_size, output_size]`.
         """
+        output = self._mlp(inputs=inputs)
+        output = self._bn(inputs=output, is_training=is_training)
 
-        num_layers = len(self._layers)
-
-        for i, (layer, bn) in enumerate(zip(self._layers, self._bn)):
-            inputs = layer(inputs)
-
-            # Activation for all but the last layer, unless specified otherwise.
-            if i < (num_layers - 1) or self._activate_final:
-                inputs = self._activation(inputs)
-
-            # Apply batch normalization for all but the last layer.
-            if i < (num_layers - 1):
-                inputs = bn(inputs, is_training=is_training)
-
-        return inputs
+        return output
 
 
 class Model(AbstractModule):
@@ -218,8 +164,8 @@ class Model(AbstractModule):
         super(Model, self).__init__(name=name)
         self.encoder_graph = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True),
                                        lambda: MLP_with_bn([32, 32, 16], activate_final=True))
-        self.encoder_image = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True),
-                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True))
+        self.encoder_image = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
+                                       lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
         self.image_cnn = snt.Sequential([snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,      # (126,126,16)
                                          snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,      # (61,61,16)
                                          snt.Conv2D(image_feature_size, 5, stride=2, padding='valid'), tf.nn.relu])     # (29,29,16)
@@ -231,6 +177,7 @@ class Model(AbstractModule):
         # print(f'Virtual particles in cluster : {graph.nodes.shape}')
         # print(f'Original image shape : {img.shape}')
         del c
+        print('MEAN NODES: ', tf.reduce_mean(graph.nodes, axis=0))
         encoded_graph = self.encoder_graph(graph)
         img = self.image_cnn(img[None,...])#1, w,h,c -> w*h, c
         # print(f'Convolutional network output shape : {img.shape}')
@@ -248,14 +195,17 @@ class Model(AbstractModule):
         # print(f'Encoded particle graph edges shape : {encoded_graph.edges.shape}')
         # print(f'Encoded image graph nodes shape : {encoded_img.nodes.shape}')
         # print(f'Encoded image graph edges shape : {encoded_img.edges.shape}')
-        # print(f'Encoded particle graph globals : {encoded_graph.globals}')
-        # print(f'Encoded image graph globals : {encoded_img.globals}')
-        distance = self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1)) + self.compare(tf.concat([encoded_img.globals, encoded_graph.globals], axis=1))
+        print(f'Encoded particle graph globals : {encoded_graph.globals}')
+        print(f'Encoded particle graph edges : {encoded_graph.edges}')
+        print(f'Encoded image graph globals : {encoded_img.globals}')
+        print(f'Encoded image graph edges : {encoded_img.edges}')
+        distance = self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1)) \
+                   + self.compare(tf.concat([encoded_img.globals, encoded_graph.globals], axis=1))
         return distance
 
 
 def main(data_dir):
-    tfrecords = glob.glob(os.path.join(data_dir,'*.tfrecords')) # list containing tfrecord files
+    tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords')) # list containing tfrecord files
     print(tfrecords)
     # Extract the dataset (graph tuple, image, example_idx) from the tfrecords files
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
@@ -264,6 +214,8 @@ def main(data_dir):
                                                              image_shape=(256, 256, 1)))# (graph, image, idx)
     # Take the graphs and their corresponding index and shuffle the order of these pairs
     # Do the same for the images
+    dataset = dataset.apply(tf.data.experimental.ignore_errors())  # ignore corrput files
+
     _graphs = dataset.map(lambda graph, img, idx: (graph, idx)).shuffle(buffer_size=50)
     _images = dataset.map(lambda graph, img, idx: (img, idx)).shuffle(buffer_size=50)
     # Zip the shuffled datsets back together so typically the index of the graph and image don't match.
@@ -291,9 +243,9 @@ def main(data_dir):
     # and the model_outputs (classification determined by the model).
     def loss(model_outputs, batch):
         (graph, img, c) = batch
-        # print(f'Model outputs = {model_outputs}')
-        # print(f'Desired outputs = {c[None,None]}')
-        return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
+        print(f'Model outputs = {model_outputs}')
+        print(f'Desired outputs = {c[None,None]}')
+        return tf.reduce_mean(tf.losses.binary_crossentropy(c[None, None], model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
 
     opt = snt.optimizers.Adam(0.0001)
     # loss to evaluate the model, opt to determine how to improve the model
