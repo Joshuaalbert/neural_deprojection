@@ -37,7 +37,7 @@ class RelationNetwork(AbstractModule):
             __init__(self,
                  edge_model_fn,
                  global_model_fn,
-                 reducer=tf.math.unsorted_segment_mean, #try with mean instead of sum
+                 reducer=tf.math.unsorted_segment_sum, #try with mean instead of sum
                  use_globals=False,
                  name="relation_network"):
         """Initializes the RelationNetwork module.
@@ -84,8 +84,10 @@ class RelationNetwork(AbstractModule):
             is `None`.
         """
         edge_block = self._edge_block(graph)
-        # print(edge_block)
+        # print(f'This is the edge block :{np.max(np.array(edge_block.edges))}')
+        # print(f'Sum of all edges : {np.sum(np.array(edge_block.edges), axis=0)}')
         output_graph = self._global_block(edge_block)
+        # print(f'This is the global block :{np.array(output_graph.globals)}')
         return output_graph  # graph.replace(globals=output_graph.globals)
 
 
@@ -100,7 +102,8 @@ class MLP_with_bn(snt.Module):
                  activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.relu,
                  dropout_rate=None,
                  activate_final: bool = False,
-                 name: Optional[Text] = None):
+                 name: Optional[Text] = None,
+                 with_bn = True):
         """Constructs an MLP.
 
         Args:
@@ -130,17 +133,19 @@ class MLP_with_bn(snt.Module):
         self._activate_final = activate_final
         self._dropout_rate = dropout_rate
         self._layers = []
+        self._with_bn = with_bn
         self._bn = []
         for index, output_size in enumerate(output_sizes):
             # Besides a layer for every output_size in output_sizes (which are e.g [32, 32, 16])
             # also make a batch_normalization object except for the last layer
             # Create scale determines the scale of the normalization, which is 1 by default
             # Create offset determines the center of the normalization, which is 0 by default
-            if index < len(output_sizes) - 1:
-                self._bn.append(
-                    snt.BatchNorm(
-                        create_scale=True,
-                        create_offset=False))
+            if self._with_bn:
+                if index < len(output_sizes) - 1:
+                    self._bn.append(
+                        snt.BatchNorm(
+                            create_scale=False,
+                            create_offset=False))
             self._layers.append(
                 linear.Linear(
                     output_size=output_size,
@@ -148,6 +153,8 @@ class MLP_with_bn(snt.Module):
                     b_init=b_init,
                     with_bias=with_bias,
                     name="linear_%d" % index))
+        print(f'Number of batch normalization objects : {len(self._bn)}')
+        print(f'Number of layer objects : {len(self._layers)}')
 
     def __call__(self, inputs: tf.Tensor, is_training=True) -> tf.Tensor:
         """Connects the module to some inputs.
@@ -164,15 +171,22 @@ class MLP_with_bn(snt.Module):
         num_layers = len(self._layers)
 
         for i, (layer, bn) in enumerate(zip(self._layers, self._bn)):
+            # print(f'These are the inputs: {inputs}')
             inputs = layer(inputs)
+            # print(f'Shape : {inputs.shape}')
+            # print(f'These are the inputs after the layer: {inputs}')
+
 
             # Activation for all but the last layer, unless specified otherwise.
             if i < (num_layers - 1) or self._activate_final:
                 inputs = self._activation(inputs)
+                # print(f'These are the inputs after activation: {inputs}')
 
-            # Apply batch normalization for all but the last layer.
-            if i < (num_layers - 1):
-                inputs = bn(inputs, is_training=is_training)
+            if self._with_bn:
+                # Apply batch normalization for all but the last layer.
+                if i < (num_layers - 1):
+                    inputs = bn(inputs, is_training=is_training)
+                # print(f'These are the inputs after batch normalization: {inputs}')
 
         return inputs
 
@@ -212,10 +226,10 @@ class Model(AbstractModule):
 
     def __init__(self, image_feature_size=16, name=None):
         super(Model, self).__init__(name=name)
-        self.encoder_graph = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True),
-                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True))
-        self.encoder_image = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True),
-                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True))
+        self.encoder_graph = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=True),
+                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False))
+        self.encoder_image = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False),
+                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False))
         self.image_cnn = snt.Sequential([snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
                                          snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
                                          snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
@@ -300,7 +314,7 @@ def main(data_dir):
     training = TrainOneEpoch(model, loss, opt)
 
     # Train the model for 10 epochs
-    vanilla_training_loop(train_dataset, training, 10, True)
+    vanilla_training_loop(train_dataset, training, 30, True)
 
     # for (target_graph, graph, rank) in iter(test_dataset):
     #     predict_rank = tf.sigmoid(model((target_graph, graph, rank)))
