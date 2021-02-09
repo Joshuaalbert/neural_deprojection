@@ -13,10 +13,10 @@ mp_lock = Lock()
 
 # folder_path = '~/Desktop/SCD/SeanData/'
 folder_path = '/disks/extern_collab_data/lewis/run3/'
-examples_dir = '/data2/hendrix/examples_2/'
+examples_dir = '/data2/hendrix/examples/'
 # examples_dir = '/home/julius/Desktop/SCD/SeanData/examples/'
 # snapshot = 3136
-snapshot_list = np.arange(3100, 3137)[::-1]
+snapshot_list = np.arange(3112, 3137)[::-1]
 # snapshot_list = [3136]
 # folder_path = '/disks/extern_collab_data/lewis/run3/'
 # examples_dir = '/home/hendrix/data/examples/'
@@ -64,7 +64,7 @@ def process_snapshot_individual_nodes(snapshot):
     print('done, time: {}'.format(default_timer() - t_0))
 
     max_cell_ind = int(np.max(ad['grid_indices']).to_value())
-    num_of_projections = 30
+    num_of_projections = 10
     resolution_in_pc = 0.1
     field = 'density'
     width = np.max(ad['x'].to_value()) - np.min(ad['x'].to_value())
@@ -77,6 +77,7 @@ def process_snapshot_individual_nodes(snapshot):
     property_values = []
     property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
                            np.log10, np.log10, np.log10, np.log10, lambda x: x, lambda x: x, lambda x: x]
+
     property_names = ['x', 'y', 'z', 'velocity_x', 'velocity_y', 'velocity_z', 'density', 'temperature',
                       'cell_mass', 'cell_volume', 'gravitational_potential', 'grid_level', 'grid_indices']
 
@@ -108,14 +109,17 @@ def process_snapshot_individual_nodes(snapshot):
         _extra_info = [snapshot, viewing_vec, resolution, width, field]
         proj_image = yt.off_axis_projection(ds, center=[0, 0, 0], normal_vector=viewing_vec, item=field, width=width,
                                             resolution=resolution)
+
+        proj_image = np.log10(np.where(proj_image < 1e-5, 1e-5, proj_image))
+
         xyz = property_values[:, :3]    # n 3
         velocity_xyz = property_values[:, 3:6]    # n 3
         xyz = np.einsum('ap,np->na', rot_mat, xyz)      # n 3
         velocity_xyz = np.einsum('ap,np->na', rot_mat, velocity_xyz)        # n 3
 
         _properties = property_values.copy()        # n f
-        _properties[:, :3] = xyz        # n f
-        _properties[:, 3:6] = velocity_xyz      # n f
+        _properties[:, :3] = xyz * 3.24078e-19   # in pc        # n f
+        _properties[:, 3:6] = velocity_xyz * 1e-5  # in km/s   # n f
         _positions = xyz        # n 3
 
         mp_lock.acquire()       # ensure no duplicate files
