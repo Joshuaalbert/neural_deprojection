@@ -86,29 +86,68 @@ class TrainOneEpoch(Module):
             num_batches += 1.
         return loss/num_batches
 
+    def evaluate(self, test_dataset):
+        loss = 0.
+        num_batches = 0.
+        for test_batch in test_dataset:
+            model_output = self.model(test_batch)
+            loss += self.loss(model_output, test_batch)
+            num_batches += 1.
+        return loss / num_batches
 
-def vanilla_training_loop(training_dataset, training:TrainOneEpoch, num_epochs, debug=False):
+
+
+
+def vanilla_training_loop(training_dataset, training:TrainOneEpoch, num_epochs, test_dataset=None,
+                          early_stop_patience=None, debug=False):
+    """
+    Does simple training.
+
+    Args:
+        training_dataset: Dataset for training
+        training: TrainOneEpoch
+        num_epochs: how many epochs to train
+        test_dataset: Dataset for testing
+        early_stop_patience: Stops training after this many epochs where test dataset loss doesn't improve
+        debug: bool, whether to use debug mode.
+
+    Returns:
+
+    """
 
     # We'll turn the one_epoch_step function which updates our models into a tf.function using
     # autograph. This makes training much faster. If debugging, you can turn this
     # off by setting `debug = True`.
     step = training.one_epoch_step
+    evaluate = training.evaluate
     if not debug:
         step = tf.function(step)
+        evaluate = tf.function(evaluate)
 
     fancy_progress_bar = tqdm.tqdm(range(num_epochs),
-                                    unit='images',
+                                    unit='epochs',
                                     position=0)
-
+    early_stop_min_loss = np.inf
+    early_stop_interval = 0
     for step_num in fancy_progress_bar:
         loss = step(iter(training_dataset))
-        if step_num >= 0:
+        tqdm.tqdm.write(
+            '\nEpoch = {}/{} (loss = {:.02f})'.format(
+                training.epoch.numpy(), num_epochs, loss))
+        if test_dataset is not None:
+            test_loss = evaluate(iter(test_dataset))
             tqdm.tqdm.write(
-                '\nEpoch = {}/{} (loss = {:.02f}) done.'.format(
-                    training.epoch.numpy(), num_epochs, loss))
-
-    # print('Epoch = {}/{} (lr_mult = {:0.02f}, loss = {}) done.'.format(
-    #     num_epochs, num_epochs, lr_mult.numpy(), loss.numpy()))
+                '\n\tTest loss = {:.02f})'.format(test_loss))
+            if early_stop_patience is not None:
+                if test_loss <= early_stop_min_loss:
+                    early_stop_min_loss = test_loss
+                    early_stop_interval = 0
+                else:
+                    early_stop_interval += 1
+                if early_stop_interval == early_stop_patience:
+                    tqdm.tqdm.write(
+                        '\n\tStopping Early')
+                    break
 
 
 def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None, globals=None):
