@@ -173,20 +173,20 @@ class MLP_with_bn(snt.Module):
         for i, (layer, bn) in enumerate(zip(self._layers, self._bn)):
             # print(f'These are the inputs: {inputs}')
             inputs = layer(inputs)
-            # print(f'Shape : {inputs.shape}')
-            # print(f'These are the inputs after the layer: {inputs}')
+            print(f'Shape : {inputs.shape}')
+            print(f'These are the inputs after the layer: {inputs}')
 
 
             # Activation for all but the last layer, unless specified otherwise.
             if i < (num_layers - 1) or self._activate_final:
                 inputs = self._activation(inputs)
-                # print(f'These are the inputs after activation: {inputs}')
+                print(f'These are the inputs after activation: {inputs}')
 
             if self._with_bn:
                 # Apply batch normalization for all but the last layer.
                 if i < (num_layers - 1):
                     inputs = bn(inputs, is_training=is_training)
-                # print(f'These are the inputs after batch normalization: {inputs}')
+                print(f'These are the inputs after batch normalization: {inputs}')
 
         return inputs
 
@@ -226,17 +226,17 @@ class Model(AbstractModule):
 
     def __init__(self, image_feature_size=16, name=None):
         super(Model, self).__init__(name=name)
-        self.encoder_graph = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=True),
-                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False))
+        self.encoder_graph = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False),
+                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False),
+                                             reducer=tf.math.unsorted_segment_sum)
         self.encoder_image = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False),
-                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False))
-        self.image_cnn = snt.Sequential([snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, 5, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(image_feature_size, 5, stride=2, padding='valid'), tf.nn.relu])
+                                       lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False),
+                                             reducer=tf.math.unsorted_segment_mean)
+        self.image_cnn = snt.Sequential([snt.Conv2D(16, 4, stride=4, padding='valid'), tf.nn.relu,
+                                         snt.Conv2D(16, 4, stride=3, padding='valid'), tf.nn.relu,
+                                         snt.Conv2D(16, 4, stride=3, padding='valid'), tf.nn.relu,
+                                         snt.Conv2D(16, 4, stride=2, padding='valid'), tf.nn.relu,
+                                         snt.Conv2D(image_feature_size, 4, stride=2, padding='valid'), tf.nn.relu])
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size = image_feature_size
 
@@ -245,6 +245,10 @@ class Model(AbstractModule):
         print(f'Virtual particles in cluster : {graph.nodes.shape}')
         print(f'Original image shape : {img.shape}')
         del c
+        print(f'Image : {tf.reduce_mean(img)}')
+        print(f'St dev : {(tf.reduce_mean(img**2) - tf.reduce_mean(img)**2)**(1/2)}')
+        print(f'Min : {tf.reduce_max(img)}')
+        print(f'Max : {tf.reduce_min(img)}')
         encoded_graph = self.encoder_graph(graph)
         img = self.image_cnn(img[None,...])#1, w,h,c -> w*h, c
         print(f'Convolutional network output shape : {img.shape}')
@@ -294,9 +298,17 @@ def main(data_dir):
     # For the training data, take a sample either from the correct or incorrect combinations of graphs and images
     train_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset,nonshuffeled_dataset])
 
-    # Use one half as train dataset and the other half as test dataset
-    train_dataset = train_dataset.shard(2,0)
-    test_dataset = train_dataset.shard(2,1)
+    # # Use one half as train dataset and the other half as test dataset
+    # train_dataset = train_dataset.shard(2,0)
+    # test_dataset = train_dataset.shard(2,1)
+
+    min_val = 0
+    max_val = 0
+
+    for (graph, img, c) in iter(train_dataset):
+        max_val = tf.maximum(max_val, tf.reduce_max(img))
+        print(max_val, c)
+    exit(0)
 
     # Instantiate a model (based on a relational network, see also graph_net_utils)
     model = Model()
