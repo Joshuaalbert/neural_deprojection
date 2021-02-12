@@ -14,6 +14,9 @@ import pylab as plt
 import yt
 from astropy.io import fits
 import h5py
+import csv
+from make_bahamas_clusters_and_fits import make_bahamas_clusters_and_fits
+from make_magneticum_fits import make_magneticum_fits
 
 
 def find_screen_length(distance_matrix, k_mean):
@@ -45,7 +48,7 @@ def find_screen_length(distance_matrix, k_mean):
         return dist_max
     return bisect(loss, 0., dist_max, xtol=0.001)
 
-def generate_example_nn(positions, properties, k=26, resolution=0.5, plot=False):
+def generate_example_nn(positions, properties, k=26, resolution=0.2, plot=False):
     """
     Generate a k-nn graph from positions.
 
@@ -59,7 +62,7 @@ def generate_example_nn(positions, properties, k=26, resolution=0.5, plot=False)
     """
     print('example nn')
 
-    resolution = 3.086e18 * 1000000 * resolution  # pc to cm
+    # resolution = 3.08618 * 1000000 * resolution  # pc to cm
 
     node_features = []
     node_positions = []
@@ -89,8 +92,8 @@ def generate_example_nn(positions, properties, k=26, resolution=0.5, plot=False)
 
     node_features = np.array(node_features)
     node_positions = np.array(node_positions)
-    print(node_features.shape)
-    print(node_positions.shape)
+    print(f'Node feature shape : {node_features.shape}')
+    print(f'Node positions shape : {node_positions.shape}')
 
     # Directed graph
     graph = nx.DiGraph()
@@ -141,18 +144,16 @@ def generate_example_nn(positions, properties, k=26, resolution=0.5, plot=False)
             edgelist.append((u, v))
             edgelist.append((v, u))
 
-        print(graph.number_of_nodes())
-        print(graph.number_of_edges())
-        print(pos)
+        print(f'Particle graph nodes : {graph.number_of_nodes()}')
+        print(f'Particle graph edges : {graph.number_of_edges()}')
 
         #Plotting
         fig, ax = plt.subplots(1, 2, figsize=(24, 12))
-        print('check 1')
+        print('Plotting...')
         draw(graph, ax=ax[0], pos=pos, node_color='green', edge_color='red')
         ax[1].scatter(positions[:,0], positions[:,1],s=2.)
-        print('check 2')
+        print('Plot done, showing...')
         plt.show()
-        print('check 3')
 
 
     else:
@@ -396,6 +397,10 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
         )
     )
     image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
+
+    image = tf.where(image <= 0, tf.exp(-5), image)
+
+    image = tf.math.log(image / 43.) + tf.math.log(0.5)
     image.set_shape(image_shape)
     example_idx = tf.io.parse_tensor(parsed_example['example_idx'], tf.int32)
     example_idx.set_shape(())
@@ -502,20 +507,11 @@ def _get_data(dir):
     # image = np.random.uniform(size=(24, 24, 1))
     return positions, properties, image
 
-def make_tutorial_data(examples_dir):
-    # Directory that contains magneticum cluster directories
-    # which contain a snapshot (particle data) of the cluster and an xray image
-    magneticum_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/graph_test/Magneticum/'
+def combine_data(alice=False,magneticum=True,bahamas=True):
 
-    # Directory that contains bahamas cluster directories
-    # which contain a snapshot (particle data) of the cluster and an xray image
-    bahamas_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/graph_test/Bahamas_small/'
+    simulations = []
+    simulation_names = []
 
-    # Create a list of directories which contain cluster data
-    magneticum_clusters = glob.glob(magneticum_dir + '*')
-    bahamas_clusters = glob.glob(bahamas_dir + '*')
-
-    # Field structure for magnecticum snapshots (which is not default)
     my_field_def = (
         "Coordinates",
         "Velocities",
@@ -526,125 +522,356 @@ def make_tutorial_data(examples_dir):
         ("SmoothingLength", "Gas"),
     )
 
-    for cluster_dir in bahamas_clusters:
-        # Define the snapshot filename
-        # The magneticum snapshots have no file extension and the bahamas snapshots have a .hdf5 extension
-        snap_file = list(set(glob.glob(cluster_dir + "/*")) - set(glob.glob(cluster_dir + "/*.*")))
-        if len(snap_file) == 0:
-            snap_file = glob.glob(cluster_dir + '/*.hdf5')[0]
-            magneticum = False
+    if magneticum:
+        for snapshot in ['snap_132', 'snap_136']:
+            if alice:
+                data_dir = '/home/s2675544/data/Magneticum/Box2_hr'
+            else:
+                data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Magneticum/Box2_hr'
+            clusters = glob.glob(os.path.join(data_dir, snapshot + '/*/simcut/*/' + snapshot))
+
+            simulations.append(clusters)
+            simulation_names.append('magneticum_' + snapshot)
+
+    if bahamas:
+        if alice:
+            data_dir = '/home/s2675544/data/Bahamas/'
         else:
-            snap_file = snap_file[0]
-            magneticum = True
+            data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Bahamas/'
+        clusters = glob.glob(data_dir + '*/cluster_*')
 
-        # Define the xray image filename (which has a .fits extension)
-        xray_file = glob.glob(cluster_dir + '/*.fits')[0]
+        simulations.append(clusters)
+        simulation_names.append('bahamas')
 
-        print(snap_file)
-        print(xray_file)
+    for idx, simulation in enumerate(simulations):
 
-        if magneticum:
-            # Load the data for a magneticum cluster
-            # Set long_ids = True because the IDs are 64-bit ints
-            ds_yt = yt.load(snap_file, long_ids=True, field_spec=my_field_def)
-            ad = ds_yt.all_data()
+        for cluster in simulation:
+            if simulation_names[idx] == 'bahamas':
+                with h5py.File(cluster, 'r') as ds_h5:
+                    positions = np.array(ds_h5['PartType0']['Coordinates'])
+                    velocities = np.array(ds_h5['PartType0']['Velocity'])
+                    rho = np.array(ds_h5['PartType0']['Density'])
+                    u = np.array(ds_h5['PartType0']['InternalEnergy'])
+            else:
+                ds_yt = yt.load(cluster, long_ids=True, field_spec=my_field_def)
+                ad = ds_yt.all_data()
 
-            positions = ad['Gas', 'Coordinates'].d
-            velocities = ad['Gas', 'Velocities'].d
-            rho = ad['Gas', 'Density'].d
-            u = ad['Gas', 'InternalEnergy'].d
-            extra_info = 'Magneticum'
-        else:
-            # Load the data for a bahamas cluster
-            with h5py.File(snap_file, 'r') as ds_h5:
+                positions = ad['Gas', 'Coordinates'].d
+                velocities = ad['Gas', 'Velocities'].d
+                rho = ad['Gas', 'Density'].d
+                u = ad['Gas', 'InternalEnergy'].d
 
-                positions = np.array(ds_h5['PartType0']['Coordinates'])
-                positions = (positions - np.mean(positions, axis=0)) / 1e6
-                velocities = np.log(np.array(ds_h5['PartType0']['Velocity']) / 1e6)
-                rho = np.log(np.array(ds_h5['PartType0']['Density']) / 1e-29)
-                u = np.log(np.array(ds_h5['PartType0']['InternalEnergy']) / 1e15)
-                ds_h5.close()
-            extra_info = 'Bahamas'
+            # Combine the properties in a single array
+            p_t = positions.T
+            v_t = velocities.T
+            properties = np.stack((p_t[0], p_t[1], p_t[2], v_t[0], v_t[1], v_t[2], rho, u), axis=1)
 
-        # Combine the properties in a single array
-        p_T = positions.T
-        v_T = velocities.T
-        properties = np.stack((p_T[0], p_T[1], p_T[2], v_T[0], v_T[1], v_T[2], rho, u), axis=1)
-        # properties = np.stack((rho, u), axis=1)
+            xray_images = glob.glob(os.path.join(cluster + 'xray*'))
+            images = []
 
+            for xray_image in xray_images:
+                # Load the xray image
+                with fits.open(xray_image) as hdu:
+                    image = np.array(hdu[0].data, dtype='float32').reshape(4880, 4880, 1)
+                    image[image == 0] = 1e-5
 
-        # Load the xray image
-        with fits.open(xray_file) as hdul:
-            image = np.array(hdul[0].data, dtype='float64').reshape(4880,4880,1)
+                images.append(image)
 
-        # Print the number of particles
-        print('The number of gas particles in {} is {}'.format(snap_file.split('/')[-1], positions.shape[0]))
+            # Print the number of particles
+            print('The number of gas particles in {} is {}'.format(cluster.split('/')[-1], positions.shape[0]))
 
-        # Create an example directory in the 'examples_dir'
-        # and put a data.npz file in there that contains al the info of the snapshot/xray img pair
-        example_idx = len(glob.glob(os.path.join(examples_dir, 'example_*')))
-        new_dir = os.path.join(examples_dir, "example_{:04d}".format(example_idx))
-        os.makedirs(new_dir, exist_ok=True)
-        print(new_dir)
-        np.savez(new_dir + "/data.npz", positions=positions, properties=properties, image=image,
-                 extra_info=extra_info)
+            # Create an example directory in the 'examples_dir'
+            # and put a data.npz file in there that contains al the info of the snapshot/xray img pair
+            example_idx = len(glob.glob(os.path.join(simulation_names[idx], 'example_*')))
+            new_dir = os.path.join(simulation_names[idx], "example_{:04d}".format(example_idx))
+            os.makedirs(new_dir, exist_ok=True)
+            print(new_dir)
+            np.savez(new_dir + "/data.npz", positions=positions, properties=properties, images=images)
 
-    """
-    #Create 10 examples
-    for i in range(10):
-        # Create a new data directory for a new example
-        example_idx = len(glob.glob(os.path.join(examples_dir,'example_*')))
-        data_dir = os.path.join(examples_dir,'example_{:04d}'.format(example_idx))
-        os.makedirs(data_dir, exist_ok=True)
-        # Define positions, properties and images here
-        # The example uses random numbers
-        # This needs to be replaced by actual data
-        positions = np.random.uniform(0., 1., size=(50, 3))
-        properties = np.random.uniform(0., 1., size=(50, 5))
-        image = np.random.uniform(size=(24, 24, 1))
-        # Save the data as an data.npz file
-        np.savez(os.path.join(data_dir, 'data.npz'), positions=positions, properties=properties, image=image)
-    """
+def means_and_stdevs(alice=False,magneticum=True,bahamas=True):
+
+    simulations = []
+    simulation_names = []
+
+    my_field_def = (
+        "Coordinates",
+        "Velocities",
+        "Mass",
+        "ParticleIDs",
+        ("InternalEnergy", "Gas"),
+        ("Density", "Gas"),
+        ("SmoothingLength", "Gas"),
+    )
+
+    if magneticum:
+        for snapshot in ['snap_132', 'snap_136']:
+            if alice:
+                data_dir = '/home/s2675544/data/Magneticum/Box2_hr'
+            else:
+                data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Magneticum/Box2_hr'
+            # print(os.path.join(data_dir, snap_file + '/*/simcut/*/' + snap_file))
+            clusters = glob.glob(os.path.join(data_dir, snapshot + '/*/simcut/*/' + snapshot))
+
+            simulations.append(clusters)
+            simulation_names.append('magneticum_' + snapshot)
+
+    if bahamas:
+        bahamas_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Bahamas/'
+        clusters = glob.glob(bahamas_dir + '*/*')
+
+        simulations.append(clusters)
+        simulation_names.append('bahamas')
+        # print(snapshots)
+
+    columns = ['particles',
+               'mean x', 'std x',
+               'mean y', 'std y',
+               'mean z', 'std z',
+               'mean vx', 'std vx',
+               'mean vy', 'std vy',
+               'mean vz', 'std vz',
+               'mean rho', 'std rho',
+               'mean U', 'std U']
+    mean_columns = [' ',
+                    'mean of means x', 'std of means x',
+                    'mean of means y', 'std of means y',
+                    'mean of means z', 'std of means z',
+                    'mean of means vx', 'std of means vx',
+                    'mean of means vy', 'std of means vy',
+                    'mean of means vz', 'std of means vz',
+                    'mean of means rho', 'std of means rho',
+                    'mean of means U', 'std of means U']
+
+    for idx, simulation in enumerate(simulations):
+        mu_and_sig_arr = []
+
+        for cluster in simulation:
+            if simulation_names[idx] == 'bahamas':
+                with h5py.File(cluster, 'r') as ds_h5:
+                    positions = np.array(ds_h5['PartType0']['Coordinates'])
+                    velocities = np.array(ds_h5['PartType0']['Velocity'])
+                    rho = np.array(ds_h5['PartType0']['Density'])
+                    u = np.array(ds_h5['PartType0']['InternalEnergy'])
+            else:
+                ds_yt = yt.load(cluster, long_ids=True, field_spec=my_field_def)
+                ad = ds_yt.all_data()
+
+                positions = ad['Gas', 'Coordinates'].d
+                velocities = ad['Gas', 'Velocities'].d
+                rho = ad['Gas', 'Density'].d
+                u = ad['Gas', 'InternalEnergy'].d
+
+            mu_and_sig = [len(positions),
+                          np.mean(positions[:, 0]),
+                          np.std(positions[:, 0]),
+                          np.mean(positions[:, 1]),
+                          np.std(positions[:, 1]),
+                          np.mean(positions[:, 2]),
+                          np.std(positions[:, 2]),
+                          np.mean(velocities[:, 0]),
+                          np.std(velocities[:, 0]),
+                          np.mean(velocities[:, 1]),
+                          np.std(velocities[:, 1]),
+                          np.mean(velocities[:, 2]),
+                          np.std(velocities[:, 2]),
+                          np.mean(rho),
+                          np.std(rho),
+                          np.mean(u),
+                          np.std(u)]
+            mu_and_sig_arr.append(mu_and_sig)
+
+        mu_and_sig_arr = np.array(sorted(mu_and_sig_arr, key=lambda row: row[0])[::-1])
+
+        avg_mu_and_sig_list = np.array([[np.mean(arr), np.std(arr)] for arr in np.array(mu_and_sig_arr).T[1::2]]).flatten()
+        avg_mu_and_sig_list = np.concatenate((np.array([0]), avg_mu_and_sig_list))
+
+        with open(simulation_names[idx] + '.csv', 'w') as csvfile:
+            writer = csv.writer(csvfile, delimiter=",")
+            writer.writerow(mean_columns)
+            writer.writerow(avg_mu_and_sig_list)
+            writer.writerow(columns)
+            writer.writerows(mu_and_sig_arr)
+
+# def make_tutorial_data(examples_dir):
+#     # Directory that contains magneticum cluster directories
+#     # which contain a snapshot (particle data) of the cluster and an xray image
+#     magneticum_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/graph_test/Magneticum/'
+#
+#     # Directory that contains bahamas cluster directories
+#     # which contain a snapshot (particle data) of the cluster and an xray image
+#     bahamas_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/graph_test/Bahamas_small/'
+#
+#     # Create a list of directories which contain cluster data
+#     magneticum_clusters = glob.glob(magneticum_dir + '*')
+#     bahamas_clusters = glob.glob(bahamas_dir + '*')
+#
+#     # Field structure for magnecticum snapshots (which is not default)
+#     my_field_def = (
+#         "Coordinates",
+#         "Velocities",
+#         "Mass",
+#         "ParticleIDs",
+#         ("InternalEnergy", "Gas"),
+#         ("Density", "Gas"),
+#         ("SmoothingLength", "Gas"),
+#     )
+#
+#     for cluster_dir in bahamas_clusters:
+#         # Define the snapshot filename
+#         # The magneticum snapshots have no file extension and the bahamas snapshots have a .hdf5 extension
+#         snap_file = list(set(glob.glob(cluster_dir + "/*")) - set(glob.glob(cluster_dir + "/*.*")))
+#         if len(snap_file) == 0:
+#             snap_file = glob.glob(cluster_dir + '/*.hdf5')[0]
+#             magneticum = False
+#         else:
+#             snap_file = snap_file[0]
+#             magneticum = True
+#
+#         # Define the xray image filename (which has a .fits extension)
+#         xray_file = glob.glob(cluster_dir + '/*.fits')[0]
+#
+#         print(snap_file)
+#         print(xray_file)
+#
+#         if magneticum:
+#             # Load the data for a magneticum cluster
+#             # Set long_ids = True because the IDs are 64-bit ints
+#             ds_yt = yt.load(snap_file, long_ids=True, field_spec=my_field_def)
+#             ad = ds_yt.all_data()
+#
+#             positions = ad['Gas', 'Coordinates'].d
+#             velocities = ad['Gas', 'Velocities'].d
+#             rho = ad['Gas', 'Density'].d
+#             u = ad['Gas', 'InternalEnergy'].d
+#             extra_info = 'Magneticum'
+#         else:
+#             # Load the data for a bahamas cluster
+#             with h5py.File(snap_file, 'r') as ds_h5:
+#
+#                 positions = np.array(ds_h5['PartType0']['Coordinates'])
+#                 positions = (positions - np.mean(positions, axis=0)) / 1e25
+#                 velocities = np.array(ds_h5['PartType0']['Velocity'])
+#                 velocities = (velocities - np.mean(velocities, axis=0)) / 1e6
+#                 rho = np.log(np.array(ds_h5['PartType0']['Density'])) # / 1e-29
+#                 u = np.log(np.array(ds_h5['PartType0']['InternalEnergy'])) #  / 1e15
+#                 ds_h5.close()
+#             extra_info = 'Bahamas'
+#
+#         # Combine the properties in a single array
+#         p_T = positions.T
+#         v_T = velocities.T
+#         properties = np.stack((p_T[0], p_T[1], p_T[2], v_T[0], v_T[1], v_T[2], rho, u), axis=1)
+#         # properties = np.stack((rho, u), axis=1)
+#
+#
+#         # Load the xray image
+#         with fits.open(xray_file) as hdul:
+#             image = np.array(hdul[0].data, dtype='float64').reshape(4880,4880,1)
+#             #image[image == 0] = 1e-5
+#
+#
+#         # Print the number of particles
+#         print('The number of gas particles in {} is {}'.format(snap_file.split('/')[-1], positions.shape[0]))
+#
+#         # Create an example directory in the 'examples_dir'
+#         # and put a data.npz file in there that contains al the info of the snapshot/xray img pair
+#         example_idx = len(glob.glob(os.path.join(examples_dir, 'example_*')))
+#         new_dir = os.path.join(examples_dir, "example_{:04d}".format(example_idx))
+#         os.makedirs(new_dir, exist_ok=True)
+#         print(new_dir)
+#         np.savez(new_dir + "/data.npz", positions=positions, properties=properties, image=image,
+#                  extra_info=extra_info)
+#
+#     """
+#     #Create 10 examples
+#     for i in range(10):
+#         # Create a new data directory for a new example
+#         example_idx = len(glob.glob(os.path.join(examples_dir,'example_*')))
+#         data_dir = os.path.join(examples_dir,'example_{:04d}'.format(example_idx))
+#         os.makedirs(data_dir, exist_ok=True)
+#         # Define positions, properties and images here
+#         # The example uses random numbers
+#         # This needs to be replaced by actual data
+#         positions = np.random.uniform(0., 1., size=(50, 3))
+#         properties = np.random.uniform(0., 1., size=(50, 5))
+#         image = np.random.uniform(size=(24, 24, 1))
+#         # Save the data as an data.npz file
+#         np.savez(os.path.join(data_dir, 'data.npz'), positions=positions, properties=properties, image=image)
+#     """
 
 if __name__ == '__main__':
-    # Save data in 'tutorial_data'
-    # In this example it's random data, but eventually we want to use actual data
-    data_dir = 'cluster_data_small'
-    test_train_dir = 'test_train_data_small'
 
-    if not os.path.isdir(data_dir):
-        make_tutorial_data(data_dir)
-    else:
-        pass
+    means_and_stdevs()
 
-    # Save the data from 'tutorial data' as tfrecords
-    # tfrecords are saved in test_train_data
-    if not os.path.isdir(test_train_dir):
-        tfrecords = generate_data(glob.glob(os.path.join(data_dir,'example_*')), test_train_dir)
-    else:
-        tfrecords = glob.glob(test_train_dir + '/*')
+    data_dir = '/home/s2675544/data/Magneticum/Box2_hr'
+    snap_file = 'snap_128'
+    make_magneticum_fits(data_dir=data_dir, snap_file=snap_file, alice=False)
 
-    print(tfrecords)
+    # Directory containing the bahamas data
+    data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data'
 
+    # Directory to save the cluster hdf5 files in
+    save_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Bahamas'
+    save_dir = '/home/s2675544/data'
 
-    # Decode the tfrecord files again into the (graph tuple, image, index) dataset
-    # This is also used in main.py to retrieve the datasets for a neural network
-    dataset = tf.data.TFRecordDataset(tfrecords).map(
-        lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[8]))
+    # Determine which simulation to use
+    sim_dir = 'AGN_TUNED_nu0_L100N256_WMAP9'
+    # sim_dir = 'AGN_TUNED_nu0_L400N1024_WMAP9'
 
-    # make_tutorial_data() + numpy arrays (pos, props, img) --> data.npz
+    simulation_dir = os.path.join(data_dir, sim_dir)
 
-    # generate_data(
-    # _get_data() + data.npz  --> numpy arrays (pos, props, img)
+    # Specify the number of clusters for which to make hdf5 files
+    # The centers list will be ordered, so by taking the number of fits as e.g. 5, the 5 biggest clusters will be used.
+    starting_cluster = 0
+    number_of_clusters = 200
+    xray = False
+    number_of_xray_images = 1
 
-    # generate_example_nn() + numpy arrays (pos, props, img) --> graph tuple, image and index (graph, img, idx)
+    make_bahamas_clusters_and_fits(simulation_dir,
+                                   save_dir,
+                                   number_of_clusters=number_of_clusters,
+                                   starting_cluster=starting_cluster,
+                                   xray=xray,
+                                   numbers_of_xray_images=number_of_xray_images)
 
-    # save_examples() + graph tuple, image and index (graph, img, idx) --> tfrecord
-    # )
-
-    # decode_examples() + tfrecord --> graph tuple, image and index (graph, img, idx)
-
-    loaded_graph = iter(dataset)
-    # example index is an integer as a tensorflow tensor
-    for (graph, image, example_idx) in iter(dataset):
-        print(graph.nodes.shape, image.shape, example_idx)
+    # # Save data in 'tutorial_data'
+    # # In this example it's random data, but eventually we want to use actual data
+    # data_dir = 'cluster_data_small'
+    # test_train_dir = 'test_train_data_small'
+    #
+    # if not os.path.isdir(data_dir):
+    #     make_tutorial_data(data_dir)
+    # else:
+    #     pass
+    #
+    # # Save the data from 'tutorial data' as tfrecords
+    # # tfrecords are saved in test_train_data
+    # if not os.path.isdir(test_train_dir):
+    #     tfrecords = generate_data(glob.glob(os.path.join(data_dir,'example_*')), test_train_dir)
+    # else:
+    #     tfrecords = glob.glob(test_train_dir + '/*')
+    #
+    # print(tfrecords)
+    #
+    #
+    # # Decode the tfrecord files again into the (graph tuple, image, index) dataset
+    # # This is also used in main.py to retrieve the datasets for a neural network
+    # dataset = tf.data.TFRecordDataset(tfrecords).map(
+    #     lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[8]))
+    #
+    # # make_tutorial_data() + numpy arrays (pos, props, img) --> data.npz
+    #
+    # # generate_data(
+    # # _get_data() + data.npz  --> numpy arrays (pos, props, img)
+    #
+    # # generate_example_nn() + numpy arrays (pos, props, img) --> graph tuple, image and index (graph, img, idx)
+    #
+    # # save_examples() + graph tuple, image and index (graph, img, idx) --> tfrecord
+    # # )
+    #
+    # # decode_examples() + tfrecord --> graph tuple, image and index (graph, img, idx)
+    #
+    # loaded_graph = iter(dataset)
+    # # example index is an integer as a tensorflow tensor
+    # for (graph, image, example_idx) in iter(dataset):
+    #     print(graph.nodes.shape, image.shape, example_idx)
