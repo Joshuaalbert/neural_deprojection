@@ -20,6 +20,9 @@ from multiprocessing import Pool, Lock
 
 mp_lock = Lock()
 
+def std(tensor, axis):
+    return tf.math.sqrt(tf.reduce_mean(tensor**2, axis=axis))
+
 
 def find_screen_length(distance_matrix, k_mean):
     """
@@ -118,112 +121,6 @@ def generate_example_nn(positions, properties, k=26, resolution=2, plot=False):
     return networkxs_to_graphs_tuple([graph],
                                      node_shape_hint=[node_positions.shape[1] + node_features.shape[1]],
                                      edge_shape_hint=[2])
-
-    # graph = nx.DiGraph()
-    # sibling_edgelist = []
-    # parent_edgelist = []
-    # pos = dict()  # for plotting node positions.
-    # real_nodes = list(np.arange(node_positions.shape[0]))
-    # while node_positions.shape[0] > 1:
-    #     # n_nodes, n_nodes
-    #     dist = np.linalg.norm(node_positions[:, None, :] - node_positions[None, :, :], axis=-1)
-    #     opt_screen_length = find_screen_length(dist, k_mean)
-    #     print("Found optimal screening length {}".format(opt_screen_length))
-    #
-    #     distance_matrix_no_loops = np.where(dist == 0., np.inf, dist)
-    #     A = distance_matrix_no_loops < opt_screen_length
-    #
-    #     senders, receivers = np.where(A)
-    #     n_edge = senders.size
-    #
-    #     # num_points, F0,...Fd
-    #     # if positions is to be part of features then this should already be set in properties.
-    #     # We don't concatentate here. Mainly because properties could be an image, etc.
-    #     sibling_nodes = node_features
-    #     n_nodes = sibling_nodes.shape[0]
-    #
-    #     sibling_node_offset = len(graph.nodes)
-    #     for node, feature, position in zip(np.arange(sibling_node_offset, sibling_node_offset + n_nodes), sibling_nodes,
-    #                                        node_positions):
-    #         graph.add_node(node, features=feature)
-    #         pos[node] = position[:2]
-    #
-    #     # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
-    #     for u, v in zip(senders + sibling_node_offset, receivers + sibling_node_offset):
-    #         graph.add_edge(u, v, features=np.array([1., 0.]))
-    #         graph.add_edge(v, u, features=np.array([1., 0.]))
-    #         sibling_edgelist.append((u, v))
-    #         sibling_edgelist.append((v, u))
-    #
-    #     # for virtual nodes
-    #     sibling_graph = GraphsTuple(nodes=None,  # sibling_nodes,
-    #                                 edges=None,
-    #                                 senders=senders,
-    #                                 receivers=receivers,
-    #                                 globals=None,
-    #                                 n_node=np.array([n_nodes]),
-    #                                 n_edge=np.array([n_edge]))
-    #
-    #     sibling_graph = graphs_tuple_to_networkxs(sibling_graph)[0]
-    #     # completely connect
-    #     connected_components = sorted(nx.connected_components(nx.Graph(sibling_graph)), key=len)
-    #     _positions = []
-    #     _properties = []
-    #     for connected_component in connected_components:
-    #         print("Found connected component {}".format(connected_component))
-    #         indices = list(sorted(list(connected_component)))
-    #         virtual_position, virtual_property = make_virtual_node(node_positions[indices, :], properties[indices, ...])
-    #         _positions.append(virtual_position)
-    #         _properties.append(virtual_property)
-    #
-    #     virtual_positions = np.stack(_positions, axis=0)
-    #     virtual_properties = np.stack(_properties, axis=0)
-    #
-    #     ###
-    #     # add virutal nodes
-    #     # num_parents, 3+F
-    #     parent_nodes = virtual_properties
-    #     n_nodes = parent_nodes.shape[0]
-    #     parent_node_offset = len(graph.nodes)
-    #     parent_indices = np.arange(parent_node_offset, parent_node_offset + n_nodes)
-    #     # adding the nodes to global graph
-    #     for node, feature, virtual_position in zip(parent_indices, parent_nodes, virtual_positions):
-    #         graph.add_node(node, features=feature)
-    #         print("new virtual {}".format(node))
-    #         pos[node] = virtual_position[:2]
-    #
-    #     for parent_idx, connected_component in zip(parent_indices, connected_components):
-    #
-    #         child_node_indices = [idx + sibling_node_offset for idx in list(sorted(list(connected_component)))]
-    #         for child_node_idx in child_node_indices:
-    #             graph.add_edge(parent_idx, child_node_idx, features=np.array([0., 1.]))
-    #             graph.add_edge(child_node_idx, parent_idx, features=np.array([0., 1.]))
-    #             parent_edgelist.append((parent_idx, child_node_idx))
-    #             parent_edgelist.append((child_node_idx, parent_idx))
-    #             print("connecting {}<->{}".format(parent_idx, child_node_idx))
-    #
-    #     node_positions = virtual_positions
-    #     node_features = virtual_properties
-    #
-    # # plotting
-    #
-    # virtual_nodes = list(set(graph.nodes) - set(real_nodes))
-    #
-    # print('plotting:\n {} real_nodes\n {} virtual_nodes\n {} sibling_edges\n {} parent_edges'.format(
-    #     len(real_nodes), len(virtual_nodes), len(sibling_edgelist), len(parent_edgelist)
-    # ))
-    #
-    # if plot:
-    #     fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-    #     draw(graph, ax=ax, pos=pos, node_color='green', edgelist=[], nodelist=real_nodes)
-    #     draw(graph, ax=ax, pos=pos, node_color='purple', edgelist=[], nodelist=virtual_nodes)
-    #     draw(graph, ax=ax, pos=pos, edge_color='blue', edgelist=sibling_edgelist, nodelist=[])
-    #     draw(graph, ax=ax, pos=pos, edge_color='red', edgelist=parent_edgelist, nodelist=[])
-    #     plt.savefig("k_graph.png")
-    #
-    # return networkxs_to_graphs_tuple([graph],
-    #                                  node_shape_hint=[positions.shape[1] + properties.shape[1]],
-    #                                  edge_shape_hint=[2])
 
 
 def generate_example(positions, properties, k_mean=26, plot=False):
@@ -415,6 +312,7 @@ def feature_to_graph_tuple(name=''):
             f'{name}_receivers': tf.io.FixedLenFeature([], dtype=tf.string)}
 
 
+
 def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=None):
     """
     Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a GraphTuple and image
@@ -438,10 +336,13 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
         )
     )
     image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
+    # image = tf.math.log(image)
+    # image = (image - tf.reduce_mean(image, axis=None)) / std(image, axis=None)
     image.set_shape(image_shape)
     example_idx = tf.io.parse_tensor(parsed_example['example_idx'], tf.int32)
     example_idx.set_shape(())
     graph_nodes = tf.io.parse_tensor(parsed_example['graph_nodes'], tf.float32)
+    # graph_nodes = (graph_nodes - tf.reduce_mean(graph_nodes, axis=0)) / std(graph_nodes, axis=0)
     if node_shape is not None:
         graph_nodes.set_shape([None] + list(node_shape))
     graph_edges = tf.io.parse_tensor(parsed_example['graph_edges'], tf.float32)
@@ -461,7 +362,42 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
     return (graph, image, example_idx)
 
 
-def generate_data(data_dirs, save_dir='/data2/hendrix/train_data/'):
+def get_data_info(data_dirs):
+    """
+    Get information of saved data.
+
+    Args:
+        data_dirs: data directories
+
+    Returns:
+
+    """
+
+    def data_generator():
+        for idx, dir in tqdm(enumerate(data_dirs)):
+            print("Generating data from {}".format(dir))
+            positions, properties, image = _get_data(dir)
+            yield (properties, image, dir)
+
+    data_iterable = iter(data_generator())
+
+    open('data_info.txt', 'w').close()
+
+    while True:
+        try:
+            (properties, image, dir) = next(data_iterable)
+        except StopIteration:
+            break
+
+        with open("data_info.txt", "a") as text_file:
+            print(f"dir: {dir}\n"
+                  f"    image_min: {np.min(image)}\n"
+                  f"    image_max: {np.max(image)}\n"
+                  f"    properties_min: {np.around(np.min(properties, axis=0), 2)}\n"
+                  f"    properties_max: {np.around(np.max(properties, axis=0), 2)}\n", file=text_file)
+
+
+def generate_data(data_dirs, save_dir='/data2/hendrix/train_data_2/'):
     """
     Routine for generating train data in tfrecords
 
@@ -556,6 +492,9 @@ def _get_data(dir):
     properties = f['properties']
     image = f['proj_image']
     image = image.reshape((256,256,1))
+
+    # properties = properties / np.std(properties, axis=0)        # normalize values
+
     # extra_info = f['extra_info']
 
     # positions, properties = aggregate_lowest_level_cells(positions, properties)
@@ -575,10 +514,13 @@ def make_tutorial_data(examples_dir):
 
 
 if __name__ == '__main__':
-    examples_dir = '/data2/hendrix/examples_2/'
-    train_data_dir = '/data2/hendrix/train_data/'
+    examples_dir = '/data2/hendrix/examples/'
+    train_data_dir = '/data2/hendrix/train_data_2/'
 
     example_dirs = glob.glob(os.path.join(examples_dir, 'example_*'))
+
+    # get_data_info(example_dirs)
+
     list_of_example_dirs = []
     temp_lst = []
     for example_dir in example_dirs:
@@ -588,6 +530,8 @@ if __name__ == '__main__':
         else:
             temp_lst.append(example_dir)
     list_of_example_dirs.append(temp_lst)
+
+    print(f'number of tfrecfiles: {len(list_of_example_dirs)}')
 
     pool = Pool(24)
     pool.map(generate_data, list_of_example_dirs)
