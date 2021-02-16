@@ -76,10 +76,10 @@ def process_snapshot_individual_nodes(snapshot):
 
     property_values = []
     property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
-                           np.log10, np.log10, np.log10, np.log10, lambda x: x, lambda x: x, lambda x: x]
+                           np.log10, np.log10, np.log10, np.log10, lambda x: x, lambda x: x]
 
     property_names = ['x', 'y', 'z', 'velocity_x', 'velocity_y', 'velocity_z', 'density', 'temperature',
-                      'cell_mass', 'cell_volume', 'gravitational_potential', 'grid_level', 'grid_indices']
+                      'cell_mass', 'cell_volume', 'grid_level', 'grid_indices']
 
     for cell_ind in tqdm(range(0, 1 + max_cell_ind)):
         cell_region = ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))
