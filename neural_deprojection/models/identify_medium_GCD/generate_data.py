@@ -538,7 +538,8 @@ def make_magneticum_fits(data_dir, snap_file, number_of_xray_images: int = 1):
 
     """
 
-    clusters = glob.glob(os.path.join(data_dir, snap_file + '/*/simcut/*/' + snap_file))
+    clusters = sorted(glob.glob(os.path.join(data_dir, snap_file + '/*/simcut/*/' + snap_file)))
+    print(f'My clusters {clusters}')
 
     # Parameters for making the xray images
     exp_time = (200., "ks")  # exposure time
@@ -558,19 +559,23 @@ def make_magneticum_fits(data_dir, snap_file, number_of_xray_images: int = 1):
     north_vector = np.array([0., 1., 0.])
 
     # Finds the center of the gas particles in the snapshot by taking the average of the position extrema
-    def find_center(position, offset=(0., 0., 0.)):
-        x, y, z = position.T
+    def find_center(dataset, position, offset=(0., 0., 0.)):
+        max_pos = np.max(position.T, axis=1)
+        min_pos = np.min(position.T, axis=1)
 
-        x_max, x_min = max(x), min(x)
-        y_max, y_min = max(y), min(y)
-        z_max, z_min = max(z), min(z)
+        center = 0.5 * (max_pos + min_pos)
+        box_size = max_pos - min_pos
 
-        x_center = (x_max + x_min) / 2
-        y_center = (y_max + y_min) / 2
-        z_center = (z_max + z_min) / 2
-        return [x_center + offset[0], y_center + offset[1], z_center + offset[2]], [x_max - x_min, y_max - y_min, z_max - z_min]
+        split_cluster = False
 
-    # SimCut files (until November 24, 2020) have fields in this order, so we need to specify them
+        for coord, side in enumerate(box_size):
+            if side > 0.5 * dataset.domain_width[coord]:
+                split_cluster = True
+
+        return center + np.array(offset), box_size, split_cluster
+
+    # # SimCut files (until November 24, 2020) have fields in this order, so we need to specify them
+    # # snap_128, snap_132 and snap_136 were downloaded after this, so this is not needed for these snapshots
     # my_field_def = (
     #     "Coordinates",
     #     "Velocities",
@@ -581,6 +586,8 @@ def make_magneticum_fits(data_dir, snap_file, number_of_xray_images: int = 1):
     #     ("SmoothingLength", "Gas"),
     # )
 
+    split_clusters = 0
+
     # For every selected snapshot, create an xray image for one or more lines of sight
     for cluster in clusters:
         # Take a number of random lines of sight to create the xray images
@@ -589,20 +596,32 @@ def make_magneticum_fits(data_dir, snap_file, number_of_xray_images: int = 1):
         if existing_xray_images >= number_of_xray_images:
             continue
 
-        print(f"Making {number_of_xray_images - existing_xray_images} new xray images in cluster {cluster.split('/')[-4]}")
-
         # Set long_ids = True because the IDs are 64-bit ints
         ds = yt.load(cluster, long_ids=True)
-        print(ds.field_list)
+        # ds = yt.load(cluster, long_ids=True, field_spec=my_field_def)
+        # print(ds.field_list)
 
         # Use the gas particle positions to find the center of the snapshot
         ad = ds.all_data()
         pos = ad['Gas', 'Coordinates'].d
-        c = find_center(pos, [0., 0., 0.])[0]
+        c, box_size, split = find_center(ds, pos, [0., 0., 0.])
+
+        if split:
+            split_clusters += 1
+            continue
+
+        print(' ')
+        print(f'File : {cluster}')
+        print(f"Making {number_of_xray_images - existing_xray_images} new xray images in cluster {cluster.split('/')[-4]}")
+        print(f'Cluster center : {c}')
+        print(f'Cluster box size : {box_size}')
+        print(f'Split cluster : {split}')
+        print(f'Number of split clusters : {split_clusters}')
+        print(' ')
 
         # Create a sphere around the center of the snapshot, which captures the photons
         sp = ds.sphere(c, radius)
-        yt.ProjectionPlot(ds, "z", 'Density', center=c, width=(1000000.0, "kpc")).save()
+        # yt.ProjectionPlot(ds, "z", 'Density', center=c, width=(2000.0, "kpc")).save('/home/s2675544/data/projections/cluster_' + f"{cluster.split('/')[-4]}")
 
         # Set a minimum temperature to leave out that shouldn't be X-ray emitting,
         # set metallicity to 0.3 Zsolar (should maybe fix later)
@@ -610,7 +629,7 @@ def make_magneticum_fits(data_dir, snap_file, number_of_xray_images: int = 1):
         source_model = pyxsim.ThermalSourceModel("apec", min_E, max_E, n_chan, Zmet=Z, kT_min=kT_min)
 
         # Create the photonlist
-        photons = pyxsim.PhotonList.from_data_source(sp, redshift, area, exp_time, source_model)
+        photons = pyxsim.PhotonList.from_data_source(sp, ds.current_redshift, area, exp_time, source_model)
 
         lines_of_sight = 2.0 * (np.random.random((number_of_xray_images - existing_xray_images, 3)) - 0.5)
 
@@ -674,9 +693,21 @@ def make_bahamas_fits(data_dir, number_of_xray_images=1):
     ds = yt.load(snap_file)
 
     for cluster in clusters:
+        existing_xray_images = len(glob.glob(cluster_dirs[cluster] + '/xray_image*'))
+
+        if existing_xray_images >= number_of_xray_images:
+            continue
+
         # Create a sphere around the center of the snapshot, which captures the photons
-        sphere_center = centers[cluster]
-        sp = ds.sphere(sphere_center, radius)
+        c = centers[cluster]
+        sp = ds.sphere(c, radius)
+
+        print(' ')
+        print(f'File : {cluster_dirs[cluster]}')
+        print(
+            f"Making {number_of_xray_images - existing_xray_images} new xray images in cluster {cluster.split('/')[-4]}")
+        print(f'Cluster center : {c}')
+        print(' ')
 
         # Create the photonlist
         photons = PhotonList.from_data_source(sp, redshift, area, exp_time, source_model)
@@ -756,15 +787,6 @@ def extract_data(cluster, snapshot_name):
     Returns:
 
     """
-    my_field_def = (
-        "Coordinates",
-        "Velocities",
-        "Mass",
-        "ParticleIDs",
-        ("InternalEnergy", "Gas"),
-        ("Density", "Gas"),
-        ("SmoothingLength", "Gas"),
-    )
 
     if snapshot_name[0:3] == 'AGN':
         with h5py.File(cluster, 'r') as ds_h5:
@@ -773,7 +795,7 @@ def extract_data(cluster, snapshot_name):
             rho = np.array(ds_h5['PartType0']['Density'])
             u = np.array(ds_h5['PartType0']['InternalEnergy'])
     else:
-        ds_yt = yt.load(cluster, long_ids=True, field_spec=my_field_def)
+        ds_yt = yt.load(cluster, long_ids=True)
         ad = ds_yt.all_data()
 
         positions = ad['Gas', 'Coordinates'].d
@@ -946,15 +968,22 @@ def read_data_csv():
 
 if __name__ == '__main__':
 
-    # Whether or not this code is running on ALICE
-    alice = True
+    # Define the directories containing the data
+    if os.getcwd().split('/')[2] == 's2675544':
+        my_magneticum_data_dir = '/home/s2675544/data/Magneticum/Box2_hr'
+        my_bahamas_data_dir = '/home/s2675544/data/Bahamas'
+        print('Running on ALICE')
+    else:
+        my_magneticum_data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Magneticum/Box2_hr'
+        my_bahamas_data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Bahamas'
+        print('Running at home')
 
-    # Whether to make xray images of the clusters in magneticum snapshots
-    create_magneticum_xrays = False
-    number_of_magneticum_xray_images = 1
-
+    # Determine which snapshots to use
     magneticum_snap_dirs = ['snap_128', 'snap_132', 'snap_136']
-    # magneticum_snap_dirs = ['snap_128', 'snap_132', 'snap_136']
+    # Possible Magneticum dirs ['snap_128', 'snap_132', 'snap_136']
+
+    bahamas_snap_dirs = []
+    # Possible Bahamas dirs : ['AGN_TUNED_nu0_L100N256_WMAP9', 'AGN_TUNED_nu0_L400N1024_WMAP9']
 
     # Whether to make hdf5 files that contain the particle data of individual FoF groups (clusters) in the BAHAMAS
     # snapshots. Specify the number of clusters for which to make hdf5 files. It will find the largest clusters
@@ -963,29 +992,23 @@ if __name__ == '__main__':
     number_of_clusters = 105
     starting_cluster = 95
 
+    # Whether to make xray images of the clusters in magneticum snapshots
+    create_magneticum_xrays = True
+    number_of_magneticum_xray_images = 1
+
     # Whether to make xrays images of the clusters in the BAHAMAS snapshots
     create_bahamas_xrays = False
     number_of_bahamas_xray_images = 1
 
-    bahamas_snap_dirs = []
-    # bahamas_snap_dirs = ['AGN_TUNED_nu0_L100N256_WMAP9', 'AGN_TUNED_nu0_L400N1024_WMAP9']
-
     # Whether to find and/or print the offsets and scales of the particle data
-    calculate_offsets_and_scales = True
-    print_offsets_and_scales = True
+    calculate_offsets_and_scales = False
+    print_offsets_and_scales = False
 
     # Whether to combine the particle data and image data in example directories as data.npz files
     combine = False
 
     # Whether to encode the combined data in tfrecord files and whether to normalize first.
     tfrec = False
-
-    if alice:
-        my_magneticum_data_dir = '/home/s2675544/data/Magneticum/Box2_hr'
-        my_bahamas_data_dir = '/home/s2675544/data/Bahamas'
-    else:
-        my_magneticum_data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Magneticum/Box2_hr'
-        my_bahamas_data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Bahamas'
 
     if create_magneticum_xrays:
         for snap_file in magneticum_snap_dirs:
