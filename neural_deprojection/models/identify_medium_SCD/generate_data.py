@@ -2,6 +2,7 @@ import os
 import glob
 import tensorflow as tf
 
+from timeit import default_timer
 from itertools import product
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
@@ -20,8 +21,9 @@ from multiprocessing import Pool, Lock
 
 mp_lock = Lock()
 
+
 def std(tensor, axis):
-    return tf.math.sqrt(tf.reduce_mean(tensor**2, axis=axis))
+    return tf.math.sqrt(tf.reduce_mean(tensor ** 2, axis=axis))
 
 
 def find_screen_length(distance_matrix, k_mean):
@@ -54,6 +56,73 @@ def find_screen_length(distance_matrix, k_mean):
     return bisect(loss, 0., dist_max, xtol=0.001)
 
 
+def generate_example_random_choice(positions, properties, k=26, plot=True):
+    print('choice nn')
+    idx_list = np.arange(len(positions))
+    virtual_node_positions = positions[np.random.choice(idx_list, 500, replace=False)]
+
+    kdtree = cKDTree(virtual_node_positions)
+    dist, indices = kdtree.query(positions)
+
+    t0 = default_timer()
+    virtual_properties = np.zeros((len(np.bincount(indices)), len(properties[0])))
+
+    mean_sum = [lambda x: np.bincount(indices, weights=x) / np.maximum(1., np.bincount(indices)),       # mean
+                lambda x: np.bincount(indices, weights=x)]              # sum
+
+    mean_sum_enc = [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1]
+
+    for p, enc in zip(np.arange(len(properties[0])), mean_sum_enc):
+        virtual_properties[:, p] = mean_sum[enc](properties[:, p])
+        virtual_positions = virtual_properties[:, :3]
+
+    print('done bincount: ', default_timer() - t0)
+
+    graph = nx.DiGraph()
+
+
+    print(virtual_positions)
+    kdtree = cKDTree(virtual_positions)
+    dist, idx = kdtree.query(virtual_positions, k=k + 1)
+    receivers = idx[:, 1:]  # N,k
+    senders = np.arange(virtual_positions.shape[0])  # N
+    senders = np.tile(senders[:, None], [1, k])  # N,k
+    receivers = receivers.flatten()
+    senders = senders.flatten()
+
+    n_nodes = virtual_positions.shape[0]
+
+    pos = dict()  # for plotting node positions.
+    edgelist = []
+    for node, feature, position in zip(np.arange(n_nodes), virtual_properties, virtual_positions):
+        graph.add_node(node, features=feature)
+        pos[node] = position[:2]
+
+    # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
+    for u, v in zip(senders, receivers):
+        graph.add_edge(u, v, features=np.array([1., 0.]))
+        graph.add_edge(v, u, features=np.array([1., 0.]))
+        edgelist.append((u, v))
+        edgelist.append((v, u))
+
+    graph.graph["features"] = np.array([0.])
+    # plotting
+
+    print('len(pos) = {}\nlen(edgelist) = {}'.format(len(pos), len(edgelist)))
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(20, 20))
+        draw(graph, ax=ax, pos=pos, node_color='blue', edge_color='red', node_size=10, width=0.1)
+
+        image_dir = '/data2/hendrix/images/'
+        graph_image_idx = len(glob.glob(os.path.join(image_dir, 'graph_image_*')))
+        plt.savefig(os.path.join(image_dir, 'graph_image_{}'.format(graph_image_idx)))
+
+    return networkxs_to_graphs_tuple([graph],
+                                     node_shape_hint=[virtual_positions.shape[1] + virtual_properties.shape[1]],
+                                     edge_shape_hint=[2])
+
+
+
 def generate_example_nn(positions, properties, k=26, resolution=2, plot=False):
     print('example nn')
 
@@ -73,7 +142,7 @@ def generate_example_nn(positions, properties, k=26, resolution=2, plot=False):
     for i, p in enumerate(indices):
         if len(p) == 0:
             continue
-        virt_pos, virt_prop = make_virtual_node(positions[p], properties[p])
+        virt_pos, virt_prop = make_virtual_node(properties[p])
         node_positions.append(virt_pos)
         node_features.append(virt_prop)
 
@@ -273,7 +342,7 @@ def save_examples(generator, save_dir=None,
     pbar = tqdm(total=num_examples)
     while data_left:
 
-        mp_lock.acquire()       # make sure no duplicate files are made / replaced
+        mp_lock.acquire()  # make sure no duplicate files are made / replaced
         tf_files = glob.glob(os.path.join(save_dir, 'train_*'))
         file_idx = len(tf_files)
         mp_lock.release()
@@ -310,7 +379,6 @@ def feature_to_graph_tuple(name=''):
             f'{name}_edges': tf.io.FixedLenFeature([], dtype=tf.string),
             f'{name}_senders': tf.io.FixedLenFeature([], dtype=tf.string),
             f'{name}_receivers': tf.io.FixedLenFeature([], dtype=tf.string)}
-
 
 
 def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=None):
@@ -413,7 +481,7 @@ def generate_data(data_dirs, save_dir='/data2/hendrix/train_data_2/'):
         for idx, dir in tqdm(enumerate(data_dirs)):
             print("Generating data from {}".format(dir))
             positions, properties, image = _get_data(dir)
-            graph = generate_example_nn(positions, properties)
+            graph = generate_example_random_choice(positions, properties)
             yield (graph, image, idx)
 
     train_tfrecords = save_examples(data_generator(),
@@ -428,7 +496,7 @@ def generate_data(data_dirs, save_dir='/data2/hendrix/train_data_2/'):
 # specific to project
 
 
-def make_virtual_node(positions, properties):
+def make_virtual_node(properties):
     """
     Aggregate positions and properties of nodes into one virtual node.
 
@@ -438,7 +506,14 @@ def make_virtual_node(positions, properties):
 
     Returns: [3], [F0,...,Fd]
     """
-    return np.mean(positions, axis=0), np.mean(properties, axis=0)
+
+    virtual_properties = np.zeros(11)
+    virtual_properties[:6] = np.mean(properties[:, 6], axis=0)
+    virtual_properties[6] = np.sum(properties[:, 6])
+    virtual_properties[7:9] = np.mean(properties[:, 7:9], axis=0)
+    virtual_properties[9:11] = np.sum(properties[:, 9:11], axis=0)
+
+    return np.mean(properties[:, 3], axis=0), virtual_properties
 
 
 def aggregate_lowest_level_cells(positions, properties):
@@ -491,13 +566,11 @@ def _get_data(dir):
     positions = f['positions']
     properties = f['properties']
     image = f['proj_image']
-    image = image.reshape((256,256,1))
+    image = image.reshape((256, 256, 1))
 
     # properties = properties / np.std(properties, axis=0)        # normalize values
 
     # extra_info = f['extra_info']
-
-    # positions, properties = aggregate_lowest_level_cells(positions, properties)
 
     return positions, properties, image  # , extra_info
 
@@ -521,20 +594,23 @@ if __name__ == '__main__':
 
     # get_data_info(example_dirs)
 
-    list_of_example_dirs = []
-    temp_lst = []
-    for example_dir in example_dirs:
-        if len(temp_lst) == 32:
-            list_of_example_dirs.append(temp_lst)
-            temp_lst = []
-        else:
-            temp_lst.append(example_dir)
-    list_of_example_dirs.append(temp_lst)
+    positions, properties, image = _get_data(example_dirs[0])
+    generate_example_random_choice(positions, properties)
 
-    print(f'number of tfrecfiles: {len(list_of_example_dirs)}')
-
-    pool = Pool(24)
-    pool.map(generate_data, list_of_example_dirs)
+    # list_of_example_dirs = []
+    # temp_lst = []
+    # for example_dir in example_dirs:
+    #     if len(temp_lst) == 32:
+    #         list_of_example_dirs.append(temp_lst)
+    #         temp_lst = []
+    #     else:
+    #         temp_lst.append(example_dir)
+    # list_of_example_dirs.append(temp_lst)
+    #
+    # print(f'number of tfrecfiles: {len(list_of_example_dirs)}')
+    #
+    # pool = Pool(24)
+    # pool.map(generate_data, list_of_example_dirs)
 
     # tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
     # dataset = tf.data.TFRecordDataset(tfrecords).map(
