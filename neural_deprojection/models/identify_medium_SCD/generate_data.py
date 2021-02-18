@@ -594,27 +594,18 @@ if __name__ == '__main__':
 
     # get_data_info(example_dirs)
 
-    positions, properties, image = _get_data(example_dirs[0])
-    generate_example_random_choice(positions, properties)
+    list_of_example_dirs = []
+    temp_lst = []
+    for example_dir in example_dirs:
+        if len(temp_lst) == 32:
+            list_of_example_dirs.append(temp_lst)
+            temp_lst = []
+        else:
+            temp_lst.append(example_dir)
+    list_of_example_dirs.append(temp_lst)
 
-    # list_of_example_dirs = []
-    # temp_lst = []
-    # for example_dir in example_dirs:
-    #     if len(temp_lst) == 32:
-    #         list_of_example_dirs.append(temp_lst)
-    #         temp_lst = []
-    #     else:
-    #         temp_lst.append(example_dir)
-    # list_of_example_dirs.append(temp_lst)
-    #
-    # print(f'number of tfrecfiles: {len(list_of_example_dirs)}')
-    #
-    # pool = Pool(24)
-    # pool.map(generate_data, list_of_example_dirs)
+    print(f'number of tfrecfiles: {len(list_of_example_dirs)}')
 
-    # tfrecords = generate_data(glob.glob(os.path.join(examples_dir, 'example_*')), train_data_dir)
-    # dataset = tf.data.TFRecordDataset(tfrecords).map(
-    #     lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
-    # loaded_graph = iter(dataset)
-    # for (graph, image, example_idx) in iter(dataset):
-    #     print(graph.nodes.shape, image.shape, example_idx)
+    pool = Pool(24)
+    pool.map(generate_data, list_of_example_dirs)
+

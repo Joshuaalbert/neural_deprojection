@@ -140,7 +140,5 @@ def process_snapshot_individual_nodes(snapshot):
 
 
 if __name__ == '__main__':
-    # pool = Pool(os.cpu_count() - 2)
     pool = Pool(24)
     pool.map(process_snapshot_individual_nodes, snapshot_list)
-    # process_snapshot_individual_nodes(3136)
