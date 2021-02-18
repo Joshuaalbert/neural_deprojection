@@ -2,21 +2,12 @@ from neural_deprojection.models.identify_medium.generate_data import generate_da
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule
 import glob, os
 import tensorflow as tf
-import numpy as np
 from functools import partial
 
-from graph_nets.utils_tf import set_zero_global_features
 from graph_nets import blocks
-from graph_nets.modules import GraphNetwork
-from graph_nets._base import WrappedModelFnModule
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
-from graph_nets.utils_np import graphs_tuple_to_networkxs
 from graph_nets.utils_tf import fully_connect_graph_dynamic
-from networkx.drawing import draw
-from networkx.linalg.spectrum import normalized_laplacian_spectrum
-from networkx import Graph
-import pylab as plt
 
 
 class RelationNetwork(AbstractModule):
@@ -29,8 +20,7 @@ class RelationNetwork(AbstractModule):
     The output graph has updated, non-`None`, globals.
     """
 
-    def \
-            __init__(self,
+    def __init__(self,
                  edge_model_fn,
                  global_model_fn,
                  reducer=tf.math.unsorted_segment_sum,
@@ -65,7 +55,7 @@ class RelationNetwork(AbstractModule):
             use_globals=use_globals,
             edges_reducer=reducer)
 
-    def _build(self, graph):
+    def _build(self, graph:GraphsTuple) -> GraphsTuple:
         """Connects the RelationNetwork.
 
         Args:
@@ -134,29 +124,14 @@ def main(data_dir):
 
     def loss(model_outputs, batch):
         (graph, img, c) = batch
+        # loss =  mean(-sum_k^2 true[k] * log(pred[k]/true[k]))
         return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
 
     opt = snt.optimizers.Adam(0.0001)
     training = TrainOneEpoch(model, loss, opt)
 
-    vanilla_training_loop(train_dataset, training, 10, False)
+    vanilla_training_loop(train_dataset, training_dataset=training, num_epochs=10, early_stop_patience=3, test_dataset=test_dataset, debug=False)
 
-    # for (target_graph, graph, rank) in iter(test_dataset):
-    #     predict_rank = tf.sigmoid(model((target_graph, graph, rank)))
-    #     tg = graphs_tuple_to_networkxs(target_graph)[0]
-    #     g = graphs_tuple_to_networkxs(graph)[0]
-    #     dist, e1,e2 = graph_distance(Graph(tg), Graph(g))
-    #     print("True rank={}, predicted rank={}".format(rank, predict_rank))
-    #     fig, axs = plt.subplots(3, 1, figsize=(6, 12))
-    #     draw(tg, pos={n: tg.nodes[n]['features'] for n in tg.nodes}, ax=axs[0])
-    #     draw(g, pos={n: g.nodes[n]['features'] for n in g.nodes}, ax=axs[1])
-    #     axs[0].set_title(
-    #         "True rank={:.3f}, predicted rank={:.3f}".format(rank.numpy().item(0), predict_rank.numpy().item(0)))
-    #     axs[2].plot(e1,c='black',label='Target spectrum')
-    #     axs[2].plot(e2,c='red',label='spectrum')
-    #     axs[2].set_title("Normalised Laplacian spectral distance: {:.3f}".format(dist))
-    #     axs[2].legend()
-    #     plt.show()
 
 
 if __name__ == '__main__':

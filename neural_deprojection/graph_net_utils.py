@@ -4,6 +4,7 @@ from graph_nets import utils_tf, blocks
 import tqdm
 import sonnet as snt
 from sonnet.src.base import Optimizer, Module
+import numpy as np
 import six
 import abc
 import contextlib
