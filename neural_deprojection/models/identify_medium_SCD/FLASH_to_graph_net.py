@@ -26,33 +26,38 @@ mp_lock = Lock()
 yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
 
 
-def rotation_matrix_from_vectors(vec1, vec2):
-    """ Find the rotation matrix that aligns vec1 to vec2
-    :param vec1: A 3d "source" vector
-    :param vec2: A 3d "destination" vector
-    :return mat: A transform matrix (3x3) which when applied to vec1, aligns it with vec2.
+def _random_ortho_matrix(n):
     """
-    a, b = (vec1 / np.linalg.norm(vec1)).reshape(3), (vec2 / np.linalg.norm(vec2)).reshape(3)
-    v = np.cross(a, b)
-    c = np.dot(a, b)
-    s = np.linalg.norm(v)
-    kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-    rotation_matrix = np.eye(3) + kmat + kmat.dot(kmat) * ((1 - c) / (s ** 2))
-    return rotation_matrix
+    Samples a random orthonormal num_parent,num_parent matrix from Stiefels manifold.
+    From https://stackoverflow.com/a/38430739
 
-
-def make_rand_vector(dims):
-    """
-    Make unit vector in random direction
     Args:
-        dims: dimension
+        n: Size of matrix, draws from O(n) group.
 
-    Returns: random unit vector
-
+    Returns: random [n,n] matrix with determinant = +-1
     """
-    vec = [gauss(0, 1) for i in range(dims)]
-    mag = sum(x ** 2 for x in vec) ** .5
-    return [x / mag for x in vec]
+    H = np.random.normal(size=(n, n))
+    Q, R = np.linalg.qr(H)
+    Q = Q @ np.diag(np.sign(np.diag(R)))
+    return Q
+
+
+def _random_special_ortho_matrix(n):
+    """
+    Samples a random orthonormal num_parent,num_parent matrix from Stiefels manifold.
+    From https://stackoverflow.com/a/38430739
+
+    Args:
+        key: PRNG seed
+        n: Size of matrix, draws from O(n) group.
+
+    Returns: random [n,n] matrix with determinant = +-1
+    """
+    det = -1.
+    while det < 0:
+        Q = _random_ortho_matrix(n)
+        det = np.linalg.det(Q)
+    return Q
 
 
 def graph_tuple_to_feature(graph: GraphsTuple, name=''):
@@ -213,7 +218,7 @@ def generate_data(positions, properties, proj_images, save_dir='/data2/hendrix/t
     return train_tfrecords
 
 
-def snaphot_to_tfrec(snapshot, save_dir = '/data2/hendrix/train_data_2/'):
+def snaphot_to_tfrec(snapshot, save_dir='/data2/hendrix/train_data_2/'):
     """
     load snapshot plt file, rotate for different viewing angles, make projections and corresponding graph nets. Save to
     tfrec files.
@@ -278,19 +283,14 @@ def snaphot_to_tfrec(snapshot, save_dir = '/data2/hendrix/train_data_2/'):
     projections = 0
     while projections < num_of_projections:
         print(projections)
-        viewing_vec = make_rand_vector(3)
-        north_vector = [0, 1, 0]
-        rot_mat = rotation_matrix_from_vectors([0, 0, 1], viewing_vec)
 
-        Rz = np.array([[np.cos(-np.pi/2), -np.sin(-np.pi/2), 0],
-                      [-np.sin(np.pi/2), np.cos(-np.pi/2), 0],
-                      [0, 0, 1]])
-        Ry = np.array([[np.cos(np.pi), 0, np.sin(np.pi)],
-                       [0, 1, 0],
-                       [-np.sin(np.pi), 0, np.cos(np.pi)]])
+        V = np.eye(3)
+        rot_mat = _random_special_ortho_matrix(3)
+        Vprime = rot_mat @ V
 
-        # rot_mat = np.matmul(Ry, rot_mat)
-        north_vector = np.matmul(rot_mat, north_vector)
+        north_vector = Vprime[:, 1]
+        viewing_vec = Vprime[:, 2]
+
         _extra_info = [snapshot, viewing_vec, resolution, width, field]
         proj_image = yt.off_axis_projection(ds, center=[0, 0, 0], normal_vector=viewing_vec, north_vector=north_vector,
                                             item=field, width=width, resolution=resolution)
@@ -327,7 +327,7 @@ if __name__ == '__main__':
     # examples_dir = '/home/julius/Desktop/SCD/SeanData/examples/'
     all_snapshots = np.arange(3137)
     # snapshot_list = np.random.choice(all_snapshots, 5, replace=False)
-    snapshot_list = [3136,3000,2500,2000,1500]
+    snapshot_list = [3136, 3000, 2500, 2000, 1500]
 
     save_dir = '/data2/hendrix/train_data_2/'
 
