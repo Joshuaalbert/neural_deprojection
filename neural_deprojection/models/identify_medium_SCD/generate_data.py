@@ -56,15 +56,14 @@ def find_screen_length(distance_matrix, k_mean):
     return bisect(loss, 0., dist_max, xtol=0.001)
 
 
-def generate_example_random_choice(positions, properties, k=26, plot=True):
+def generate_example_random_choice(positions, properties, k=26, plot=False):
     print('choice nn')
     idx_list = np.arange(len(positions))
-    virtual_node_positions = positions[np.random.choice(idx_list, 500, replace=False)]
+    virtual_node_positions = positions[np.random.choice(idx_list, 1000, replace=False)]
 
     kdtree = cKDTree(virtual_node_positions)
     dist, indices = kdtree.query(positions)
 
-    t0 = default_timer()
     virtual_properties = np.zeros((len(np.bincount(indices)), len(properties[0])))
 
     mean_sum = [lambda x: np.bincount(indices, weights=x) / np.maximum(1., np.bincount(indices)),       # mean
@@ -76,12 +75,7 @@ def generate_example_random_choice(positions, properties, k=26, plot=True):
         virtual_properties[:, p] = mean_sum[enc](properties[:, p])
         virtual_positions = virtual_properties[:, :3]
 
-    print('done bincount: ', default_timer() - t0)
-
     graph = nx.DiGraph()
-
-
-    print(virtual_positions)
     kdtree = cKDTree(virtual_positions)
     dist, idx = kdtree.query(virtual_positions, k=k + 1)
     receivers = idx[:, 1:]  # N,k
@@ -319,7 +313,7 @@ def graph_tuple_to_feature(graph: GraphsTuple, name=''):
 
 
 def save_examples(generator, save_dir=None,
-                  examples_per_file=32, num_examples=1, prefix='train'):
+                  examples_per_file=26, num_examples=1, prefix='train'):
     """
     Saves a list of GraphTuples to tfrecords.
 
@@ -465,7 +459,40 @@ def get_data_info(data_dirs):
                   f"    properties_max: {np.around(np.max(properties, axis=0), 2)}\n", file=text_file)
 
 
-def generate_data(data_dirs, save_dir='/data2/hendrix/train_data_2/'):
+def get_data_image(data_dirs):
+    """
+    Get information of saved data.
+
+    Args:
+        data_dirs: data directories
+
+    Returns:
+
+    """
+
+    image_dir = '/data2/hendrix/projection_images/'
+
+    def data_generator():
+        for idx, dir in tqdm(enumerate(data_dirs)):
+            print("Generating data from {}".format(dir))
+            positions, properties, image = _get_data(dir)
+            yield (properties, image, dir)
+
+    data_iterable = iter(data_generator())
+
+    while True:
+        try:
+            (properties, image, dir) = next(data_iterable)
+        except StopIteration:
+            break
+        print('save image...')
+        proj_image_idx = len(glob.glob(os.path.join(image_dir, 'proj_image_*')))
+        plt.imsave(os.path.join(image_dir, 'proj_image_{}.png'.format(proj_image_idx)),
+                   image[:,:,0])
+        print('saved.')
+
+
+def generate_data(data_dir, save_dir='/data2/hendrix/train_data_2/'):
     """
     Routine for generating train data in tfrecords
 
@@ -475,19 +502,21 @@ def generate_data(data_dirs, save_dir='/data2/hendrix/train_data_2/'):
 
     Returns: list of tfrecords.
     """
+    npz_files = glob.glob(os.path.join(data_dir, '*'))
 
     def data_generator():
         print("Making graphs.")
-        for idx, dir in tqdm(enumerate(data_dirs)):
-            print("Generating data from {}".format(dir))
+
+        for idx, dir in tqdm(enumerate(npz_files)):
+            print("Generating data from {}/{}".format(data_dir, dir))
             positions, properties, image = _get_data(dir)
             graph = generate_example_random_choice(positions, properties)
             yield (graph, image, idx)
 
     train_tfrecords = save_examples(data_generator(),
-                                    save_dir,
-                                    examples_per_file=32,
-                                    num_examples=len(data_dirs),
+                                    save_dir=save_dir,
+                                    examples_per_file=len(npz_files),
+                                    num_examples=len(example_dirs),
                                     prefix='train')
     return train_tfrecords
 
@@ -562,7 +591,7 @@ def _get_data(dir):
 
     """
 
-    f = np.load(os.path.join(dir, 'data.npz'))
+    f = np.load(dir)
     positions = f['positions']
     properties = f['properties']
     image = f['proj_image']
@@ -592,20 +621,23 @@ if __name__ == '__main__':
 
     example_dirs = glob.glob(os.path.join(examples_dir, 'example_*'))
 
+    print(example_dirs)
+
     # get_data_info(example_dirs)
+    # get_data_image(example_dirs)
 
-    list_of_example_dirs = []
-    temp_lst = []
-    for example_dir in example_dirs:
-        if len(temp_lst) == 32:
-            list_of_example_dirs.append(temp_lst)
-            temp_lst = []
-        else:
-            temp_lst.append(example_dir)
-    list_of_example_dirs.append(temp_lst)
+    # list_of_example_dirs = []
+    # temp_lst = []
+    # for example_dir in example_dirs:
+    #     if len(temp_lst) == 32:
+    #         list_of_example_dirs.append(temp_lst)
+    #         temp_lst = []
+    #     else:
+    #         temp_lst.append(example_dir)
+    # list_of_example_dirs.append(temp_lst)
 
-    print(f'number of tfrecfiles: {len(list_of_example_dirs)}')
+    # print(f'number of tfrecfiles: {len(list_of_example_dirs)}')
 
-    pool = Pool(24)
-    pool.map(generate_data, list_of_example_dirs)
+    pool = Pool(1)
+    pool.map(generate_data, example_dirs)
 
