@@ -1,116 +1,120 @@
 import os
 import glob
 import tensorflow as tf
-from itertools import product
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
 import numpy as np
 import networkx as nx
 from networkx.drawing import draw
 from tqdm import tqdm
-from scipy.optimize import bisect
 from scipy.spatial.ckdtree import cKDTree
 import pylab as plt
 import yt
 from astropy.io import fits
 import h5py
-import csv
-from pyxsim import ThermalSourceModel, PhotonList
 import soxs
 import gadget as g
 import pyxsim
+import mayavi
+from mayavi import mlab
+
+from multiprocessing import Pool, Lock
+
+mp_lock = Lock()
 
 
-def find_screen_length(distance_matrix, k_mean):
+def _random_ortho_matrix(n):
     """
-    Get optimal screening length.
+    Samples a random orthonormal num_parent,num_parent matrix from Stiefels manifold.
+    From https://stackoverflow.com/a/38430739
 
     Args:
-        distance_matrix: [num_points, num_points]
-        k_mean: float
+        n: Size of matrix, draws from O(n) group.
 
-    Returns: float the optimal screen length
+    Returns: random [n,n] matrix with determinant = +-1
     """
-    dist_max = distance_matrix.max()
-
-    distance_matrix_no_loops = np.where(distance_matrix == 0., np.inf, distance_matrix)
-
-    def get_k_mean(length):
-        paired = distance_matrix_no_loops < length
-        degree = np.sum(paired, axis=-1)
-        return degree.mean()
-
-    def loss(length):
-        return get_k_mean(length) - k_mean
-
-    if loss(0.) * loss(dist_max) >= 0.:
-        # When there are fewer than k_mean+1 nodes in the list,
-        # it's impossible for the average degree to be equal to k_mean.
-        # So choose max screening length. Happens when f(low) and f(high) have same sign.
-        return dist_max
-    return bisect(loss, 0., dist_max, xtol=0.001)
+    H = np.random.normal(size=(n, n))
+    Q, R = np.linalg.qr(H)
+    Q = Q @ np.diag(np.sign(np.diag(R)))
+    return Q
 
 
-def generate_example_nn(positions, properties, k=26, resolution=0.2, plot=False):
+def _random_special_ortho_matrix(n):
     """
-    Generate a k-nn graph from positions.
+    Samples a random orthonormal num_parent,num_parent matrix from Stiefels manifold.
+    From https://stackoverflow.com/a/38430739
 
     Args:
-        positions: [num_points, 3] positions used for graph constrution.
-        properties: [num_points, F0,...,Fd] each node will have these properties of shape [F0,...,Fd]
-        k: int, k nearest neighbours are connected.
-        plot: whether to plot graph.
+        key: PRNG seed
+        n: Size of matrix, draws from O(n) group.
 
-    Returns: GraphTuple
+    Returns: random [n,n] matrix with determinant = +-1
     """
-    print('example nn')
+    det = -1.
+    while det < 0:
+        Q = _random_ortho_matrix(n)
+        det = np.linalg.det(Q)
+    return Q
 
-    # resolution = 3.08618 * 1000000 * resolution  # pc to cm
 
-    node_features = []
-    node_positions = []
+# Finds the center of the gas particles in the snapshot by taking the average of the position extrema
+def find_center(dataset, position, offset=(0., 0., 0.)):
+    max_pos = np.max(position.T, axis=1)
+    min_pos = np.min(position.T, axis=1)
 
-    box_size = (np.max(positions), np.min(positions))  # box that encompasses all of the nodes
-    print(box_size)
-    axis = np.arange(box_size[1], box_size[0], resolution)
-    print(f'Axis length = {len(axis)}')
-    lists = [axis, axis, axis]
-    virtual_node_pos = [p for p in product(*lists)]
-    # virtual_node_pos = list(combinations_with_replacement(np.arange(box_size[1], box_size[0], resolution), 3))
-    print(f'Lenght virtual nodes pos = {len(virtual_node_pos)}')
-    virtual_kdtree = cKDTree(virtual_node_pos)
-    print(f'Virtual tree n = {virtual_kdtree.n}')
-    print(f'positions = {positions.shape}')
-    particle_kdtree = cKDTree(positions)
-    print(f'Particle tree n = {particle_kdtree.n}')
-    indices = virtual_kdtree.query_ball_tree(particle_kdtree, np.sqrt(3) / 2. * resolution)
-    print(len(list(indices)))
+    center = 0.5 * (max_pos + min_pos)
+    box_size = max_pos - min_pos
 
-    for i, p in enumerate(indices):
-        if len(p) == 0:
-            continue
-        virt_pos, virt_prop = make_virtual_node(positions[p], properties[p])
-        node_positions.append(virt_pos)
-        node_features.append(virt_prop)
+    split_cluster = False
 
-    node_features = np.array(node_features)
-    node_positions = np.array(node_positions)
-    print(f'Node feature shape : {node_features.shape}')
-    print(f'Node positions shape : {node_positions.shape}')
+    for coord, side in enumerate(box_size):
+        # print(side)
+        # print(dataset.domain_width[coord])
+        if side > 0.5 * dataset.domain_width[coord]:
+            split_cluster = True
+
+    return center + np.array(offset), box_size, split_cluster
+
+
+@tf.function
+def downsample(image):
+    filter = tf.ones((2, 2, 1, 1)) * 0.25
+    return tf.nn.conv2d(image[None, :, :, None],
+                        filters=filter, strides=2,
+                        padding='SAME')[0, :, :, 0]
+
+
+def generate_example_random_choice(positions, properties, xray_image, hot_gas_positions, number_of_virtual_nodes=1000, k=26, plot=True):
+    idx_list = np.arange(len(positions))
+    virtual_node_positions = positions[np.random.choice(idx_list, number_of_virtual_nodes, replace=False)]
+
+    kdtree = cKDTree(virtual_node_positions)
+    dist, indices = kdtree.query(positions)
+
+    virtual_properties = np.zeros((len(np.bincount(indices)), len(properties[0])))
+
+    mean_sum = [lambda x: np.bincount(indices, weights=x) / np.maximum(1., np.bincount(indices)),       # mean
+                lambda x: np.bincount(indices, weights=x)]              # sum
+
+    mean_sum_enc = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    for p, enc in zip(np.arange(properties.shape[1]), mean_sum_enc):
+        virtual_properties[:, p] = mean_sum[enc](properties[:, p])
+        virtual_positions = virtual_properties[:, :3]
 
     # Directed graph
     graph = nx.DiGraph()
 
     # Create cKDTree class to find the nearest neighbours of the positions
-    kdtree = cKDTree(node_positions)
+    kdtree = cKDTree(virtual_properties)
     # idx has shape (positions, k+1) and contains for every position the indices of the nearest neighbours
-    dist, idx = kdtree.query(node_positions, k=k+1)
-    #downscale resolution
+    dist, idx = kdtree.query(virtual_properties, k=k+1)
+    # downscale resolution
 
     # The index of the first nearest neighbour is the position itself, so we discard that one
-    receivers = idx[:, 1:]#N,k
-    senders = np.arange(node_positions.shape[0])# Just a range from 0 to the number of positions
-    senders = np.tile(senders[:, None], [1,k])#N,k
+    receivers = idx[:, 1:]  # N,k
+    senders = np.arange(virtual_properties.shape[0])  # Just a range from 0 to the number of positions
+    senders = np.tile(senders[:, None], [1, k])  # N,k
     # senders looks like (for 4 positions and 3 nn's)
     # [[0  0  0]
     #  [1  1  1]
@@ -121,10 +125,12 @@ def generate_example_nn(positions, properties, k=26, resolution=0.2, plot=False)
     # The indices of receivers and senders correspond to each other (so receiver[32] belongs to sender[32])
     # The value of indices in senders and receivers correspond to the index they have in the positions array.
     # (so if sender[32] = 6, then that sender has coordinates positions[6])
-    receivers = receivers.flatten() # shape is (len(positions) * k,)
-    senders = senders.flatten() # shape is (len(positions) * k,)
+    receivers = receivers.flatten()  # shape is (len(positions) * k,)
+    senders = senders.flatten()  # shape is (len(positions) * k,)
 
-    n_nodes = node_positions.shape[0] #number of nodes is the number of positions
+    n_nodes = virtual_properties.shape[0] # number of nodes is the number of positions
+
+    box_size = (np.min(virtual_positions), np.max(virtual_positions))
 
     if plot:
         pos = dict()  # for plotting node positions.
@@ -132,9 +138,9 @@ def generate_example_nn(positions, properties, k=26, resolution=0.2, plot=False)
 
         # Now put the data in the directed graph: first the nodes with their positions and properties
         # pos just takes the x and y coordinates of the position so a 2D plot can be made
-        for node, feature, position in zip(np.arange(n_nodes), node_features, node_positions):
+        for node, feature, position in zip(np.arange(n_nodes), virtual_properties, virtual_positions):
             graph.add_node(node, features=feature)
-            pos[node] = (position[:2] - box_size[1])/(box_size[0] - box_size[1])
+            pos[node] = (position[:2] - box_size[0])/(box_size[1] - box_size[0])
 
         # Next add the edges using the receivers and senders arrays we just created
         # Note that an edge is added for both directions
@@ -150,17 +156,65 @@ def generate_example_nn(positions, properties, k=26, resolution=0.2, plot=False)
         print(f'Particle graph nodes : {graph.number_of_nodes()}')
         print(f'Particle graph edges : {graph.number_of_edges()}')
 
-        #Plotting
-        fig, ax = plt.subplots(1, 2, figsize=(24, 12))
-        print('Plotting...')
-        draw(graph, ax=ax[0], pos=pos, node_color='green', edge_color='red')
-        ax[1].scatter(positions[:,0], positions[:,1],s=2.)
-        print('Plot done, showing...')
+        dens_list = []
+
+        for n in list(graph.nodes.data('features')):
+            dens_list.append(n[1][6])
+
+        print('Plotting graph...')
+        fig, ax = plt.subplots(figsize=(8, 8))
+        draw(graph, ax=ax, pos=pos,
+             edge_color='red', node_size=10, width=0.1, arrowstyle='-',
+             node_color=dens_list, cmap='viridis')
+        plt.savefig('/home/s2675544/data/images/graph.png')
+        plt.show()
+
+        print('Plotting image...')
+        fig, ax = plt.subplots(figsize=(8, 8))
+        plot = ax.imshow(xray_image)
+        fig.colorbar(plot, ax=ax)
+        plt.savefig('/home/s2675544/data/images/xray.png')
+        plt.show()
+
+        # print('Plotting 3D image...')
+        # mayavi_virtual_positions = virtual_positions / 1e27
+        # mlab.points3d(mayavi_virtual_positions[:, 0],
+        #               mayavi_virtual_positions[:, 1],
+        #               mayavi_virtual_positions[:, 2],
+        #               dens_list,
+        #               resolution=8,
+        #               scale_factor=0.0005,
+        #               scale_mode='none',
+        #               colormap='viridis')
+        # for u, v in zip(senders, receivers):
+        #     mlab.plot3d([mayavi_virtual_positions[u][0], mayavi_virtual_positions[v][0]],
+        #                 [mayavi_virtual_positions[u][1], mayavi_virtual_positions[v][1]],
+        #                 [mayavi_virtual_positions[u][2], mayavi_virtual_positions[v][2]],
+        #                 tube_radius=None,
+        #                 tube_sides=3,
+        #                 opacity=0.1)
+        # mlab.show()
+
+        # Plotting
+        fig, ax = plt.subplots(2, 2, figsize=(12, 12))
+        print('Plotting multiplot...')
+        draw(graph, ax=ax[0, 0], pos=pos,
+             edge_color='red', node_size=10, width=0.1, arrowstyle='-',
+             node_color=dens_list, cmap='viridis')
+        # draw(graph, ax=ax[0, 0], pos=pos, node_color='blue', edge_color='red', node_size=10, width=0.1)
+        ax[0, 1].scatter(positions[:, 0], positions[:, 1], s=0.0005)
+        ax[1, 0].scatter(hot_gas_positions[:, 0], hot_gas_positions[:, 1], s=0.0005)
+        ax[0, 1].set_title('Gas particles')
+        ax[1, 0].set_title('Hot gas particles (T > 10^5.3)')
+        xray_plot = ax[1, 1].imshow(xray_image)
+        fig.colorbar(xray_plot, ax=ax[1, 1])
+        print('Multiplot done, showing...')
+        plt.savefig('/home/s2675544/data/images/multiplot.png')
         plt.show()
 
 
     else:
-        for node, feature, position in zip(np.arange(n_nodes), node_features, node_positions):
+        for node, feature, position in zip(np.arange(n_nodes), virtual_properties, virtual_positions):
                 graph.add_node(node, features=feature)
 
         for u, v in zip(senders, receivers):
@@ -171,12 +225,12 @@ def generate_example_nn(positions, properties, k=26, resolution=0.2, plot=False)
     # see networkxs_to_graphs_tuple documentation
     graph.graph["features"] = np.array([0.])
 
-    #Important step: return the graph, which is a networkx class, as a graphs tuple!
+    # Important step: return the graph, which is a networkx class, as a graphs tuple!
     # positions.shape[1] = 3, properties.shape[1] = the number of features,
     # so node_shape_hint tells the function the number of length of the attribute for every node
     # edge_shape_hint: the edges, at the moment, have a dummy attribute of size two
     return networkxs_to_graphs_tuple([graph],
-                                     node_shape_hint=[node_features.shape[1]],
+                                     node_shape_hint=[virtual_properties.shape[1]],
                                      edge_shape_hint=[2])
 
 
@@ -193,7 +247,7 @@ def graph_tuple_to_feature(graph: GraphsTuple, name=''):
 
 
 def save_examples(generator, save_dir=None,
-                  examples_per_file=32, num_examples=1, prefix='train'):
+                  examples_per_file=32, num_examples=1, exp_time = None, prefix='train'):
     """
     Saves a list of GraphTuples to tfrecords.
 
@@ -222,7 +276,11 @@ def save_examples(generator, save_dir=None,
     while data_left:
         # For every 'examples_per_file' (=32) example directories, create a tf_records file
         file_idx = len(files)
-        file = os.path.join(save_dir, 'train_{:04d}.tfrecords'.format(file_idx))
+        if exp_time is not None:
+            exp_time_str = f'{exp_time}ks_'
+        else:
+            exp_time_str = ''
+        file = os.path.join(save_dir, 'train_' + exp_time_str + '{:04d}.tfrecords'.format(file_idx))
         files.append(file)
         # 'writer' can write to 'file'
         with tf.io.TFRecordWriter(file) as writer:
@@ -285,7 +343,7 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
     )
     image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
 
-    image = tf.where(image <= 0, tf.exp(-5), image)
+    image = tf.where(image <= 0., tf.exp(-5.), image)
 
     image = tf.math.log(image / 43.) + tf.math.log(0.5)
     image.set_shape(image_shape)
@@ -310,241 +368,15 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
                         n_edge=tf.shape(graph_edges)[0:1])
     return (graph, image, example_idx)
 
-
-def generate_data(data_dirs, save_dir, offsets, scales):
-
-    """
-    Routine for generating train data in tfrecords
-
-    Args:
-        data_dirs: where simulation data is.
-        save_dir: where tfrecords will go.
-
-    Returns: list of tfrecords.
-    """
-    def data_generator():
-        print("Making graphs.")
-
-        # Take all the data directories in data_dirs and yield a graph, image and index for each directory
-        # (directories in 'tutorial_data' in this case which contain data.npz files)
-        for idx, data_dir in tqdm(enumerate(data_dirs)):
-            print("Generating data from {}".format(data_dir))
-
-            # For every dir (contains a data.npz file) extract the numpy arrays
-            # So the data in numpy arrays, which were first turned into data.npz files
-            # are now extracted again as numpy arrays and converted (at least the positions and properties) to a graph.
-            print(data_dir)
-            positions, properties, xray_images = _get_data(data_dir)
-
-            if len(offsets) == len(properties) and len(scales) == len(properties):
-                properties = (properties - offsets.reshape((len(properties), 1))) / scales.reshape((len(properties), 1))
-            else:
-                raise ValueError("Offsets and/or scales do not have the same length as properties.")
-
-            xray_images[image == 0] = 1e-5
-            xray_images = np.log(xray_images)
-
-            # Create a graph with the positions and properties
-            graph = generate_example_nn(positions, properties, plot=True)
-
-            # This function is a generator, which has the advantage of not keeping used and upcoming data in memory.
-            yield (graph, xray_images, idx)
-
-    # Save the data as tfrecords and return the filenames of the tfrecords
-    train_tfrecords = save_examples(data_generator(),
-                                    save_dir,
-                                    examples_per_file=32,
-                                    num_examples=len(data_dirs),
-                                    prefix='train')
-    return train_tfrecords
-
 ###
 # specific to project
 
-
-def make_virtual_node(positions, properties):
-    """
-    Aggregate positions and properties of nodes into one virtual node.
-
-    Args:
-        positions: [N, 3]
-        properties: [N, F0,...Fd]
-
-    Returns: [3], [F0,...,Fd]
-    """
-    return np.mean(positions, axis=0), np.mean(properties, axis=0)
-
-
-def _get_data(data_dir):
-    """
-    Should return the information for a single simulation.
-
-    Args:
-        data_dir: directory with sim data.
-
-    Returns:
-        positions for building graph
-        properties for putting in nodes and aggregating upwards
-        image corresponding to the graph
-
-    """
-    print("Generating data.")
-
-    # Load the data.npz file and extract and return the data (numpy arrays)
-    f = np.load(os.path.join(data_dir, 'data.npz'))
-    positions = f['positions']
-    properties = f['properties']
-    xray_images = f['images']
-
-    # # Dummy data
-    # print("Generating fake data.")
-    #
-    # positions = np.random.uniform(0., 1., size=(50, 3))
-    # properties = np.random.uniform(0., 1., size=(50, 5))
-    # image = np.random.uniform(size=(24, 24, 1))
-
-    return positions, properties, xray_images
-
-
-def line_of_sight_to_string(normal_vector, decimals: int = 2):
-    """
-
-    Converts a line_of_sight vector to a string: shows the first 2 decimals of every dimension
-    This is added to the xray fits filename
-
-    Args:
-        normal_vector: (array) Line of sight vector to transform to string
-        decimals: How many decimals to use for the angles
-
-    Returns: example for two decimals: '_67_-07_13'
-
-    """
-    normal_string = ''
-    for i in normal_vector:
-        angle_string = str(i).replace('.', '')
-        if angle_string[0] == '-':
-            angle_string = '-' + angle_string[2:2+decimals]
-        else:
-            angle_string = angle_string[1:1+decimals]
-        normal_string += '_' + angle_string
-    return normal_string
-
-
-def make_bahamas_clusters(data_dir,
-                          save_dir,
-                          number_of_clusters=200,
-                          starting_cluster=0):
-    """
-
-    Args:
-        data_dir: Directory containing the bahamas data (e.g. 'AGN_TUNED_nu0_L100N256_WMAP9')
-        save_dir: Directory to save the cluster hdf5 files in
-        number_of_clusters: Number of clusters for which to make hdf5 files
-        starting_cluster: The *number_of_clusters* largest clusters are selected, with index 0 the largest cluster.
-        xray: Whether to create xray images for the clusters
-        numbers_of_xray_images: How many xrays images to make for every cluster,
-        this keyword is not used when xray is False
-
-    Returns:
-        Creates in the save_dir hdf5 files of clusters containing particle data
-        and possibly a number of xray images of the clusters.
-
-    """
-
-    if not os.path.isdir(save_dir):
-        os.makedirs(save_dir, exist_ok=True)
-
-    #The original file contains all the particles in the simulation
-    #Eventually we want to make a new hdf5 file that contains only the particles from a certain cluster
-    path = os.path.join(data_dir, 'data/particledata_032/eagle_subfind_particles_032.0.hdf5')
-    original_file = h5py.File(path, 'r')
-    groups = list(original_file.keys())
-
-    #Determine which groups contain particles and which don't.
-    particle_groups = []
-    non_particle_groups = []
-    for group in groups:
-        if 'PartType' in group:
-            particle_groups.append(group)
-        else:
-            non_particle_groups.append(group)
-
-    #Determine particle sub- and subsubgroups.
-    #For every group that contains particles, a selection needs to be taken that only contains the particles belonging to a particular cluster
-    particle_subgroups = {group: list(original_file[group].keys()) for group in particle_groups}
-    particle_subsubgroups = {group: {subgroup: list(original_file[group][subgroup].keys()) for subgroup in ['ElementAbundance', 'SmoothedElementAbundance']} for group in ['PartType0', 'PartType4']}
-
-    #Load the particle data
-    snapnum = 32
-    pdata = g.Gadget(data_dir, "particles", snapnum, sim="BAHAMAS")
-
-    #Find the FoF group number for every particle for every particle type
-    fof_group_number_per_particle = {ptype: pdata.read_var(ptype + '/GroupNumber', verbose=False) for ptype in particle_groups}
-
-    #Find the different FoF groups for every particle type by taking the set of the previous variable,
-    #taking the length of the set gives an estimate of the number of 'clusters' per particle type
-    fof_sets = {ptype: list(set(fof_group_number_per_particle[ptype])) for ptype in particle_groups}
-
-    for cluster in range(starting_cluster, starting_cluster + number_of_clusters):
-
-        cluster_dir = os.path.join(save_dir, f'cluster_{cluster:03}')
-        if not os.path.isdir(cluster_dir):
-            os.makedirs(cluster_dir, exist_ok=True)
-        #Create a new file in which the cluster particles will be saved
-        with h5py.File(os.path.join(cluster_dir, f'cluster_{cluster:03}.hdf5'), 'w') as f2:
-
-            #Non-particle groups can just be copied
-            for group in non_particle_groups:
-                original_file.copy(group, f2)
-
-            #Take a subset of all particles which are present in the cluster and add their properties to the new hdf5 file
-            for group in particle_groups:
-                #Indices of the particles in the cluster subset for a certain particle type
-                inds = np.where(fof_group_number_per_particle[group] == fof_sets[group][cluster])[0]
-                #Make sure there are particles of the current type in the cluster subset
-                if len(inds) != 0:
-                    for subgroup in particle_subgroups[group]:
-                        #These subgroups are actual groups instead of datasets, so we need to go one layer deeper
-                        if subgroup in ['ElementAbundance', 'SmoothedElementAbundance']:
-                            for subsubgroup in particle_subsubgroups[group][subgroup]:
-                                field = group + '/' + subgroup + '/' + subsubgroup
-                                #Create a new dataset with the subset of the particles
-                                f2.create_dataset(field, data=pdata.read_var(field, verbose=False)[inds])
-                                #Also add the attributes
-                                for attr in list(original_file[field].attrs.items()):
-                                    f2[field].attrs.create(attr[0], attr[1])
-                        else:
-                            #These 'subgroups' are datasets and can be added directly
-                            field = group + '/' + subgroup
-                            f2.create_dataset(field, data=pdata.read_var(field, verbose=False)[inds])
-                            #Again also add the attributes
-                            for attr in list(original_file[field].attrs.items()):
-                                f2[field].attrs.create(attr[0], attr[1])
-        print(f'cluster {cluster} particles are done')
-
-
-def make_magneticum_fits(data_dir, snap_file, number_of_xray_images: int = 1):
-    """
-
-    Args:
-        data_dir: Directory containing the Magneticum data
-        snap_file: The snapshot filename (e.g. 'snap_128' or 'snap_132')
-        number_of_xray_images: Xray images will be added to the cluster folder
-        until this amount of xray images is reached.
-
-    Returns:
-        Creates a number of xray images for all clusters with less xray images
-        than specified by 'number_of_xray_images'.
-
-    """
-
-    clusters = sorted(glob.glob(os.path.join(data_dir, snap_file + '/*/simcut/*/' + snap_file)))
-    print(f'My clusters {clusters}')
+def generate_data(cluster_dirs, save_dir, units, number_of_projections=26 ,exp_time=1000., number_of_virtual_nodes=1000):
+    train_tfrecords = []
 
     # Parameters for making the xray images
-    exp_time = (200., "ks")  # exposure time
+    exp_time = (exp_time, "ks")  # exposure time
     area = (2000.0, "cm**2")  # collecting area
-    redshift = 0.10114
     min_E = 0.05  # Minimum energy of photons in keV
     max_E = 11.0  # Maximum energy of photons in keV
     Z = 0.3  # Metallicity in units of solar metallicity
@@ -554,531 +386,511 @@ def make_magneticum_fits(data_dir, snap_file, number_of_xray_images: int = 1):
     radius = (2.0, "Mpc")  # Radius of the sphere which captures photons
     sky_center = [45., 30.]  # Ra and dec coordinates of the cluster (which are currently dummy values)
 
-    # The line of sight is oriented such that the north vector
-    # would be projected on the xray image, as a line from the center to the top of the image
-    north_vector = np.array([0., 1., 0.])
+    def data_generator():
+        for cluster_idx, cluster in enumerate(cluster_dirs):
 
-    # Finds the center of the gas particles in the snapshot by taking the average of the position extrema
-    def find_center(dataset, position, offset=(0., 0., 0.)):
-        max_pos = np.max(position.T, axis=1)
-        min_pos = np.min(position.T, axis=1)
+            if os.path.basename(snap_dir)[0:3] == 'AGN':
+                with h5py.File(os.path.join(cluster, 'cluster_*'), 'r') as ds:
+                    positions = np.array(ds['PartType0']['Coordinates'])
+                    velocities = np.array(ds['PartType0']['Velocity'])
+                    rho = np.array(ds['PartType0']['Density'])
+                    u = np.array(ds['PartType0']['InternalEnergy'])
+                    mass = np.array(ds['PartType0']['Mass'])
+                    smooth = np.array(ds['PartType0']['SmoothingLength'])
 
-        center = 0.5 * (max_pos + min_pos)
-        box_size = max_pos - min_pos
+                c = centers(int(os.path.basename(cluster)[-3:]))
+                # Create a sphere around the center of the snapshot, which captures the photons
+                sp = ds.sphere(c, radius)
+                redshift = 0.05
+                temp_fits_dir = 'bah_temp_fits_files'
+            else:
+                if os.path.basename(snap_dir) == 'snap_026':
+                    # Clusters downloaded before november 2020 have a different field order.
+                    my_field_def = (
+                        "Coordinates",
+                        "Velocities",
+                        "Mass",
+                        "ParticleIDs",
+                        ("InternalEnergy", "Gas"),
+                        ("Density", "Gas"),
+                        ("SmoothingLength", "Gas"),
+                    )
+                    ds = yt.load(os.path.join(cluster, os.path.basename(snap_dir)),
+                                 long_ids=True,
+                                 field_spec=my_field_def)
+                else:
+                    ds = yt.load(os.path.join(cluster, os.path.basename(snap_dir)), long_ids=True)
+                ad = ds.all_data()
 
-        split_cluster = False
+                positions = ad['Gas', 'Coordinates'].in_cgs().d
+                velocities = ad['Gas', 'Velocities'].in_cgs().d
+                rho = ad['Gas', 'Density'].in_cgs().d
+                u = ad['Gas', 'InternalEnergy'].in_cgs().d
+                mass = ad['Gas', 'Mass'].in_cgs().d
+                smooth = ad['Gas', 'SmoothingLength'].in_cgs().d
 
-        for coord, side in enumerate(box_size):
-            if side > 0.5 * dataset.domain_width[coord]:
-                split_cluster = True
+                # This is a filter which creates a new particle type (in memory), which
+                # makes a cut on gas temperature to only consider gas that will really be
+                # X-ray emitting
+                def hot_gas(pfilter, data):
+                    temp = data[pfilter.filtered_type, "temperature"]
+                    return temp > 10 ** 5.3
 
-        return center + np.array(offset), box_size, split_cluster
+                yt.add_particle_filter("hot_gas", function=hot_gas,
+                                       filtered_type='gas', requires=["temperature"])
 
-    # # SimCut files (until November 24, 2020) have fields in this order, so we need to specify them
-    # # snap_128, snap_132 and snap_136 were downloaded after this, so this is not needed for these snapshots
-    # my_field_def = (
-    #     "Coordinates",
-    #     "Velocities",
-    #     "Mass",
-    #     "ParticleIDs",
-    #     ("InternalEnergy", "Gas"),
-    #     ("Density", "Gas"),
-    #     ("SmoothingLength", "Gas"),
-    # )
+                ds.add_particle_filter("hot_gas")
 
-    split_clusters = 0
+                c, box_size, split = find_center(ds, ad['Gas', 'Coordinates'].d, [0., 0., 0.])
+                print(box_size)
+                print(f'Split cluster : {split}')
 
-    # For every selected snapshot, create an xray image for one or more lines of sight
-    for cluster in clusters:
-        # Take a number of random lines of sight to create the xray images
-        existing_xray_images = len(glob.glob(os.path.dirname(cluster) + '/xray_image*'))
+                if split:
+                    continue
+                # Create a sphere around the center of the snapshot, which captures the photons
+                sp = ds.sphere(c, radius)
+                redshift = ds.current_redshift
+                # temp_fits_dir = 'mag_temp_fits_files'
+                temp_fits_dir = ''
 
-        if existing_xray_images >= number_of_xray_images:
-            continue
+            p_t = positions.T
+            v_t = velocities.T
+            properties = np.stack((p_t[0], p_t[1], p_t[2], v_t[0], v_t[1], v_t[2], rho, u, mass, smooth), axis=1)
 
-        # Set long_ids = True because the IDs are 64-bit ints
-        ds = yt.load(cluster, long_ids=True)
-        # ds = yt.load(cluster, long_ids=True, field_spec=my_field_def)
-        # print(ds.field_list)
+            print(' ')
+            print(f'File : {cluster}')
+            print(f'Cluster center : {c}')
+            # print(f'Cluster box size : {box_size}')
+            print(' ')
 
-        # Use the gas particle positions to find the center of the snapshot
-        ad = ds.all_data()
-        pos = ad['Gas', 'Coordinates'].d
-        c, box_size, split = find_center(ds, pos, [0., 0., 0.])
+            # Set a minimum temperature to leave out that shouldn't be X-ray emitting,
+            # set metallicity to 0.3 Zsolar (should maybe fix later)
+            # The source model determines the distribution of photons that are emitted
+            source_model = pyxsim.ThermalSourceModel("apec", min_E, max_E, n_chan, Zmet=Z, kT_min=kT_min)
 
-        if split:
-            split_clusters += 1
-            continue
+            # Create the photonlist
+            photons = pyxsim.PhotonList.from_data_source(sp, redshift, area, exp_time,
+                                                         source_model)
 
-        print(' ')
-        print(f'File : {cluster}')
-        print(f"Making {number_of_xray_images - existing_xray_images} new xray images in cluster {cluster.split('/')[-4]}")
-        print(f'Cluster center : {c}')
-        print(f'Cluster box size : {box_size}')
-        print(f'Split cluster : {split}')
-        print(f'Number of split clusters : {split_clusters}')
-        print(' ')
+            for projection_idx in tqdm(np.arange(number_of_projections)):
 
-        # Create a sphere around the center of the snapshot, which captures the photons
-        sp = ds.sphere(c, radius)
-        # yt.ProjectionPlot(ds, "z", 'Density', center=c, width=(2000.0, "kpc")).save('/home/s2675544/data/projections/cluster_' + f"{cluster.split('/')[-4]}")
+                print('\n\n\n')
+                print(f'Cluster file: {cluster}')
+                print(f'Cluster : {cluster_idx} / {len(cluster_dirs)}')
+                print(f'Projection : {projection_idx} / {number_of_projections}')
+                print('\n\n')
 
-        # Set a minimum temperature to leave out that shouldn't be X-ray emitting,
-        # set metallicity to 0.3 Zsolar (should maybe fix later)
-        # The source model determines the distribution of photons that are emitted
-        source_model = pyxsim.ThermalSourceModel("apec", min_E, max_E, n_chan, Zmet=Z, kT_min=kT_min)
+                V = np.eye(3)
+                rot_mat = _random_special_ortho_matrix(3)
+                # Vprime = rot_mat @ V
+                Vprime = rot_mat.T @ V
 
-        # Create the photonlist
-        photons = pyxsim.PhotonList.from_data_source(sp, ds.current_redshift, area, exp_time, source_model)
+                east_vector = Vprime[:, 0]
+                north_vector = Vprime[:, 1]
+                viewing_vec = Vprime[:, 2]
 
-        lines_of_sight = 2.0 * (np.random.random((number_of_xray_images - existing_xray_images, 3)) - 0.5)
+                xyz = properties[:, :3]  # n 3
+                velocity_xyz = properties[:, 3:6]  # n 3
+                xyz = (rot_mat @ xyz.T).T
+                velocity_xyz = (rot_mat @ velocity_xyz.T).T
+                # xyz = np.einsum('ap,np->na', rot_mat, xyz)  # n 3
+                # velocity_xyz = np.einsum('ap,np->na', rot_mat, velocity_xyz)  # n 3
+                hot_gas_pos = ad['hot_gas', 'position'].in_cgs().d
+                hot_gas_pos = (rot_mat @ hot_gas_pos.T).T
+                # hot_gas_pos = np.einsum('ap,np->na', rot_mat, hot_gas_pos)  # n 3
 
-        # Make an xray image for a set of lines of sight
-        for line_of_sight in lines_of_sight:
-            # Finds the events along a certain line of sight
-            events_z = photons.project_photons(line_of_sight, sky_center, absorb_model="tbabs", nH=nH, north_vector=north_vector)
+                _properties = properties.copy()  # n f
+                _properties[:, :3] = xyz  # n f
+                _properties[:, 3:6] = velocity_xyz  # n f
+                _properties[:, 6] = _properties[:, 6]  # n f
+                _positions = xyz  # n 3
 
-            events_z.write_simput_file("magneticum", overwrite=True)
+                _properties[:, 0:3] = _properties[:, 0:3] - np.mean(_properties[:, 0:3], axis=0) / units[0:3]
+                _properties[:, 3:6] = _properties[:, 3:6] / units[3:6]
+                _properties[:, 6:] = np.log10(_properties[:, 6:] / units[6:])
 
-            # Determine which events get detected by the AcisI intstrument of Chandra
-            soxs.instrument_simulator("magneticum_simput.fits", "magneticum_evt.fits", exp_time, "chandra_acisi_cy0",
-                                      sky_center, overwrite=True, ptsrc_bkgnd=False, foreground=False, instr_bkgnd=False)
+                # Finds the events along a certain line of sight
+                events_z = photons.project_photons(viewing_vec, sky_center, absorb_model="tbabs", nH=nH,
+                                                   north_vector=north_vector)
 
-            soxs.write_image("magneticum_evt.fits",
-                             os.path.join(os.path.dirname(cluster),
-                                          "xray_image" + line_of_sight_to_string(line_of_sight) + ".fits"),
-                             emin=min_E,
-                             emax=max_E,
-                             overwrite=True)
+                events_z.write_simput_file(os.path.join(temp_fits_dir, 'magneticum'), overwrite=True)
 
+                # Determine which events get detected by the AcisI intstrument of Chandra
+                soxs.instrument_simulator(os.path.join(temp_fits_dir, 'magneticum_simput.fits'),
+                                          os.path.join(temp_fits_dir, 'magneticum_evt.fits'),
+                                          exp_time,
+                                          "chandra_acisi_cy0",
+                                          sky_center,
+                                          overwrite=True,
+                                          ptsrc_bkgnd=False,
+                                          foreground=False,
+                                          instr_bkgnd=False)
 
-def make_bahamas_fits(data_dir, number_of_xray_images=1):
+                soxs.write_image(os.path.join(temp_fits_dir, 'magneticum_evt.fits'),
+                                 os.path.join(temp_fits_dir, 'magneticum_img.fits'),
+                                 emin=min_E,
+                                 emax=max_E,
+                                 overwrite=True)
 
-    cluster_dirs = glob.glob(os.path.join(data_dir, 'cluster_*')).sort()
-    clusters = [int(os.path.basename(cluster_dir).split('_')[1]) for cluster_dir in cluster_dirs]
+                with fits.open(os.path.join(temp_fits_dir, 'magneticum_img.fits')) as hdu:
+                    xray_image = np.array(hdu[0].data, dtype='float32')[1440:3440, 1440:3440]
+                xray_image = downsample(xray_image).numpy()[:, :, None]
+                xray_image = np.log10(np.where(xray_image < 1e-5, 1e-5, xray_image))
 
-    # Define the centers of clusters as the center of potential of friends-of-friends groups
-    # 'subh' stands for subhalos
-    snapnum = 32
-    gdata = g.Gadget(data_dir, 'subh', snapnum, sim='BAHAMAS')
-    centers = gdata.read_var('FOF/GroupCentreOfPotential', verbose=False)
-    # Convert to codelength by going from cm to Mpc and from Mpc to codelength
-    centers /= gdata.cm_per_mpc * 1.42855 #maybe a factor 4 for the big simulation
+                off_axis_image = yt.off_axis_projection(data_source=ds,
+                                                        center=c,
+                                                        normal_vector=viewing_vec,
+                                                        width=0.85 * box_size,
+                                                        item='Density',
+                                                        resolution=[800, 800],
+                                                        north_vector=east_vector)
+                # off_axis_image = np.log10(np.where(off_axis_image < 1e-5, 1e-5, off_axis_image))
+                yt.write_image(np.log10(off_axis_image), '/home/s2675544/data/images/off_axis_proj.png')
+
+                # For imshow the image is flipped
+                plt_xray_image = xray_image[:, :, 0][::-1, :]
+
+                # Create a graph with the positions and properties
+                graph = generate_example_random_choice(_positions, _properties, plt_xray_image,
+                                                       hot_gas_positions=hot_gas_pos,
+                                                       number_of_virtual_nodes=number_of_virtual_nodes,
+                                                       plot=True)
+
+                # This function is a generator, which has the advantage of not keeping used and upcoming data in memory.
+                yield (graph, xray_image, number_of_projections * cluster_idx + projection_idx)
+    # Save the data as tfrecords and return the filenames of the tfrecords
+    train_tfrecords.append(save_examples(data_generator(),
+                                         save_dir,
+                                         examples_per_file=number_of_projections,
+                                         num_examples=number_of_projections * len(cluster_dirs),
+                                         exp_time=int(exp_time[0]),
+                                         prefix='train'))
+    return train_tfrecords
+
+def save_examples_multiprocessing(generator, save_dir=None,
+                       examples_per_file=32, num_examples=1, exp_time=None, prefix='train'):
+    """
+    Saves a list of GraphTuples to tfrecords.
+
+    Args:
+        generator: generator (or list) of (GraphTuples, image).
+            Generator is more efficient.
+        save_dir: dir to save tfrecords in
+        examples_per_file: int, max number examples per file
+
+    Returns: list of tfrecord files.
+    """
+    print("Saving data in tfrecords.")
+
+    # If the directory where to save the tfrecords is not specified, save them in the current working directory
+    if save_dir is None:
+        save_dir = os.getcwd()
+    # If the save directory does not yet exist, create it
+    os.makedirs(save_dir, exist_ok=True)
+    # Files will be returned
+    files = []
+    # next(data_iterable) gives the next dataset in the iterable
+    data_iterable = iter(generator)
+    data_left = True
+    # Status bar
+    pbar = tqdm(total=num_examples)
+    while data_left:
+        # For every 'examples_per_file' (=32) example directories, create a tf_records file
+        if exp_time is not None:
+            exp_time_str = f'{int(exp_time)}ks_'
+        else:
+            exp_time_str = ''
+
+        mp_lock.acquire()  # make sure no duplicate files are made / replaced
+        tf_files = glob.glob(os.path.join(save_dir, 'train_*'))
+        file_idx = len(tf_files)
+        mp_lock.release()
+
+        file = os.path.join(save_dir, 'train_' + exp_time_str + '{:04d}.tfrecords'.format(file_idx))
+        files.append(file)
+        # 'writer' can write to 'file'
+        with tf.io.TFRecordWriter(file) as writer:
+            for i in range(examples_per_file):
+                # Yield a dataset extracted by the generator
+                try:
+                    (graph, image, example_idx) = next(data_iterable)
+                except StopIteration:
+                    data_left = False
+                    break
+                # Write the graph, image and example_idx to the tfrecord file
+                graph = get_graph(graph, 0)
+                features = dict(
+                    image=tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[tf.io.serialize_tensor(tf.cast(image, tf.float32)).numpy()])),
+                    example_idx=tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[tf.io.serialize_tensor(tf.cast(example_idx, tf.int32)).numpy()])),
+                    **graph_tuple_to_feature(graph, name='graph')
+                )
+                # Set the features up so they can be written to the tfrecord file
+                features = tf.train.Features(feature=features)
+                example = tf.train.Example(features=features)
+                writer.write(example.SerializeToString())
+                # Status bar update
+                pbar.update(1)
+    print("Saved in tfrecords: {}".format(files))
+    return files
+
+def generate_data_multiprocessing(cluster_and_idx):
+    cluster_idx = cluster_and_idx[0]
+    cluster = cluster_and_idx[1]
 
     # Parameters for making the xray images
-    exp_time = (200., "ks")  # exposure time
+    exp_time = (exposure_time, "ks")  # exposure time
     area = (2000.0, "cm**2")  # collecting area
-    redshift = 0.05
     min_E = 0.05  # Minimum energy of photons in keV
     max_E = 11.0  # Maximum energy of photons in keV
     Z = 0.3  # Metallicity in units of solar metallicity
     kT_min = 0.05  # Minimum temperature to solve emission for
     n_chan = 1000  # Number of channels in the spectrum
     nH = 0.04  # The foreground column density in units of 10^22 cm^{-2}. Only used if absorption is applied.
-    radius = 5.0  # Radius of the sphere which captures photons
+    radius = (2.0, "Mpc")  # Radius of the sphere which captures photons
     sky_center = [45., 30.]  # Ra and dec coordinates of the cluster (which are currently dummy values)
 
-    # The line of sight is oriented such that the north vector
-    # would be projected on the xray image as a line from the center to the top of the image.
-    north_vector = np.array([0., 1., 0.])
+    if os.path.basename(snap_dir)[0:3] == 'AGN':
+        with h5py.File(os.path.join(cluster, 'cluster_*'), 'r') as ds:
+            positions = np.array(ds['PartType0']['Coordinates'])
+            velocities = np.array(ds['PartType0']['Velocity'])
+            rho = np.array(ds['PartType0']['Density'])
+            u = np.array(ds['PartType0']['InternalEnergy'])
+            mass = np.array(ds['PartType0']['Mass'])
+            smooth = np.array(ds['PartType0']['SmoothingLength'])
 
-    # Set a minimum temperature to leave out that shouldn't be X-ray emitting, set metallicity to 0.3 Zsolar (should maybe fix later)
-    # The source model determines the energy distribution of photons that are emitted
-    source_model = ThermalSourceModel("apec", min_E, max_E, n_chan, Zmet=Z)
-
-    # For some reason the Bahamas snapshots are structured so that when you load one snapshot, you load the entire simulation box
-    # so there is not a specific reason to choose the first element of filenames
-    filenames = glob.glob(os.path.join(data_dir, 'data/snapshot_032/*'))
-    snap_file = filenames[0]
-    ds = yt.load(snap_file)
-
-    for cluster in clusters:
-        existing_xray_images = len(glob.glob(cluster_dirs[cluster] + '/xray_image*'))
-
-        if existing_xray_images >= number_of_xray_images:
-            continue
-
+        c = centers(int(os.path.basename(cluster)[-3:]))
         # Create a sphere around the center of the snapshot, which captures the photons
-        c = centers[cluster]
         sp = ds.sphere(c, radius)
+        redshift = 0.05
+        temp_fits_dir = 'bah_temp_fits_files'
+    else:
+        # This is a filter which creates a new particle type (in memory), which
+        # makes a cut on gas temperature to only consider gas that will really be
+        # X-ray emitting
+        def hot_gas(pfilter, data):
+            temp = data[pfilter.filtered_type, "temperature"]
+            return temp > 10 ** 5.3
 
-        print(' ')
-        print(f'File : {cluster_dirs[cluster]}')
-        print(
-            f"Making {number_of_xray_images - existing_xray_images} new xray images in cluster {cluster.split('/')[-4]}")
-        print(f'Cluster center : {c}')
-        print(' ')
+        yt.add_particle_filter("hot_gas", function=hot_gas,
+                               filtered_type='gas', requires=["temperature"])
 
-        # Create the photonlist
-        photons = PhotonList.from_data_source(sp, redshift, area, exp_time, source_model)
+        ds = yt.load(os.path.join(cluster, os.path.basename(snap_dir)), long_ids=True)
+        ad = ds.all_data()
 
-        # Take a number of random lines of sight to create the xray images
-        lines_of_sight = 2.0 * (np.random.random((number_of_xray_images, 3)) - 0.5)
+        ds.add_particle_filter("hot_gas")
 
-        for line_of_sight in lines_of_sight:
+        positions = ad['Gas', 'Coordinates'].in_cgs().d
+        velocities = ad['Gas', 'Velocities'].in_cgs().d
+        rho = ad['Gas', 'Density'].in_cgs().d
+        u = ad['Gas', 'InternalEnergy'].in_cgs().d
+        mass = ad['Gas', 'Mass'].in_cgs().d
+        smooth = ad['Gas', 'SmoothingLength'].in_cgs().d
+
+        c, box_size, split = find_center(ds, ad['Gas', 'Coordinates'].d, [0., 0., 0.])
+        print(box_size)
+        print(f'Split cluster : {split}')
+
+        if split:
+            return
+        # Create a sphere around the center of the snapshot, which captures the photons
+        sp = ds.sphere(c, radius)
+        redshift = ds.current_redshift
+        # temp_fits_dir = 'mag_temp_fits_files'
+        temp_fits_dir = ''
+
+    p_t = positions.T
+    v_t = velocities.T
+    properties = np.stack((p_t[0], p_t[1], p_t[2], v_t[0], v_t[1], v_t[2], rho, u, mass, smooth), axis=1)
+
+    print(' ')
+    print(f'File : {cluster}')
+    print(f'Cluster center : {c}')
+    # print(f'Cluster box size : {box_size}')
+    print(' ')
+
+    # Set a minimum temperature to leave out that shouldn't be X-ray emitting,
+    # set metallicity to 0.3 Zsolar (should maybe fix later)
+    # The source model determines the distribution of photons that are emitted
+    source_model = pyxsim.ThermalSourceModel("apec", min_E, max_E, n_chan, Zmet=Z, kT_min=kT_min)
+
+    # Create the photonlist
+    photons = pyxsim.PhotonList.from_data_source(sp, redshift, area, exp_time,
+                                                 source_model)
+
+    def data_generator():
+        for projection_idx in tqdm(np.arange(number_of_projections)):
+            print('\n\n\n')
+            print(f'Cluster file: {cluster}')
+            print(f'Cluster : {cluster_idx} / {len(cluster_dirs)}')
+            print(f'Projection : {projection_idx} / {number_of_projections}')
+            print('\n\n')
+
+            V = np.eye(3)
+            rot_mat = _random_special_ortho_matrix(3)
+            Vprime = rot_mat.T @ V
+
+            north_vector = Vprime[:, 1]
+            viewing_vec = Vprime[:, 2]
+
+            xyz = properties[:, :3]  # n 3
+            velocity_xyz = properties[:, 3:6]  # n 3
+            xyz = (rot_mat @ xyz.T).T
+            velocity_xyz = (rot_mat @ velocity_xyz.T).T
+            hot_gas_pos = ad['hot_gas', 'position'].in_cgs().d
+            hot_gas_pos = (rot_mat @ hot_gas_pos.T).T
+
+            _properties = properties.copy()  # n f
+            _properties[:, :3] = xyz  # n f
+            _properties[:, 3:6] = velocity_xyz  # n f
+            _properties[:, 6] = _properties[:, 6]  # n f
+            _positions = xyz  # n 3
+
+            _properties[:, 0:3] = _properties[:, 0:3] - np.mean(_properties[:, 0:3], axis=0) / units[0:3]
+            _properties[:, 3:6] = _properties[:, 3:6] / units[3:6]
+            _properties[:, 6:] = np.log10(_properties[:, 6:] / units[6:])
+
             # Finds the events along a certain line of sight
-            events_z = photons.project_photons(line_of_sight, sky_center, absorb_model="tbabs", nH=nH,
+            events_z = photons.project_photons(viewing_vec, sky_center, absorb_model="tbabs", nH=nH,
                                                north_vector=north_vector)
 
-            events_z.write_simput_file("bahamas", overwrite=True)
+            events_z.write_simput_file(os.path.join(temp_fits_dir, 'magneticum'), overwrite=True)
 
             # Determine which events get detected by the AcisI intstrument of Chandra
-            soxs.instrument_simulator("bahamas_simput.fits", "bahamas_evt.fits", exp_time, "chandra_acisi_cy0",
-                                      sky_center, overwrite=True, ptsrc_bkgnd=False, foreground=False, instr_bkgnd=False)
+            soxs.instrument_simulator(os.path.join(temp_fits_dir, 'magneticum_simput.fits'),
+                                      os.path.join(temp_fits_dir, 'magneticum_evt.fits'),
+                                      exp_time,
+                                      "chandra_acisi_cy0",
+                                      sky_center,
+                                      overwrite=True,
+                                      ptsrc_bkgnd=False,
+                                      foreground=False,
+                                      instr_bkgnd=False)
 
-            # Write the detections to a fits file
-            soxs.write_image("bahamas_evt.fits",
-                             os.path.join(cluster_dirs[cluster],
-                                          f"img_{cluster:03}" + line_of_sight_to_string(line_of_sight) + ".fits"),
+            soxs.write_image(os.path.join(temp_fits_dir, 'magneticum_evt.fits'),
+                             os.path.join(temp_fits_dir, 'magneticum_img.fits'),
                              emin=min_E,
                              emax=max_E,
                              overwrite=True)
-        print(f'cluster {cluster} image is done')
 
+            with fits.open(os.path.join(temp_fits_dir, 'magneticum_img.fits')) as hdu:
+                xray_image = np.array(hdu[0].data, dtype='float32')[1440:3440, 1440:3440]
+            xray_image = downsample(xray_image).numpy()[:, :, None]
+            xray_image = np.log10(np.where(xray_image < 1e-5, 1e-5, xray_image))
 
-def snapshots_and_names(magneticum_data_dir, bahamas_data_dir, magneticum_snapshots, bahamas_snapshots):
-    """
+            # yt.off_axis_projection()
 
-    Returns filenames containing cluster particle data.
+            # For imshow the image is flipped
+            plt_xray_image = xray_image[:, :, 0][::-1, :]
 
-    Args:
-        magneticum_data_dir: (string) Directory containing the Magneticum data
-        bahamas_data_dir: (string) Directory containing the BAHAMAS data
-        magneticum_snapshots: (list of strings) Magneticum snapshots for which to return cluster filenames
-        bahamas_snapshots: (list of strings) BAHAMAS snapshots for which to return cluster filenames
+            # Create a graph with the positions and properties
+            graph = generate_example_random_choice(_positions, _properties, plt_xray_image,
+                                                   hot_gas_positions=hot_gas_pos,
+                                                   number_of_virtual_nodes=my_number_of_virtual_nodes,
+                                                   plot=True)
 
-    Returns: List of snapshot lists containing cluster filenames. Also a list of snapshot names.
+            # This function is a generator, which has the advantage of not keeping used and upcoming data in memory.
+            yield (graph, xray_image, number_of_projections * cluster_idx + projection_idx)
 
-    """
-    snapshots = []
-    snapshot_names = []
-
-    for snapshot in magneticum_snapshots:
-        try:
-            clusters = glob.glob(os.path.join(magneticum_data_dir, snapshot + '/*/simcut/*/' + snapshot))
-
-            snapshots.append(clusters)
-            snapshot_names.append(snapshot)
-        except:
-            print(f'No data directory for snapshot {snapshot}')
-            continue
-
-    for snapshot in bahamas_snapshots:
-        try:
-            clusters = glob.glob(os.path.join(bahamas_data_dir, snapshot + '/*/cluster_*'))
-            snapshots.append(clusters)
-            snapshot_names.append(snapshot)
-        except:
-            print(f'No data directory for snapshot {snapshot}')
-            continue
-
-    return snapshots, snapshot_names
-
-
-def extract_data(cluster, snapshot_name):
-    """
-
-    Extracts the cluster position, velocity, density and internal energy data and returns the data in numpy arrays.
-
-    Args:
-        cluster: (string) Filename containing the cluster data
-        snapshot_name: (string) Name of the snapshot
-
-    Returns:
-
-    """
-
-    if snapshot_name[0:3] == 'AGN':
-        with h5py.File(cluster, 'r') as ds_h5:
-            positions = np.array(ds_h5['PartType0']['Coordinates'])
-            velocities = np.array(ds_h5['PartType0']['Velocity'])
-            rho = np.array(ds_h5['PartType0']['Density'])
-            u = np.array(ds_h5['PartType0']['InternalEnergy'])
-    else:
-        ds_yt = yt.load(cluster, long_ids=True)
-        ad = ds_yt.all_data()
-
-        positions = ad['Gas', 'Coordinates'].d
-        velocities = ad['Gas', 'Velocities'].d
-        rho = ad['Gas', 'Density'].d
-        u = ad['Gas', 'InternalEnergy'].d
-    return positions, velocities, rho, u
-
-
-def combine_data(magneticum_data_dir, bahamas_data_dir, magneticum_snapshots, bahamas_snapshots):
-    """
-    This function extracts the particle and image data from the binary (Magneticum), hdf5 (BAHAMAS) and fits (xrays)
-    files. The data from each cluster is combined in a data.npz file and saved in a separate example directory.
-
-    Args:
-        magneticum_data_dir: (string) Directory containing the Magneticum data
-        bahamas_data_dir: (string) Directory containing the BAHAMAS data
-        magneticum_snapshots: (list of strings) Magneticum snapshots for which to combine and save the data
-        bahamas_snapshots: (list of strings) BAHAMAS snapshots for which to combine and save the data
-
-    """
-    snapshots, snapshot_names = snapshots_and_names(magneticum_data_dir,
-                                                    bahamas_data_dir,
-                                                    magneticum_snapshots,
-                                                    bahamas_snapshots)
-
-    for idx, snapshot in enumerate(snapshots):
-
-        for cluster in snapshot:
-            positions, velocities, rho, u = extract_data(cluster, snapshot_names[idx])
-
-            # Combine the properties in a single array
-            p_t = positions.T
-            v_t = velocities.T
-            properties = np.stack((p_t[0], p_t[1], p_t[2], v_t[0], v_t[1], v_t[2], rho, u), axis=1)
-
-            xray_images = glob.glob(os.path.join(os.path.dirname(cluster) + 'xray*'))
-            images = []
-
-            for xray_image in xray_images:
-                # Load the xray image
-                with fits.open(xray_image) as hdu:
-                    image = np.array(hdu[0].data, dtype='float32').reshape(4880, 4880, 1)
-
-                images.append(image)
-
-            images = np.array(images)
-
-            # Print the number of particles
-            print('The number of gas particles in {} is {}'.format(cluster.split('/')[-1], positions.shape[0]))
-
-            # Create an example directory in the 'examples_dir'
-            # and put a data.npz file in there that contains al the info of the snapshot/xray img pair
-            example_idx = len(glob.glob(os.path.join(snapshot_names[idx] + '_examples', 'example_*')))
-            new_dir = os.path.join(snapshot_names[idx] + '_examples', "example_{:04d}".format(example_idx))
-            os.makedirs(new_dir, exist_ok=True)
-            print(new_dir)
-            np.savez(new_dir + "/data.npz", positions=positions, properties=properties, images=images)
-
-
-def make_data_csv(magneticum_data_dir, bahamas_data_dir, magneticum_snapshots, bahamas_snapshots):
-    """
-    This function creates csv files containing the mean and standard deviation of the features of the clusters. The
-    hard-coded features currently consist of positions, velocities, density, and internal energy. The means of the means
-    and standard deviations are also calculated and can be used as offsets and scales to normalize the data.
-
-    Args:
-        magneticum_data_dir: (string) Directory containing the Magneticum data
-        bahamas_data_dir: (string) Directory containing the BAHAMAS data
-        magneticum_snapshots: (list of strings) Magneticum snapshots for which to calculate the means and standard deviations
-        bahamas_snapshots: (list of strings) BAHAMAS snapshots for which to calculate the means and standard deviations
-
-    """
-    snapshots, snapshot_names = snapshots_and_names(magneticum_data_dir,
-                                                    bahamas_data_dir,
-                                                    magneticum_snapshots,
-                                                    bahamas_snapshots)
-
-    columns = ['particles',
-               'mean x', 'std x',
-               'mean y', 'std y',
-               'mean z', 'std z',
-               'mean vx', 'std vx',
-               'mean vy', 'std vy',
-               'mean vz', 'std vz',
-               'mean rho', 'std rho',
-               'mean U', 'std U']
-    mean_columns = [' ',
-                    'offset x', 'scale x',
-                    'offset y', 'scale y',
-                    'offset z', 'scale z',
-                    'offset vx', 'scale vx',
-                    'offset vy', 'scale vy',
-                    'offset vz', 'scale vz',
-                    'offset rho', 'scale rho',
-                    'offset U', 'scale U']
-
-    for idx, snapshot in enumerate(snapshots):
-        if len(snapshot) == 0:
-            continue
-        else:
-            print(f'Making csv file for snapshot : {snapshot_names[idx]}')
-            print(f'Number of clusters : {len(snapshot)}')
-            mean_and_std_arr = []
-
-            for cluster in snapshot:
-                positions, velocities, rho, u = extract_data(cluster, snapshot_names[idx])
-
-                mean_and_std = [len(positions),
-                                np.mean(positions[:, 0]),
-                                np.std(positions[:, 0]),
-                                np.mean(positions[:, 1]),
-                                np.std(positions[:, 1]),
-                                np.mean(positions[:, 2]),
-                                np.std(positions[:, 2]),
-                                np.mean(velocities[:, 0]),
-                                np.std(velocities[:, 0]),
-                                np.mean(velocities[:, 1]),
-                                np.std(velocities[:, 1]),
-                                np.mean(velocities[:, 2]),
-                                np.std(velocities[:, 2]),
-                                np.mean(np.log(rho)),
-                                np.std(np.log(rho)),
-                                np.mean(np.log(u)),
-                                np.std(np.log(u))]
-                mean_and_std_arr.append(mean_and_std)
-
-            mean_and_std_arr = np.array(sorted(mean_and_std_arr, key=lambda row: row[0])[::-1])
-
-            offsets_and_scales = np.array([np.mean(arr) for arr in np.array(mean_and_std_arr).T[1:]])
-            offsets_and_scales = np.concatenate((np.array([0]), offsets_and_scales))
-
-            with open(snapshot_names[idx] + '.csv', 'w') as csvfile:
-                writer = csv.writer(csvfile, delimiter=",")
-                writer.writerow(mean_columns)
-                writer.writerow(offsets_and_scales)
-                writer.writerow(columns)
-                writer.writerows(mean_and_std_arr)
-
-
-def read_data_csv():
-    """
-
-    Print the offsets and scales saved in snapshot csv files.
-
-    """
-    csv_files = glob.glob(os.getcwd() + '/*.csv')
-    for file in csv_files:
-        if os.path.basename(file)[0:3] == 'AGN':
-            sim = 'Bahamas'
-        else:
-            sim = 'Magneticum'
-
-        with open(file, 'r') as f:
-            reader = csv.reader(f)
-            columns = next(reader)[1:]
-            offsets_and_scales = next(reader)[1:]
-            print(f'Snapshot : {file.split("/")[-1].split(".")[0]}')
-            print(f'Simulation : {sim}')
-            print(f'Clusters : {len(list(reader)) - 1}')
-            print(' ')
-            for column, value in zip(columns, offsets_and_scales):
-                if 'rho' in column or 'U' in column:
-                    log = '(log)'
-                else:
-                    log = ''
-                print(f'{column} : {value} {log}')
-            print(' ')
+    # Save the data as tfrecords and return the filenames of the tfrecords
+    save_examples_multiprocessing(data_generator(),
+                                  save_dir=tfrecord_dir,
+                                  examples_per_file=number_of_projections,
+                                  exp_time=exp_time[0],
+                                  prefix='train')
 
 
 if __name__ == '__main__':
+
+    yt.funcs.mylog.setLevel(40)  # Suppresses yt status output.
+    soxs.utils.soxsLogger.setLevel(40)  # Suppresses soxs status output.
+    pyxsim.utils.pyxsimLogger.setLevel(40)  # Suppresses pyxsim status output.
 
     # Define the directories containing the data
     if os.getcwd().split('/')[2] == 's2675544':
         my_magneticum_data_dir = '/home/s2675544/data/Magneticum/Box2_hr'
         my_bahamas_data_dir = '/home/s2675544/data/Bahamas'
+        my_examples_dir = '/home/s2675544/data/examples'
+        my_tf_records_dir = '/home/s2675544/data/tf_records'
         print('Running on ALICE')
     else:
         my_magneticum_data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Magneticum/Box2_hr'
         my_bahamas_data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/Bahamas'
+        my_examples_dir = '/home/matthijs/data/examples'
+        my_tf_records_dir = '/home/matthijs/data/tf_records'
         print('Running at home')
 
     # Determine which snapshots to use
-    magneticum_snap_dirs = ['snap_128', 'snap_132', 'snap_136']
+    magneticum_snap_dirs = ['snap_132']
     # Possible Magneticum dirs ['snap_128', 'snap_132', 'snap_136']
 
     bahamas_snap_dirs = []
     # Possible Bahamas dirs : ['AGN_TUNED_nu0_L100N256_WMAP9', 'AGN_TUNED_nu0_L400N1024_WMAP9']
 
-    # Whether to make hdf5 files that contain the particle data of individual FoF groups (clusters) in the BAHAMAS
-    # snapshots. Specify the number of clusters for which to make hdf5 files. It will find the largest clusters
-    # starting from the 'starting cluster' rank.
-    create_bahamas_clusters = False
-    number_of_clusters = 105
-    starting_cluster = 95
+    magneticum_snap_dirs = [os.path.join(my_magneticum_data_dir, snap_dir) for snap_dir in magneticum_snap_dirs]
+    bahamas_snap_dirs = [os.path.join(my_bahamas_data_dir, snap_dir) for snap_dir in bahamas_snap_dirs]
 
-    # Whether to make xray images of the clusters in magneticum snapshots
-    create_magneticum_xrays = True
-    number_of_magneticum_xray_images = 1
+    yr = 3.15576e7  # in seconds
+    pc = 3.085678e18  # in cm
+    M_sun = 1.989e33  # in gram
 
-    # Whether to make xrays images of the clusters in the BAHAMAS snapshots
-    create_bahamas_xrays = False
-    number_of_bahamas_xray_images = 1
+    _units = np.array([1e6 * pc,
+                       1e6 * pc,
+                       1e6 * pc,
+                       1e-4 * pc / yr,
+                       1e-4 * pc / yr,
+                       1e-4 * pc / yr,
+                       1e-7 * M_sun / pc ** 3,
+                       1e-7 * (pc / yr) ** 2,
+                       1e8 * M_sun,
+                       1e5 * pc])
 
-    # Whether to find and/or print the offsets and scales of the particle data
-    calculate_offsets_and_scales = False
-    print_offsets_and_scales = False
+    # Whether to use multiprocessing and to rewrite tfrecord directories (if safe is True, doesn't rewrite)
+    _multiprocessing = False
+    safe = False
 
-    # Whether to combine the particle data and image data in example directories as data.npz files
-    combine = False
+    for snap_dir in magneticum_snap_dirs + bahamas_snap_dirs:
+        print(f'Snapshot directory : {snap_dir}')
+        if os.path.basename(snap_dir)[0:3] == 'AGN':
+            cluster_dirs = glob.glob(os.path.join(snap_dir, '*'))
 
-    # Whether to encode the combined data in tfrecord files and whether to normalize first.
-    tfrec = False
+            # Define the centers of clusters as the center of potential of friends-of-friends groups
+            # 'subh' stands for subhalos
+            snapnum = 32
+            gdata = g.Gadget(os.path.join(os.path.dirname(my_bahamas_data_dir), snap_dir), 'subh', snapnum,
+                             sim='BAHAMAS')
+            centers = gdata.read_var('FOF/GroupCentreOfPotential', verbose=False)
+            # Convert to codelength by going from cm to Mpc and from Mpc to codelength
+            centers /= gdata.cm_per_mpc * 1.42855  # maybe a factor 4 for the big simulation
+        else:
+            cluster_dirs = glob.glob(os.path.join(snap_dir, '*/*/*'))
 
-    if create_magneticum_xrays:
-        for snap_file in magneticum_snap_dirs:
-            make_magneticum_fits(data_dir=my_magneticum_data_dir,
-                                 snap_file=snap_file,
-                                 number_of_xray_images=number_of_magneticum_xray_images)
+        tfrecord_dir = os.path.join(my_tf_records_dir, os.path.basename(snap_dir) + '_tf_records')
+        print(f'Tensorflow records will be saved in : {tfrecord_dir}')
+        print(f'Number of clusters : {len(cluster_dirs)}')
 
-    if create_bahamas_clusters or create_bahamas_xrays:
-        # Determine which snapshot to use
-        for snap_dir in bahamas_snap_dirs:
-            data_sim_dir = os.path.join(os.path.dirname(my_bahamas_data_dir), snap_dir)
-            save_sim_dir = os.path.join(my_bahamas_data_dir, snap_dir)
+        if _multiprocessing:
+            my_number_of_virtual_nodes = 100
+            number_of_projections = 26
+            exposure_time = 200.
+            units = _units
 
-            if create_bahamas_clusters:
-                make_bahamas_clusters(data_sim_dir,
-                                      save_sim_dir,
-                                      number_of_clusters=number_of_clusters,
-                                      starting_cluster=starting_cluster)
-
-            if create_bahamas_xrays:
-                make_bahamas_fits(data_sim_dir,
-                                  number_of_xray_images=number_of_bahamas_xray_images)
-
-    if calculate_offsets_and_scales:
-        make_data_csv(my_magneticum_data_dir,
-                      my_bahamas_data_dir,
-                      magneticum_snap_dirs,
-                      bahamas_snap_dirs)
-
-    if print_offsets_and_scales:
-        read_data_csv()
-
-    # Makes data.npz files in example dirs
-    if combine:
-        combine_data(magneticum_snap_dirs, bahamas_snap_dirs)
-
-    if tfrec:
-        for example_dir in magneticum_snap_dirs + bahamas_snap_dirs:
-            with open(example_dir + '.csv', 'r') as csv_f:
-                csv_reader = csv.reader(csv_f)
-                for i in range(2):
-                    means_and_std_values = next(csv_reader)[1:]
-                _offsets = np.array(means_and_std_values[0::2])
-                _scales = np.array(means_and_std_values[1::2])
-            tfrecord_dir = example_dir + '_tfrecords'
-            if not os.path.isdir(tfrecord_dir):
-                tfrecords = generate_data(glob.glob(os.path.join(example_dir, 'example_*')),
-                                          tfrecord_dir, offsets=_offsets, scales=_scales)
-            else:
+            if os.path.isdir(tfrecord_dir) and safe:
                 tfrecords = glob.glob(tfrecord_dir + '/*')
+            else:
+                pool = Pool(8)
+                pool.map(generate_data_multiprocessing, enumerate(cluster_dirs))
+        else:
+            if os.path.isdir(tfrecord_dir) and safe:
+                tfrecords = glob.glob(tfrecord_dir + '/*')
+            else:
+                tfrecords = generate_data(cluster_dirs=cluster_dirs,
+                                          save_dir=tfrecord_dir,
+                                          units=_units,
+                                          number_of_projections=2,
+                                          exp_time=1000.,
+                                          number_of_virtual_nodes=1000)
 
-            # Decode the tfrecord files again into the (graph tuple, image, index) dataset
-            # This is also used in main.py to retrieve the datasets for a neural network
-            dataset = tf.data.TFRecordDataset(tfrecords).map(
-                lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[8]))
-
-            for (graph, image, example_idx) in iter(dataset):
-                print(graph.nodes.shape, image.shape, example_idx)
-
-            # SUMMARY
-            # combine() + numpy arrays (pos, props, img) --> data.npz
-
-            # generate_data(
-            # _get_data() + data.npz  --> numpy arrays (pos, props, img)
-
-            # generate_example_nn() + numpy arrays (pos, props, img) --> graph tuple, image and index (graph, img, idx)
-
-            # save_examples() + graph tuple, image and index (graph, img, idx) --> tfrecord
-            # )
-
-            # decode_examples() + tfrecord --> graph tuple, image and index (graph, img, idx)
-
-            # example index is an integer as a tensorflow tensor
