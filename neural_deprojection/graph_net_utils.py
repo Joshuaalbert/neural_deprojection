@@ -72,7 +72,7 @@ class TrainOneEpoch(Module):
 
     def one_epoch_step(self, train_dataset):
         """
-        Updates a model with one epoch of training, and returns a dictionary of values to monitor, i.e. metrics.
+        Updates a model with one epoch of train_one_epoch, and returns a dictionary of values to monitor, i.e. metrics.
 
         Returns:
             average loss
@@ -99,14 +99,14 @@ class TrainOneEpoch(Module):
 
 
 
-def vanilla_training_loop(training_dataset, training:TrainOneEpoch, num_epochs, test_dataset=None,
+def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
                           early_stop_patience=None, debug=False):
     """
     Does simple training.
 
     Args:
         training_dataset: Dataset for training
-        training: TrainOneEpoch
+        train_one_epoch: TrainOneEpoch
         num_epochs: how many epochs to train
         test_dataset: Dataset for testing
         early_stop_patience: Stops training after this many epochs where test dataset loss doesn't improve
@@ -117,10 +117,10 @@ def vanilla_training_loop(training_dataset, training:TrainOneEpoch, num_epochs, 
     """
 
     # We'll turn the one_epoch_step function which updates our models into a tf.function using
-    # autograph. This makes training much faster. If debugging, you can turn this
+    # autograph. This makes train_one_epoch much faster. If debugging, you can turn this
     # off by setting `debug = True`.
-    step = training.one_epoch_step
-    evaluate = training.evaluate
+    step = train_one_epoch.one_epoch_step
+    evaluate = train_one_epoch.evaluate
     if not debug:
         step = tf.function(step)
         evaluate = tf.function(evaluate)
@@ -134,7 +134,7 @@ def vanilla_training_loop(training_dataset, training:TrainOneEpoch, num_epochs, 
         loss = step(iter(training_dataset))
         tqdm.tqdm.write(
             '\nEpoch = {}/{} (loss = {:.02f})'.format(
-                training.epoch.numpy(), num_epochs, loss))
+                train_one_epoch.epoch.numpy(), num_epochs, loss))
         if test_dataset is not None:
             test_loss = evaluate(iter(test_dataset))
             tqdm.tqdm.write(
