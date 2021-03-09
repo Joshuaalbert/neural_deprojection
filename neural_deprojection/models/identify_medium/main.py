@@ -74,7 +74,7 @@ class RelationNetwork(AbstractModule):
 
 
 class Model(AbstractModule):
-    def __init__(self, image_feature_size=16, name=None):
+    def __init__(self, image_feature_size=16, name=None, **unused_kwargs):
         super(Model, self).__init__(name=name)
         self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
                                        lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
@@ -102,7 +102,40 @@ class Model(AbstractModule):
         return self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1))#[1]
 
 
+MODEL_MAP = dict(model1=Model)
+
+
+def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters) -> TrainOneEpoch:
+    model_cls = MODEL_MAP[model_type]
+
+    model = model_cls(**model_parameters)
+
+    def build_opt(**kwargs):
+        opt_type = kwargs.get('opt_type')
+        if opt_type == 'adam':
+            learning_rate = kwargs.get('learning_rate', 1e-4)
+            opt = snt.optimizers.Adam(learning_rate)
+        else:
+            raise ValueError('Opt {} invalid'.format(opt_type))
+        return opt
+
+
+    def build_loss(**loss_parameters):
+        def loss(model_outputs, batch):
+            (graph, img, c) = batch
+            # loss =  mean(-sum_k^2 true[k] * log(pred[k]/true[k]))
+            return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
+        return loss
+
+    loss = build_loss(**loss_parameters)
+    opt = build_opt(**optimizer_parameters)
+
+    training = TrainOneEpoch(model, loss, opt)
+
+    return training
+
 def main(data_dir):
+
     tfrecords = glob.glob(os.path.join(data_dir,'*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
                                                              node_shape=(5,),
@@ -120,17 +153,20 @@ def main(data_dir):
     train_dataset = train_dataset.shard(2,0)
     test_dataset = train_dataset.shard(2,1)
 
-    model = Model()
+    config = dict(model_type='model1',
+                  model_parameters=dict(num_layers=3),
+                  optimizer_parameters=dict(learning_rate=1e-5),
+                  loss_parameters=dict())
 
-    def loss(model_outputs, batch):
-        (graph, img, c) = batch
-        # loss =  mean(-sum_k^2 true[k] * log(pred[k]/true[k]))
-        return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
+    training = build_training(**config)
 
-    opt = snt.optimizers.Adam(0.0001)
-    training = TrainOneEpoch(model, loss, opt)
 
-    vanilla_training_loop(train_dataset, training_dataset=training, num_epochs=10, early_stop_patience=3, test_dataset=test_dataset, debug=False)
+    vanilla_training_loop(train_one_epoch=training,
+                          training_dataset=train_dataset,
+                          test_dataset=test_dataset,
+                          num_epochs=10,
+                          early_stop_patience=3,
+                          debug=False)
 
 
 
