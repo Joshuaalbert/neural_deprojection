@@ -368,7 +368,4 @@ if __name__ == '__main__':
         print(ds_item)
         plot_from_big_ds_item(ds_item)
 
-    # print('mapping...')
-    # pool = Pool(1)
-    # pool.map(plot_from_big_ds_item, iter(dataset))
 
