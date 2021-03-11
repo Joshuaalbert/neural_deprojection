@@ -1,5 +1,5 @@
 from neural_deprojection.models.identify_medium.generate_data import generate_data, decode_examples
-from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule
+from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, get_distribution_strategy
 import glob, os
 import tensorflow as tf
 from functools import partial
@@ -135,6 +135,8 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
     return training
 
 def main(data_dir):
+    # Make strategy at the start of your main before any other tf code is run.
+    strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=2)
 
     tfrecords = glob.glob(os.path.join(data_dir,'*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
@@ -155,17 +157,19 @@ def main(data_dir):
 
     config = dict(model_type='model1',
                   model_parameters=dict(num_layers=3),
-                  optimizer_parameters=dict(learning_rate=1e-5),
+                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
                   loss_parameters=dict())
 
-    training = build_training(**config)
 
+    with strategy.scope():
+        train_one_epoch = build_training(**config)
 
-    vanilla_training_loop(train_one_epoch=training,
+    vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
                           num_epochs=10,
                           early_stop_patience=3,
+                          checkpoint_dir='test_checkpointing',
                           debug=False)
 
 

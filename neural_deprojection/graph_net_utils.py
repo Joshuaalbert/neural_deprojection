@@ -34,12 +34,19 @@ class TrainOneEpoch(Module):
     _model:AbstractModule
     _opt:Optimizer
 
-    def __init__(self, model:AbstractModule, loss, opt:Optimizer, name=None):
+    def __init__(self, model:AbstractModule, loss, opt:Optimizer, strategy:tf.distribute.MirroredStrategy=None, name=None):
         super(TrainOneEpoch, self).__init__(name=name)
         self.epoch = tf.Variable(0, dtype=tf.int32)
         self._model = model
         self._opt = opt
         self._loss = loss
+        self._strategy = strategy
+        self._checkpoint = tf.train.Checkpoint(module=model)
+
+
+    @property
+    def strategy(self) -> tf.distribute.MirroredStrategy:
+        return self._strategy
 
     @property
     def model(self):
@@ -67,6 +74,11 @@ class TrainOneEpoch(Module):
             loss = self.loss(model_output, batch)
         params = self.model.trainable_variables
         grads = tape.gradient(loss, params)
+
+        if self.strategy is not None:
+            replica_ctx = tf.distribute.get_replica_context()
+            grads = replica_ctx.all_reduce("mean", grads)
+
         self.opt.apply(grads, params)
         return loss
 
@@ -81,8 +93,14 @@ class TrainOneEpoch(Module):
         # metrics = None
         loss = 0.
         num_batches = 0.
+        if self.strategy is not None:
+            train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
         for train_batch in train_dataset:
-            _loss = self.train_step(train_batch)
+            if self.strategy is not None:
+                _loss = self.strategy.run(self.train_step, args=(train_batch,))
+                _loss = self.strategy.reduce("sum", _loss, axis=None)
+            else:
+                _loss = self.train_step(train_batch)
             loss += _loss
             num_batches += 1.
         return loss/num_batches
@@ -90,17 +108,61 @@ class TrainOneEpoch(Module):
     def evaluate(self, test_dataset):
         loss = 0.
         num_batches = 0.
+        if self.strategy is not None:
+            test_dataset = self.strategy.experimental_distribute_dataset(test_dataset)
         for test_batch in test_dataset:
-            model_output = self.model(test_batch)
-            loss += self.loss(model_output, test_batch)
+            if self.strategy is not None:
+                model_output = self.strategy.run(self.model, args=(test_batch,))
+                _loss = self.strategy.run(self.loss, args=(model_output, test_batch))
+                loss += self.strategy.reduce("sum", _loss, axis=0)
+            else:
+                model_output = self.model(test_batch)
+                loss += self.loss(model_output, test_batch)
             num_batches += 1.
         return loss / num_batches
 
 
+def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1, memory_limit=2000) -> tf.distribute.MirroredStrategy:
+    # trying to set GPU distribution
+    physical_gpus = tf.config.experimental.list_physical_devices("GPU")
+    physical_cpus = tf.config.experimental.list_physical_devices("CPU")
+    if len(physical_gpus) > 0 and not use_cpus:
+        print("Physical GPUS: {}".format(physical_gpus))
+        if logical_per_physical_factor > 1:
+            for dev in physical_gpus:
+                tf.config.experimental.set_virtual_device_configuration(
+                    dev,
+                    [tf.config.experimental.VirtualDeviceConfiguration(
+                        memory_limit=memory_limit)] * logical_per_physical_factor
+                )
 
+        gpus = tf.config.experimental.list_logical_devices("GPU")
+
+        print("Logical GPUs: {}".format(gpus))
+
+        strategy = snt.distribute.Replicator(
+            ["/device:GPU:{}".format(i) for i in range(len(gpus))],
+            tf.distribute.ReductionToOneDevice("GPU:0"))
+    else:
+        print("Physical CPUS: {}".format(physical_cpus))
+        if logical_per_physical_factor > 1:
+            for dev in physical_cpus:
+                tf.config.experimental.set_virtual_device_configuration(
+                    dev,
+                    [tf.config.experimental.VirtualDeviceConfiguration()] * logical_per_physical_factor
+                )
+
+        cpus = tf.config.experimental.list_logical_devices("CPU")
+        print("Logical CPUs: {}".format(cpus))
+
+        strategy = snt.distribute.Replicator(
+            ["/device:CPU:{}".format(i) for i in range(len(cpus))],
+            tf.distribute.ReductionToOneDevice("CPU:0"))
+
+    return strategy
 
 def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
-                          early_stop_patience=None, debug=False):
+                          early_stop_patience=None, checkpoint_dir=None, debug=False):
     """
     Does simple training.
 
@@ -110,11 +172,18 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
         num_epochs: how many epochs to train
         test_dataset: Dataset for testing
         early_stop_patience: Stops training after this many epochs where test dataset loss doesn't improve
+        checkpoint_dir: where to save epoch results.
         debug: bool, whether to use debug mode.
 
     Returns:
 
     """
+    if checkpoint_dir is not None:
+        os.makedirs(checkpoint_dir,exist_ok=True)
+
+    training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
+    if test_dataset is not None:
+        test_dataset = test_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
 
     # We'll turn the one_epoch_step function which updates our models into a tf.function using
     # autograph. This makes train_one_epoch much faster. If debugging, you can turn this
@@ -130,6 +199,12 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
                                     position=0)
     early_stop_min_loss = np.inf
     early_stop_interval = 0
+    checkpoint = tf.train.Checkpoint(module=train_one_epoch.model)
+    manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3,
+                                         checkpoint_name=train_one_epoch.model.__class__.__name__)
+    if manager.latest_checkpoint is not None:
+        checkpoint.restore(manager.latest_checkpoint)
+        print(f"Restored from {manager.latest_checkpoint}")
     for step_num in fancy_progress_bar:
         loss = step(iter(training_dataset))
         tqdm.tqdm.write(
@@ -143,12 +218,17 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
                 if test_loss <= early_stop_min_loss:
                     early_stop_min_loss = test_loss
                     early_stop_interval = 0
+                    manager.save()
                 else:
                     early_stop_interval += 1
                 if early_stop_interval == early_stop_patience:
                     tqdm.tqdm.write(
                         '\n\tStopping Early')
                     break
+            else:
+                manager.save()
+        else:
+            manager.save()
 
 
 def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None, globals=None):
