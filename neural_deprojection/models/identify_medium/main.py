@@ -105,7 +105,7 @@ class Model(AbstractModule):
 MODEL_MAP = dict(model1=Model)
 
 
-def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters) -> TrainOneEpoch:
+def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters, strategy=None) -> TrainOneEpoch:
     model_cls = MODEL_MAP[model_type]
 
     model = model_cls(**model_parameters)
@@ -130,13 +130,13 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
     loss = build_loss(**loss_parameters)
     opt = build_opt(**optimizer_parameters)
 
-    training = TrainOneEpoch(model, loss, opt)
+    training = TrainOneEpoch(model, loss, opt, strategy=strategy)
 
     return training
 
 def main(data_dir):
     # Make strategy at the start of your main before any other tf code is run.
-    strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=2)
+    strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=4)
 
     tfrecords = glob.glob(os.path.join(data_dir,'*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
