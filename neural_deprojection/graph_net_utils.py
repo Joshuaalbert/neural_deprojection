@@ -80,7 +80,7 @@ class TrainOneEpoch(Module):
             replica_ctx = tf.distribute.get_replica_context()
             grads = replica_ctx.all_reduce("mean", grads)
         for (param, grad) in zip(params, grads):
-            tf.summary.histogram(param.name,grad, step=self.minibatch)
+            tf.summary.histogram(param.name+"_grad",grad, step=self.minibatch)
         self.opt.apply(grads, params)
         return loss
 
