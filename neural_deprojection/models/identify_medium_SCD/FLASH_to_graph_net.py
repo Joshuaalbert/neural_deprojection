@@ -19,9 +19,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from multiprocessing import Pool, Lock
+from multiprocessing import get_context, Pool, Lock, set_start_method
 
-mp_lock = Lock()
+# mp_lock = Lock()
 
 yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
 
@@ -72,7 +72,7 @@ def graph_tuple_to_feature(graph: GraphsTuple, name=''):
             bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(graph.receivers, tf.int64)).numpy()]))}
 
 
-def save_examples(generator, save_dir=None,
+def save_examples(generator, snapshot, save_dir=None,
                   examples_per_file=26, num_examples=1, prefix='train'):
     """
     Saves a list of GraphTuples to tfrecords.
@@ -93,20 +93,20 @@ def save_examples(generator, save_dir=None,
     files = []
     data_iterable = iter(generator)
     data_left = True
-    pbar = tqdm(total=num_examples)
+    # pbar = tqdm(total=num_examples)
     while data_left:
 
-        mp_lock.acquire()  # make sure no duplicate files are made / replaced
-        tf_files = glob.glob(os.path.join(save_dir, 'train_*'))
-        file_idx = len(tf_files)
-        mp_lock.release()
+        # mp_lock.acquire()  # make sure no duplicate files are made / replaced
+        # file_idx = len(glob.glob(os.path.join(save_dir, 'train_*')))
+        # mp_lock.release()
 
-        file = os.path.join(save_dir, 'train_{:04d}.tfrecords'.format(file_idx))
+        file = os.path.join(save_dir, 'train_{:04d}.tfrecords'.format(snapshot))
         files.append(file)
         with tf.io.TFRecordWriter(file) as writer:
-            for i in range(examples_per_file):
+            for i in range(examples_per_file + 1):  # + 1 otherwise it makes a second tf rec file that is empty
                 try:
-                    (graph, image, example_idx) = next(data_iterable)
+                    print('try data...')
+                    (graph, image, snapshot, projection) = next(data_iterable)
                 except StopIteration:
                     data_left = False
                     break
@@ -115,23 +115,26 @@ def save_examples(generator, save_dir=None,
                     image=tf.train.Feature(
                         bytes_list=tf.train.BytesList(
                             value=[tf.io.serialize_tensor(tf.cast(image, tf.float32)).numpy()])),
-                    example_idx=tf.train.Feature(
+                    snapshot=tf.train.Feature(
                         bytes_list=tf.train.BytesList(
-                            value=[tf.io.serialize_tensor(tf.cast(example_idx, tf.int32)).numpy()])),
+                            value=[tf.io.serialize_tensor(tf.cast(snapshot, tf.int32)).numpy()])),
+                    projection=tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[tf.io.serialize_tensor(tf.cast(projection, tf.int32)).numpy()])),
                     **graph_tuple_to_feature(graph, name='graph')
                 )
                 features = tf.train.Features(feature=features)
                 example = tf.train.Example(features=features)
                 writer.write(example.SerializeToString())
-                pbar.update(1)
+                # pbar.update(1)
     print("Saved in tfrecords: {}".format(files))
     return files
 
 
-def generate_example_random_choice(positions, properties, k=26, plot=False):
+def generate_example_random_choice(positions, properties, number_of_virtual_nodes, plot, k):
     print('choice nn')
     idx_list = np.arange(len(positions))
-    virtual_node_positions = positions[np.random.choice(idx_list, 1000, replace=False)]
+    virtual_node_positions = positions[np.random.choice(idx_list, number_of_virtual_nodes, replace=False)]
 
     kdtree = cKDTree(virtual_node_positions)
     dist, indices = kdtree.query(positions)
@@ -147,12 +150,13 @@ def generate_example_random_choice(positions, properties, k=26, plot=False):
         virtual_properties[:, p] = mean_sum[enc](properties[:, p])
         virtual_positions = virtual_properties[:, :3]
 
-    graph = nx.DiGraph()
+    graph = nx.OrderedMultiDiGraph()
     kdtree = cKDTree(virtual_positions)
     dist, idx = kdtree.query(virtual_positions, k=k + 1)
     receivers = idx[:, 1:]  # N,k
     senders = np.arange(virtual_positions.shape[0])  # N
     senders = np.tile(senders[:, None], [1, k])  # N,k
+
     receivers = receivers.flatten()
     senders = senders.flatten()
 
@@ -188,7 +192,8 @@ def generate_example_random_choice(positions, properties, k=26, plot=False):
                                      edge_shape_hint=[2])
 
 
-def generate_data(positions, properties, proj_images, save_dir='/data2/hendrix/train_data_2/',
+def generate_data(positions, properties, proj_images, extra_info, number_of_virtual_nodes, plotting,
+                  number_of_neighbours, save_dir='/data2/hendrix/train_data/',
                   image_shape=(256, 256, 1)):
     """
     Routine for generating train data in tfrecords
@@ -200,17 +205,25 @@ def generate_data(positions, properties, proj_images, save_dir='/data2/hendrix/t
     Returns: list of tfrecords.
     """
 
+    snapshot = extra_info[0][0]
+
     def data_generator():
         print("Making graphs.")
-        for idx in tqdm(range(len(positions))):
+        for idx in range(len(positions)):
             print("Generating data from projection {}".format(idx))
             _positions = positions[idx]
             _properties = properties[idx]
             proj_image = proj_images[idx].reshape(image_shape)
-            graph = generate_example_random_choice(_positions, _properties)
-            yield (graph, proj_image, idx)
+            snapshot = extra_info[idx][0]
+            projection = extra_info[idx][1]
+            graph = generate_example_random_choice(_positions, _properties, number_of_virtual_nodes, plotting,
+                                                   number_of_neighbours)
+            print('\ngenerator output:\n', len(graph.edges), len(graph.nodes),
+                  '\n', proj_image.shape, '\n', snapshot, '\n', projection)
+            yield (graph, proj_image, snapshot, projection)
 
     train_tfrecords = save_examples(data_generator(),
+                                    snapshot,
                                     save_dir=save_dir,
                                     examples_per_file=len(positions),
                                     num_examples=len(positions),
@@ -218,7 +231,8 @@ def generate_data(positions, properties, proj_images, save_dir='/data2/hendrix/t
     return train_tfrecords
 
 
-def snaphot_to_tfrec(snapshot, save_dir='/data2/hendrix/train_data_2/'):
+def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_virtual_nodes, number_of_neighbours,
+                      plotting):
     """
     load snapshot plt file, rotate for different viewing angles, make projections and corresponding graph nets. Save to
     tfrec files.
@@ -230,21 +244,20 @@ def snaphot_to_tfrec(snapshot, save_dir='/data2/hendrix/train_data_2/'):
     Returns:
 
     """
-    print('loading particle and plt file...')
+    print('loading particle and plt file {}...'.format(snapshot_file))
     t_0 = default_timer()
-    filename = 'turbsph_hdf5_plt_cnt_{:04d}'.format(snapshot)  # only plt file, will automatically find part file
-
-    file_path = folder_path + filename
+    # filename = 'turbsph_hdf5_plt_cnt_{:04d}'.format(snapshot)  # only plt file, will automatically find part file
+    #
+    # file_path = folder_path + filename
     # print(f'file: {file_path}')
-    ds = yt.load(file_path)  # loads in data into data set class. This is what we will use to plot field values
+    ds = yt.load(snapshot_file)  # loads in data into data set class. This is what we will use to plot field values
     ad = ds.all_data()  # Can call on the data set's property .all_data() to generate a dictionary
     # containing all data available to be parsed through.
     # e.g. print ad['mass'] will print the list of all cell masses.
     # if particles exist, print ad['particle_position'] gives a list of each particle [x,y,z]
     print('done, time: {}'.format(default_timer() - t_0))
 
-    max_cell_ind = int(np.max(ad['grid_indices']).to_value())
-    num_of_projections = 5
+    snapshot = int(snapshot_file[-4:])
     field = 'density'
     width = np.max(ad['x'].to_value()) - np.min(ad['x'].to_value())
     resolution = 256
@@ -261,15 +274,12 @@ def snaphot_to_tfrec(snapshot, save_dir='/data2/hendrix/train_data_2/'):
 
     unit_names = ['pc', 'pc', 'pc', '10*km/s', '10*km/s', '10*km/s', 'J/mg', 'Msun/pc**3', 'K', 'Msun', 'pc**3']
 
-    for cell_ind in tqdm(range(0, 1 + max_cell_ind)):
-        cell_region = ad.cut_region("obj['grid_indices'] == {}".format(cell_ind))
-        if len(cell_region['grid_indices']) != 0:
-            _values = []
-            for name, transform, unit in zip(property_names, property_transforms, unit_names):
-                _values.append(transform(cell_region[name].in_units(unit).to_value()))
-            property_values.extend(np.stack(_values, axis=-1))
+    _values = []
+    for name, transform, unit in zip(property_names, property_transforms, unit_names):
+        _values.append(transform(ad[name].in_units(unit).to_value()))
 
-    property_values = np.array(property_values)  # n f
+    # property_values = np.array(property_values)  # n f
+    property_values = np.array(_values).T  # n f
     print('done, time: {}'.format(default_timer() - t_0))
 
     print('making projections and rotating coordinates')
@@ -282,16 +292,16 @@ def snaphot_to_tfrec(snapshot, save_dir='/data2/hendrix/train_data_2/'):
 
     projections = 0
     while projections < num_of_projections:
-        print(projections)
+        # print(projections)
 
         V = np.eye(3)
-        rot_mat = _random_special_ortho_matrix(3)
-        Vprime = rot_mat @ V
+        R = _random_special_ortho_matrix(3)
+        Vprime = np.linalg.inv(R) @ V
 
         north_vector = Vprime[:, 1]
         viewing_vec = Vprime[:, 2]
 
-        _extra_info = [snapshot, viewing_vec, resolution, width, field]
+        _extra_info = [snapshot, projections, viewing_vec, resolution, width, field]
         proj_image = yt.off_axis_projection(ds, center=[0, 0, 0], normal_vector=viewing_vec, north_vector=north_vector,
                                             item=field, width=width, resolution=resolution)
 
@@ -299,12 +309,13 @@ def snaphot_to_tfrec(snapshot, save_dir='/data2/hendrix/train_data_2/'):
 
         xyz = property_values[:, :3]  # n 3
         velocity_xyz = property_values[:, 3:6]  # n 3
-        xyz = np.einsum('ap,np->na', rot_mat, xyz)  # n 3
-        velocity_xyz = np.einsum('ap,np->na', rot_mat, velocity_xyz)  # n 3
+
+        rotated_xyz = (R @ xyz.T).T
+        rotated_velocity_xyz = (R @ velocity_xyz.T).T
 
         _properties = property_values.copy()  # n f
-        _properties[:, :3] = xyz  # n f
-        _properties[:, 3:6] = velocity_xyz  # n f
+        _properties[:, :3] = rotated_xyz  # n f
+        _properties[:, 3:6] = rotated_velocity_xyz  # n f
         _properties[:, 6] = _properties[:, 6]  # n f
         _positions = xyz  # n 3
 
@@ -315,21 +326,84 @@ def snaphot_to_tfrec(snapshot, save_dir='/data2/hendrix/train_data_2/'):
 
         projections += 1
 
-    generate_data(positions, properties, proj_images, save_dir)
+    generate_data(positions=positions, properties=properties, proj_images=proj_images, extra_info=extra_info,
+                  save_dir=save_dir, number_of_virtual_nodes=number_of_virtual_nodes, plotting=plotting,
+                  number_of_neighbours=number_of_neighbours)
 
     print('done, time: {}'.format(default_timer() - t_0))
 
 
+def main():
+    # claude_name_list = ['M4r5b',
+    #                     'M4r5b-3',
+    #                     'M4r5b-5',
+    #                     'M4r5s-2',
+    #                     'M4r5s-4',
+    #                     'M4r6b',
+    #                     'M4r6b-3',
+    #                     'M4r6s',
+    #                     'M4r5b-2',
+    #                     'M4r5b-4',
+    #                     'M4r5s',
+    #                     'M4r5s-3',
+    #                     'M4r5s-5',
+    #                     'M4r6b-2',
+    #                     'M4r6b-4']
+    #
+    # for n in claude_name_list:
+    #     folder_path = '/disks/extern_collab_data/cournoyer/{}/'.format(n)
+    #     save_dir = '/data2/hendrix/ClaudeData/{}/'.format(n)
+
+    folder_path = '/disks/extern_collab_data/lewis/run3/'       # run1=M3, run2=M3f, run3=M3f2, run4=M4
+    save_dir = '/data2/hendrix/SeanData/M3f2/'
+
+    # snapshot_list = []
+    # for snap in all_snapshots:
+    #     file = os.path.join(folder_path,'turbsph_hdf5_plt_cnt_{:04d}'.format(snap))
+    #     snapshot_list.append(file)
+
+    snapshot_list = glob.glob(os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_*'))
+    print('len(snapshot_list): ', len(snapshot_list))
+
+    # snapshot_list = np.array(snapshot_list)
+    # snapshot_list = snapshot_list[[int(s[-4:]) % 3 == 0 for s in snapshot_list]]       # only keep every third snapshot
+
+    print('len(snapshot_list): ', len(snapshot_list))
+    print(snapshot_list)
+
+    number_of_projections = 26
+    number_of_virtual_nodes = 50000
+    number_of_neighbours = 6
+    plotting = False
+
+    params = [(snapsh,
+               save_dir,
+               number_of_projections,
+               number_of_virtual_nodes,
+               number_of_neighbours,
+               plotting) for snapsh in snapshot_list]
+
+    # file = os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_{:04d}'.format(265))
+    #
+    # snapshot_to_tfrec(file,
+    #                   save_dir,
+    #                   number_of_projections,
+    #                   number_of_virtual_nodes,
+    #                   number_of_neighbours,
+    #                   plotting
+    #                   )
+
+    with get_context("spawn").Pool(processes=15) as pool:
+        # pool = Pool(15)
+        pool.starmap(snapshot_to_tfrec, params)
+        pool.close()
+
+    # for param in params:
+    #     file, save_dir, number_of_projections, number_of_virtual_nodes, number_of_neighbours, plotting = param
+    #     snapshot_to_tfrec(file, save_dir, number_of_projections, number_of_virtual_nodes, number_of_neighbours, plotting)
+
+
 if __name__ == '__main__':
-    # folder_path = '~/Desktop/SCD/SeanData/'
-    folder_path = '/disks/extern_collab_data/lewis/run3/'
-    examples_dir = '/data2/hendrix/examples/'
-    # examples_dir = '/home/julius/Desktop/SCD/SeanData/examples/'
-    all_snapshots = np.arange(3137)
-    # snapshot_list = np.random.choice(all_snapshots, 5, replace=False)
-    snapshot_list = [3136, 3000, 2500, 2000, 1500]
+    set_start_method("spawn")
 
-    save_dir = '/data2/hendrix/train_data_2/'
-
-    pool = Pool(5)
-    pool.map(snaphot_to_tfrec, snapshot_list)
+    main()

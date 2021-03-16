@@ -353,7 +353,7 @@ if __name__ == '__main__':
     # test_train_dir = '/data2/hendrix/ClaudeData/M4r5b/'
     # image_dir = '/data2/hendrix/ClaudeData/M4r5b/images/'
     #
-    test_train_dir = '~/data/train_data/ClaudeData/M4r5b/'
+    test_train_dir = '/home/s1825216/data/train_data/SeanData/M3/'
 
     tfrecords = glob.glob(os.path.join(test_train_dir, '*.tfrecords'))  # list containing tfrecord files
     print(tfrecords)
