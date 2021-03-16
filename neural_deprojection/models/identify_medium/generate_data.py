@@ -404,7 +404,7 @@ def make_tutorial_data(examples_dir):
 
 if __name__ == '__main__':
     make_tutorial_data('tutorial_data')
-    tfrecords = generate_data(glob.glob(os.path.join('tutorial_data','example_*')), 'test_train_data')
+    tfrecords = generate_data(glob.glob(os.path.join('tutorial_data','example_*')), 'test_data')
     dataset = tf.data.TFRecordDataset(tfrecords).map(
         lambda record_bytes: decode_examples(record_bytes, edge_shape=[2], node_shape=[5]))
     loaded_graph = iter(dataset)

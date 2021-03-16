@@ -1,5 +1,6 @@
-from neural_deprojection.models.identify_medium.generate_data import generate_data, decode_examples
-from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, get_distribution_strategy
+from neural_deprojection.models.identify_medium.generate_data import decode_examples
+from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, \
+    get_distribution_strategy, build_log_dir, build_checkpoint_dir
 import glob, os
 import tensorflow as tf
 from functools import partial
@@ -80,7 +81,7 @@ class Model(AbstractModule):
                                        lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
         self.encoder_image = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
                                        lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
-        self.image_cnn = snt.Sequential([snt.Conv2D(16,5), tf.nn.relu, snt.Conv2D(image_feature_size, 5), tf.nn.relu])
+        self.image_cnn = snt.Sequential([snt.Conv2D(16,5, stride=2), tf.nn.relu, snt.Conv2D(image_feature_size, 5, stride=2), tf.nn.relu])
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size=image_feature_size
 
@@ -88,7 +89,10 @@ class Model(AbstractModule):
         (graph, img, c) = batch
         del c
         encoded_graph = self.encoder_graph(graph)
-        img = self.image_cnn(img[None,...])#1, w,h,c -> w*h, c
+        img = self.image_cnn(img[None,...])
+        for channel in range(img.shape[-1]):
+            tf.summary.image(f'img_after_cnn[{channel}]', img[...,channel:channel+1], step=0)
+        #1, w,h,c -> w*h, c
         nodes = tf.reshape(img, (-1,self.image_feature_size))
         img_graph = GraphsTuple(nodes=nodes,
                             edges=None,
@@ -134,29 +138,41 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
 
     return training
 
+def build_dataset(data_dir):
+    """
+    Build data set from a directory of tfrecords.
+
+    Args:
+        data_dir: str, path to *.tfrecords
+
+    Returns: Dataset obj.
+    """
+    tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
+    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
+                                                             node_shape=(5,),
+                                                             edge_shape=(2,),
+                                                             image_shape=(24, 24, 1)))  # (graph, image, idx)
+    _graphs = dataset.map(lambda graph, img, idx: (graph, idx)).shuffle(buffer_size=50)
+    _images = dataset.map(lambda graph, img, idx: (img, idx)).shuffle(buffer_size=50)
+    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph, idx1), (img, idx2))
+    shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], ds1[1] == ds2[1]))  # (graph, img, yes/no)
+    shuffled_dataset = shuffled_dataset.filter(lambda graph, img, c: ~c)
+    shuffled_dataset = shuffled_dataset.map(lambda graph, img, c: (graph, img, tf.cast(c, tf.int32)))
+    nonshuffeled_dataset = dataset.map(
+        lambda graph, img, idx: (graph, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
+    dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
+    return dataset
+
+
 def main(data_dir):
     # Make strategy at the start of your main before any other tf code is run.
     strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=4)
 
-    tfrecords = glob.glob(os.path.join(data_dir,'*.tfrecords'))
-    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
-                                                             node_shape=(5,),
-                                                             edge_shape=(2,),
-                                                             image_shape=(24,24,1)))# (graph, image, idx)
-    _graphs = dataset.map(lambda graph, img, idx: (graph, idx)).shuffle(buffer_size=50)
-    _images = dataset.map(lambda graph, img, idx: (img, idx)).shuffle(buffer_size=50)
-    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images)) #((graph, idx1), (img, idx2))
-    shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], ds1[1]==ds2[1])) #(graph, img, yes/no)
-    shuffled_dataset = shuffled_dataset.filter(lambda graph, img, c: ~c)
-    shuffled_dataset = shuffled_dataset.map(lambda graph, img, c: (graph, img, tf.cast(c, tf.int32)))
-    nonshuffeled_dataset = dataset.map(lambda graph, img, idx: (graph, img, tf.constant(1, dtype=tf.int32)))#(graph, img, yes)
-    train_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset,nonshuffeled_dataset])
-
-    train_dataset = train_dataset.shard(2,0)
-    test_dataset = train_dataset.shard(2,1)
+    train_dataset = build_dataset(os.path.join(data_dir,'train'))
+    test_dataset = build_dataset(os.path.join(data_dir,'test'))
 
     config = dict(model_type='model1',
-                  model_parameters=dict(num_layers=3),
+                  model_parameters=dict(num_layers=3, image_feature_size=4),
                   optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
                   loss_parameters=dict())
 
@@ -164,15 +180,18 @@ def main(data_dir):
     with strategy.scope():
         train_one_epoch = build_training(**config)
 
+    log_dir = build_log_dir('test_log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
+
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
                           num_epochs=10,
                           early_stop_patience=3,
-                          checkpoint_dir='test_checkpointing',
+                          checkpoint_dir=checkpoint_dir,
+                          log_dir=log_dir,
                           debug=False)
 
 
-
 if __name__ == '__main__':
-    main('test_train_data')
+    main('data')

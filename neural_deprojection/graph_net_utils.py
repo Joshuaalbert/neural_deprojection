@@ -36,7 +36,8 @@ class TrainOneEpoch(Module):
 
     def __init__(self, model:AbstractModule, loss, opt:Optimizer, strategy:tf.distribute.MirroredStrategy=None, name=None):
         super(TrainOneEpoch, self).__init__(name=name)
-        self.epoch = tf.Variable(0, dtype=tf.int32)
+        self.epoch = tf.Variable(0, dtype=tf.int64)
+        self.minibatch = tf.Variable(0, dtype=tf.int64)
         self._model = model
         self._opt = opt
         self._loss = loss
@@ -78,7 +79,8 @@ class TrainOneEpoch(Module):
         if self.strategy is not None:
             replica_ctx = tf.distribute.get_replica_context()
             grads = replica_ctx.all_reduce("mean", grads)
-
+        for (param, grad) in zip(params, grads):
+            tf.summary.histogram(param.name,grad, step=self.minibatch)
         self.opt.apply(grads, params)
         return loss
 
@@ -96,13 +98,16 @@ class TrainOneEpoch(Module):
         if self.strategy is not None:
             train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
         for train_batch in train_dataset:
+            self.minibatch.assign_add(1)
             if self.strategy is not None:
                 _loss = self.strategy.run(self.train_step, args=(train_batch,))
                 _loss = self.strategy.reduce("sum", _loss, axis=None)
             else:
                 _loss = self.train_step(train_batch)
+            tf.summary.scalar('mini_batch_loss',_loss, step=self.minibatch)
             loss += _loss
             num_batches += 1.
+        tf.summary.scalar('epoch_loss', loss/num_batches, step=self.epoch)
         return loss/num_batches
 
     def evaluate(self, test_dataset):
@@ -119,6 +124,7 @@ class TrainOneEpoch(Module):
                 model_output = self.model(test_batch)
                 loss += self.loss(model_output, test_batch)
             num_batches += 1.
+        tf.summary.scalar('loss', loss / num_batches, step=self.epoch)
         return loss / num_batches
 
 
@@ -162,7 +168,7 @@ def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1, memo
     return strategy
 
 def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
-                          early_stop_patience=None, checkpoint_dir=None, debug=False):
+                          early_stop_patience=None, checkpoint_dir=None, log_dir=None, debug=False):
     """
     Does simple training.
 
@@ -199,6 +205,12 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
                                     position=0)
     early_stop_min_loss = np.inf
     early_stop_interval = 0
+
+    train_log_dir = os.path.join(log_dir,"train")
+    test_log_dir = os.path.join(log_dir,"test")
+    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
+    test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+
     checkpoint = tf.train.Checkpoint(module=train_one_epoch.model)
     manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3,
                                          checkpoint_name=train_one_epoch.model.__class__.__name__)
@@ -206,12 +218,14 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
         checkpoint.restore(manager.latest_checkpoint)
         print(f"Restored from {manager.latest_checkpoint}")
     for step_num in fancy_progress_bar:
-        loss = step(iter(training_dataset))
+        with train_summary_writer.as_default():
+            loss = step(iter(training_dataset))
         tqdm.tqdm.write(
             '\nEpoch = {}/{} (loss = {:.02f})'.format(
                 train_one_epoch.epoch.numpy(), num_epochs, loss))
         if test_dataset is not None:
-            test_loss = evaluate(iter(test_dataset))
+            with test_summary_writer.as_default():
+                test_loss = evaluate(iter(test_dataset))
             tqdm.tqdm.write(
                 '\n\tTest loss = {:.02f})'.format(test_loss))
             if early_stop_patience is not None:
@@ -409,3 +423,78 @@ def decode_graph_and_image_examples(record_bytes):
               n_edge=tf.shape(edges)[0:1])
     return (graph, image)
 
+
+def build_log_dir(base_log_dir, config):
+    """
+    Builds log dir.
+
+    Args:
+        base_log_dir: where all logs should be based from.
+        config: dict with following structure
+
+            Example config:
+
+            config = dict(model_type='model1',
+                  model_parameters=dict(num_layers=3),
+                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
+                  loss_parameters=dict(loss_type='cross_entropy'))
+
+    Returns:
+        log_dir representing this config
+    """
+    log_dir_subdir = stringify_config(config)
+    log_dir = os.path.join(base_log_dir, log_dir_subdir)
+    return log_dir
+
+def build_checkpoint_dir(base_checkpoint_dir, config):
+    """
+    Builds log dir.
+
+    Args:
+        base_checkpoint_dir: where all logs should be based from.
+        config: dict with following structure
+
+            Example config:
+
+            config = dict(model_type='model1',
+                  model_parameters=dict(num_layers=3),
+                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
+                  loss_parameters=dict(loss_type='cross_entropy'))
+
+    Returns:
+        checkpoint_dir representing this config
+    """
+    checkpoint_dir_subdir = stringify_config(config)
+    checkpoint_dir = os.path.join(base_checkpoint_dir, checkpoint_dir_subdir)
+    return checkpoint_dir
+
+def stringify_config(config):
+    def transform_key(key: str):
+        # use every other letter of key as name
+        keys = key.split("_")
+        parts = []
+        for key in keys:
+            vowels = 'aeiou'
+            for v in vowels:
+                key = key[0] + key[1:].replace(v, '')
+            parts.append(key)
+        return "".join(parts)
+
+    def transform_value(value):
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, (float)):
+            return "{:.1e}".format(value)
+        else:
+            return value
+
+    def stringify_dict(d):
+        return "[{}]".format(",".join(["{}={}".format(transform_key(k), transform_value(d[k]))
+                                       for k in sorted(d.keys())]))
+
+    model_type = f"[{config['model_type']}]"
+    model_parameters = stringify_dict(config['model_parameters'])
+    optimizer_parameters = stringify_dict(config['optimizer_parameters'])
+    loss_parameters = stringify_dict(config['loss_parameters'])
+    subdir = ",".join([model_type, model_parameters, optimizer_parameters, loss_parameters])
+    return subdir
