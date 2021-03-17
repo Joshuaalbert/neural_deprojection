@@ -489,12 +489,12 @@ def stringify_config(config):
             return value
 
     def stringify_dict(d):
-        return "[{}]".format(",".join(["{}={}".format(transform_key(k), transform_value(d[k]))
+        return "|{}|".format(",".join(["{}={}".format(transform_key(k), transform_value(d[k]))
                                        for k in sorted(d.keys())]))
 
-    model_type = f"[{config['model_type']}]"
+    model_type = f"|{config['model_type']}|"
     model_parameters = stringify_dict(config['model_parameters'])
     optimizer_parameters = stringify_dict(config['optimizer_parameters'])
     loss_parameters = stringify_dict(config['loss_parameters'])
-    subdir = ",".join([model_type, model_parameters, optimizer_parameters, loss_parameters])
+    subdir = "".join([model_type, model_parameters, optimizer_parameters, loss_parameters])
     return subdir

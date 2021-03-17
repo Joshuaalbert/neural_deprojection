@@ -4,6 +4,7 @@ from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneE
 import glob, os
 import tensorflow as tf
 from functools import partial
+import pylab as plt
 
 from graph_nets import blocks
 import sonnet as snt
@@ -75,13 +76,14 @@ class RelationNetwork(AbstractModule):
 
 
 class Model(AbstractModule):
-    def __init__(self, image_feature_size=16, name=None, **unused_kwargs):
+    def __init__(self, image_feature_size=16, kernel_size=3, name=None, **unused_kwargs):
         super(Model, self).__init__(name=name)
-        self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
-        self.encoder_image = RelationNetwork(lambda: snt.nets.MLP([32, 32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 32, 16], activate_final=True))
-        self.image_cnn = snt.Sequential([snt.Conv2D(16,5, stride=2), tf.nn.relu, snt.Conv2D(image_feature_size, 5, stride=2), tf.nn.relu])
+        self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP([32,16], activate_final=True),
+                                       lambda: snt.nets.MLP([32, 16], activate_final=True))
+        self.encoder_image = RelationNetwork(lambda: snt.nets.MLP([32, 16], activate_final=True),
+                                       lambda: snt.nets.MLP([32, 16], activate_final=True))
+        self.image_cnn = snt.Sequential([snt.Conv2D(16,kernel_size, stride=2), tf.nn.relu,
+                                         snt.Conv2D(image_feature_size, kernel_size, stride=2), tf.nn.relu])
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size=image_feature_size
 
@@ -89,6 +91,7 @@ class Model(AbstractModule):
         (graph, img, c) = batch
         del c
         encoded_graph = self.encoder_graph(graph)
+        tf.summary.image(f'img_before_cnn', img[None,...], step=0)
         img = self.image_cnn(img[None,...])
         for channel in range(img.shape[-1]):
             tf.summary.image(f'img_after_cnn[{channel}]', img[...,channel:channel+1], step=0)
@@ -149,32 +152,35 @@ def build_dataset(data_dir):
     """
     tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
-                                                             node_shape=(5,),
-                                                             edge_shape=(2,),
-                                                             image_shape=(24, 24, 1)))  # (graph, image, idx)
-    _graphs = dataset.map(lambda graph, img, idx: (graph, idx)).shuffle(buffer_size=50)
-    _images = dataset.map(lambda graph, img, idx: (img, idx)).shuffle(buffer_size=50)
-    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph, idx1), (img, idx2))
+                                                             node_shape=(4,),
+                                                             image_shape=(18, 18, 1)))  # (graph_data_dict, image, idx)
+    _graphs = dataset.map(lambda graph_data_dict, img, idx: (graph_data_dict, idx)).shuffle(buffer_size=50)
+    _images = dataset.map(lambda graph_data_dict, img, idx: (img, idx)).shuffle(buffer_size=50)
+    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph_data_dict, idx1), (img, idx2))
     shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], ds1[1] == ds2[1]))  # (graph, img, yes/no)
     shuffled_dataset = shuffled_dataset.filter(lambda graph, img, c: ~c)
-    shuffled_dataset = shuffled_dataset.map(lambda graph, img, c: (graph, img, tf.cast(c, tf.int32)))
+    shuffled_dataset = shuffled_dataset.map(lambda graph_data_dict, img, c: (graph_data_dict, img, tf.cast(c, tf.int32)))
     nonshuffeled_dataset = dataset.map(
-        lambda graph, img, idx: (graph, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
+        lambda graph_data_dict, img, idx: (graph_data_dict, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
     dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
+    dataset = dataset.map(lambda graph_data_dict, img, c: (GraphsTuple(globals=None, edges=None, **graph_data_dict), img, c))
     return dataset
 
 
-def main(data_dir):
+def main(data_dir, config):
     # Make strategy at the start of your main before any other tf code is run.
-    strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=4)
+    strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1)
 
     train_dataset = build_dataset(os.path.join(data_dir,'train'))
     test_dataset = build_dataset(os.path.join(data_dir,'test'))
 
-    config = dict(model_type='model1',
-                  model_parameters=dict(num_layers=3, image_feature_size=4),
-                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
-                  loss_parameters=dict())
+    for (graph, img, c) in iter(test_dataset):
+        print(graph)
+        plt.imshow(img)
+
+        plt.colorbar()
+        plt.show()
+        break
 
 
     with strategy.scope():
@@ -186,7 +192,7 @@ def main(data_dir):
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
-                          num_epochs=10,
+                          num_epochs=1000,
                           early_stop_patience=3,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
@@ -194,4 +200,12 @@ def main(data_dir):
 
 
 if __name__ == '__main__':
-    main('data')
+    import numpy as np
+    for kernel_size in [3,4,5]:
+        for learning_rate in 10**np.linspace(-5, -3,5):
+            for image_feature_size in [4,8,16]:
+                config = dict(model_type='model1',
+                              model_parameters=dict(kernel_size=kernel_size, image_feature_size=image_feature_size),
+                              optimizer_parameters=dict(learning_rate=learning_rate, opt_type='adam'),
+                              loss_parameters=dict())
+                main('data', config)
