@@ -236,10 +236,7 @@ def make_tutorial_data(examples_dir, N=100, num_nodes=3000):
         image += np.percentile(image.flatten(), 5) * np.random.normal(size=image.shape)
         np.savez(os.path.join(data_dir, 'data.npz'), positions=positions, properties=properties, image=image)
 
-    import pylab as plt
-    plt.imshow(image)
-    plt.colorbar()
-    plt.show()
+
 
 if __name__ == '__main__':
     make_tutorial_data('tutorial_train_data',N=100)

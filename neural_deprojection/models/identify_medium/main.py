@@ -25,7 +25,7 @@ class RelationNetwork(AbstractModule):
     def __init__(self,
                  edge_model_fn,
                  global_model_fn,
-                 reducer=tf.math.unsorted_segment_sum,
+                 reducer=tf.math.unsorted_segment_mean,
                  use_globals=False,
                  name="relation_network"):
         """Initializes the RelationNetwork module.
@@ -87,14 +87,26 @@ class Model(AbstractModule):
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size=image_feature_size
 
+        self._step = None
+
+    @property
+    def step(self):
+        if self._step is None:
+            raise ValueError("Need to set step idx variable. model.step = epoch")
+        return self._step
+
+    @step.setter
+    def step(self, value):
+        self._step = value
+
     def _build(self, batch, *args, **kwargs):
         (graph, img, c) = batch
         del c
         encoded_graph = self.encoder_graph(graph)
-        tf.summary.image(f'img_before_cnn', img[None,...], step=0)
+        tf.summary.image(f'img_before_cnn', img[None,...], step=self.step)
         img = self.image_cnn(img[None,...])
         for channel in range(img.shape[-1]):
-            tf.summary.image(f'img_after_cnn[{channel}]', img[...,channel:channel+1], step=0)
+            tf.summary.image(f'img_after_cnn[{channel}]', img[...,channel:channel+1], step=self.step)
         #1, w,h,c -> w*h, c
         nodes = tf.reshape(img, (-1,self.image_feature_size))
         img_graph = GraphsTuple(nodes=nodes,
@@ -131,7 +143,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
         def loss(model_outputs, batch):
             (graph, img, c) = batch
             # loss =  mean(-sum_k^2 true[k] * log(pred[k]/true[k]))
-            return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
+            return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))
         return loss
 
     loss = build_loss(**loss_parameters)
@@ -176,10 +188,6 @@ def main(data_dir, config):
 
     for (graph, img, c) in iter(test_dataset):
         print(graph)
-        plt.imshow(img)
-
-        plt.colorbar()
-        plt.show()
         break
 
 

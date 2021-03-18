@@ -39,6 +39,7 @@ class TrainOneEpoch(Module):
         self.epoch = tf.Variable(0, dtype=tf.int64)
         self.minibatch = tf.Variable(0, dtype=tf.int64)
         self._model = model
+        self._model.step = self.minibatch
         self._opt = opt
         self._loss = loss
         self._strategy = strategy
@@ -211,7 +212,7 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
     train_summary_writer = tf.summary.create_file_writer(train_log_dir)
     test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 
-    checkpoint = tf.train.Checkpoint(module=train_one_epoch.model)
+    checkpoint = tf.train.Checkpoint(module=train_one_epoch)
     manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3,
                                          checkpoint_name=train_one_epoch.model.__class__.__name__)
     if manager.latest_checkpoint is not None:
@@ -243,6 +244,8 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
                 manager.save()
         else:
             manager.save()
+    train_summary_writer.close()
+    test_summary_writer.close()
 
 
 def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None, globals=None):
