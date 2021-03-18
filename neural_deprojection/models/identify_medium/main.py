@@ -10,6 +10,7 @@ from graph_nets import blocks
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_tf import fully_connect_graph_dynamic
+import json
 
 
 class RelationNetwork(AbstractModule):
@@ -196,6 +197,8 @@ def main(data_dir, config):
 
     log_dir = build_log_dir('test_log_dir', config)
     checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
+    with open(os.path.join(checkpoint_dir,'config.json'), 'w') as f:
+        json.dump(config, f)
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
