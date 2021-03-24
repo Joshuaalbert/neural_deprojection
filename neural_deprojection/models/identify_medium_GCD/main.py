@@ -8,7 +8,9 @@ import tensorflow as tf
 from functools import partial
 from graph_nets import blocks
 import sonnet as snt
+from tensorflow_addons.image import gaussian_filter2d
 from graph_nets.graphs import GraphsTuple
+from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer
 from graph_nets.utils_tf import fully_connect_graph_dynamic
 from typing import Callable, Iterable, Optional, Text
 from sonnet.src import initializers
@@ -88,104 +90,137 @@ class RelationNetwork(AbstractModule):
         return output_graph  # graph.replace(globals=output_graph.globals)
 
 
-class MLP_with_bn(snt.Module):
-    """A multi-layer perceptron module."""
+class SelfAttention(AbstractModule):
+  """Multi-head self-attention module.
+  The module is based on the following three papers:
+   * A simple neural network module for relational reasoning (RNs):
+       https://arxiv.org/abs/1706.01427
+   * Non-local Neural Networks: https://arxiv.org/abs/1711.07971.
+   * Attention Is All You Need (AIAYN): https://arxiv.org/abs/1706.03762.
+  The input to the modules consists of a graph containing values for each node
+  and connectivity between them, a tensor containing keys for each node
+  and a tensor containing queries for each node.
+  The self-attention step consist of updating the node values, with each new
+  node value computed in a two step process:
+  - Computing the attention weights between each node and all of its senders
+   nodes, by calculating sum(sender_key*receiver_query) and using the softmax
+   operation on all attention weights for each node.
+  - For each receiver node, compute the new node value as the weighted average
+   of the values of the sender nodes, according to the attention weights.
+  - Nodes with no received edges, get an updated value of 0.
+  Values, keys and queries contain a "head" axis to compute independent
+  self-attention for each of the heads.
+  """
 
-    def __init__(self,
-                 output_sizes: Iterable[int],
-                 w_init: Optional[initializers.Initializer] = None,
-                 b_init: Optional[initializers.Initializer] = None,
-                 with_bias: bool = True,
-                 activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.relu,
-                 dropout_rate=None,
-                 activate_final: bool = False,
-                 name: Optional[Text] = None,
-                 with_bn=False):
-        """Constructs an MLP.
+  def __init__(self, name="self_attention"):
+    """Inits the module.
+    Args:
+      name: The module name.
+    """
+    super(SelfAttention, self).__init__(name=name)
+    self._normalizer = _unsorted_segment_softmax
 
-        Args:
-          output_sizes: Sequence of layer sizes.
-          w_init: Initializer for Linear weights.
-          b_init: Initializer for Linear bias. Must be `None` if `with_bias` is
-            `False`.
-          with_bias: Whether or not to apply a bias in each layer.
-          activation: Activation function to apply between linear layers. Defaults
-            to ReLU.
-          dropout_rate: Dropout rate to apply, a rate of `None` (the default) or `0`
-            means no dropout will be applied.
-          activate_final: Whether or not to activate the final layer of the MLP.
-          name: Optional name for this module.
+  def _build(self, node_values, node_keys, node_queries, attention_graph):
+    """Connects the multi-head self-attention module.
+    The self-attention is only computed according to the connectivity of the
+    input graphs, with receiver nodes attending to sender nodes.
+    Args:
+      node_values: Tensor containing the values associated to each of the nodes.
+        The expected shape is [total_num_nodes, num_heads, key_size].
+      node_keys: Tensor containing the key associated to each of the nodes. The
+        expected shape is [total_num_nodes, num_heads, key_size].
+      node_queries: Tensor containing the query associated to each of the nodes.
+        The expected shape is [total_num_nodes, num_heads, query_size]. The
+        query size must be equal to the key size.
+      attention_graph: Graph containing connectivity information between nodes
+        via the senders and receivers fields. Node A will only attempt to attend
+        to Node B if `attention_graph` contains an edge sent by Node A and
+        received by Node B.
+    Returns:
+      An output `graphs.GraphsTuple` with updated nodes containing the
+      aggregated attended value for each of the nodes with shape
+      [total_num_nodes, num_heads, value_size].
+    Raises:
+      ValueError: if the input graph does not have edges.
+    """
 
-        Raises:
-          ValueError: If with_bias is False and b_init is not None.
-        """
-        if not with_bias and b_init is not None:
-            raise ValueError("When with_bias=False b_init must not be set.")
+    # Sender nodes put their keys and values in the edges.
+    # [total_num_edges, num_heads, query_size]
+    sender_keys = blocks.broadcast_sender_nodes_to_edges(
+        attention_graph.replace(nodes=node_keys))
+    # [total_num_edges, num_heads, value_size]
+    sender_values = blocks.broadcast_sender_nodes_to_edges(
+        attention_graph.replace(nodes=node_values))
 
-        super(MLP_with_bn, self).__init__(name=name)
-        self._with_bias = with_bias
-        self._w_init = w_init
-        self._b_init = b_init
-        self._activation = activation
-        self._activate_final = activate_final
-        self._dropout_rate = dropout_rate
-        self._layers = []
-        self._with_bn = with_bn
-        self._bn = []
-        for index, output_size in enumerate(output_sizes):
-            # Besides a layer for every output_size in output_sizes (which are e.g [32, 32, 16])
-            # also make a batch_normalization object except for the last layer
-            # Create scale determines the scale of the normalization, which is 1 by default
-            # Create offset determines the center of the normalization, which is 0 by default
-            if self._with_bn:
-                if index < len(output_sizes) - 1:
-                    self._bn.append(
-                        snt.BatchNorm(
-                            create_scale=False,
-                            create_offset=False))
-            self._layers.append(
-                linear.Linear(
-                    output_size=output_size,
-                    w_init=w_init,
-                    b_init=b_init,
-                    with_bias=with_bias,
-                    name="linear_%d" % index))
-        # print(f'Number of batch normalization objects : {len(self._bn)}')
-        # print(f'Number of layer objects : {len(self._layers)}')
+    # Receiver nodes put their queries in the edges.
+    # [total_num_edges, num_heads, key_size]
+    receiver_queries = blocks.broadcast_receiver_nodes_to_edges(
+        attention_graph.replace(nodes=node_queries))
 
-    def __call__(self, inputs: tf.Tensor, is_training=True) -> tf.Tensor:
-        """Connects the module to some inputs.
+    # Attention weight for each edge.
+    # [total_num_edges, num_heads]
+    attention_weights_logits = tf.reduce_sum(
+        sender_keys * receiver_queries, axis=-1)
+    normalized_attention_weights = _received_edges_normalizer(
+        attention_graph.replace(edges=attention_weights_logits),
+        normalizer=self._normalizer)
 
-        Args:
-          inputs: A Tensor of shape `[batch_size, input_size]`.
-          is_training: A bool indicating if we are currently training. Defaults to
-            `None`. Required if using dropout.
+    # Attending to sender values according to the weights.
+    # [total_num_edges, num_heads, embedding_size]
+    attented_edges = sender_values * normalized_attention_weights[..., None]
 
-        Returns:
-          output: The output of the model of size `[batch_size, output_size]`.
-        """
+    # Summing all of the attended values from each node.
+    # [total_num_nodes, num_heads, embedding_size]
+    received_edges_aggregator = blocks.ReceivedEdgesToNodesAggregator(
+        reducer=tf.math.unsorted_segment_sum)
+    aggregated_attended_values = received_edges_aggregator(
+        attention_graph.replace(edges=attented_edges))
 
-        num_layers = len(self._layers)
+    return attention_graph.replace(nodes=aggregated_attended_values)
 
-        for i, (layer, bn) in enumerate(zip(self._layers, self._bn)):
-            # print(f'These are the inputs: {inputs}')
-            inputs = layer(inputs)
-            print(f'Shape : {inputs.shape}')
-            print(f'These are the inputs after the layer: {inputs}')
+class Autoencoder(AbstractModule):
+    def __init__(self, name=None):
+        super(Autoencoder, self).__init__(name=name)
+        self.encoder = snt.Sequential([snt.Conv2D(2, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                      snt.Conv2D(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                      snt.Conv2D(8, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                      snt.Conv2D(16, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                      snt.Conv2D(32, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2D(64, kernel_size, stride=2, padding='SAME'), tf.nn.relu])
 
+        self.decoder = snt.Sequential([snt.Conv2DTranspose(64, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2DTranspose(32, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2DTranspose(16, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2DTranspose(8, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2DTranspose(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2DTranspose(2, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2D(1, kernel_size, padding='SAME')])
 
-            # Activation for all but the last layer, unless specified otherwise.
-            if i < (num_layers - 1) or self._activate_final:
-                inputs = self._activation(inputs)
-                print(f'These are the inputs after activation: {inputs}')
+    @property
+    def step(self):
+        if self._step is None:
+            raise ValueError("Need to set step idx variable. model.step = epoch")
+        return self._step
 
-            if self._with_bn:
-                # Apply batch normalization for all but the last layer.
-                if i < (num_layers - 1):
-                    inputs = bn(inputs, is_training=is_training)
-                print(f'These are the inputs after batch normalization: {inputs}')
+    @step.setter
+    def step(self, value):
+        self._step = value
 
-        return inputs
+    def _build(self, batch):
+        (img, ) = batch
+        img = gaussian_filter2d(img, filter_shape=[6, 6])
+        img_before_autoencoder = (img - tf.reduce_min(img)) / (
+                tf.reduce_max(img) - tf.reduce_min(img))
+        tf.summary.image(f'img_before_autoencoder', img_before_autoencoder, step=self.step)
+        encoded_img = self.encoder(img)
+
+        print(encoded_img.shape)
+
+        decoded_img = self.decoder(encoded_img)
+        img_after_autoencoder = (decoded_img - tf.reduce_min(decoded_img)) / (
+                tf.reduce_max(decoded_img) - tf.reduce_min(decoded_img))
+        tf.summary.image(f'img_after_autoencoder', img_after_autoencoder, step=self.step)
+        return decoded_img
 
 
 class Model(AbstractModule):
@@ -221,54 +256,90 @@ class Model(AbstractModule):
     So we (currently) go from (4880,4880,1) to (35,35,16)
     """
 
-    def __init__(self, kernel_size=4, image_feature_size=16, name=None):
+    def __init__(self, mlp_layers=2, mlp_layer_nodes=32, conv_layers=6, kernel_size=4, image_feature_size=16, name=None):
         super(Model, self).__init__(name=name)
-        self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP([32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 16], activate_final=True))
-        self.encoder_image = RelationNetwork(lambda: snt.nets.MLP([32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 16], activate_final=True))
-        self.image_cnn = snt.Sequential([snt.Conv2D(16, kernel_size, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, kernel_size, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, kernel_size, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(16, kernel_size, stride=2, padding='valid'), tf.nn.relu,
-                                         snt.Conv2D(image_feature_size, kernel_size, stride=2, padding='valid'), tf.nn.relu])
+        self.attention_graph = SelfAttention()
+        self.attention_image = SelfAttention()
+        self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True),
+                                       lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True))
+        self.encoder_image = RelationNetwork(lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True),
+                                       lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True))
+        seq_argument = []
+        for _ in range(conv_layers - 1):
+            seq_argument.append(snt.Conv2D(16, kernel_size, stride=2, padding='valid'))
+            seq_argument.append(tf.nn.relu)
+
+        self.image_cnn = snt.Sequential(seq_argument +
+                                        [snt.Conv2D(image_feature_size, kernel_size, stride=2, padding='valid'), tf.nn.relu])
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size = image_feature_size
 
+    @property
+    def step(self):
+        if self._step is None:
+            raise ValueError("Need to set step idx variable. model.step = epoch")
+        return self._step
+
+    @step.setter
+    def step(self, value):
+        self._step = value
+
     def _build(self, batch, *args, **kwargs):
         (graph, img, c) = batch
-        # print(f'Node example : {graph.nodes[0]}')
+        del c
+
+        print(f'Node example : {graph.nodes[0]}')
         # print(f'Virtual particles in cluster : {graph.nodes.shape}')
         # print(f'Original image shape : {img.shape}')
         # print(f'Image : {tf.reduce_mean(img)}')
         # print(f'St dev : {(tf.reduce_mean(img**2) - tf.reduce_mean(img)**2)**(1/2)}')
         # print(f'Min : {tf.reduce_min(img)}')
         # print(f'Max : {tf.reduce_max(img)}')
-        del c
-        encoded_graph = self.encoder_graph(graph)
-        print("IMG SHAPE:", img.shape)
-        print("IMG MIN MAX:", tf.math.reduce_min(img), tf.math.reduce_max(img))
-        img = self.image_cnn(img[None,...])#1, w,h,c -> w*h, c
-        # [1, 29, 29, 8]
-        tf.summary.image(f'img_before_cnn', tf.transpose(img, [3, 1, 2, 0]), step=0)
-        # [8, 29, 29, 1]
-        # print(f'Convolutional network output shape : {img.shape}')
-        nodes = tf.reshape(img, (-1, self.image_feature_size))
-        img_graph = GraphsTuple(nodes=nodes,
+
+        attended_graph = self.attention_graph(graph.nodes,
+                                              graph.nodes,
+                                              graph.nodes,
+                                              graph)
+        encoded_graph = self.encoder_graph(attended_graph)
+
+        print("IMG SHAPE:", img[None, ...].shape)
+        print("IMG MIN MAX:", tf.math.reduce_min(img[None, ...]), tf.math.reduce_max(img[None, ...]))
+
+        img_before_cnn = img[None, ...]
+        img_before_cnn = (img_before_cnn - tf.reduce_min(img_before_cnn)) / (tf.reduce_max(img_before_cnn) - tf.reduce_min(img_before_cnn))
+        tf.summary.image(f'img_before_cnn', img_before_cnn, step=self.step)
+
+        img = self.image_cnn(img[None, ...])  # 1, w,h,c -> w*h, c
+
+        print("IMG SHAPE AFTER CNN:", tf.transpose(img, [3, 1, 2, 0]).shape)
+        print("IMG MIN MAX AFTER CNN:", tf.math.reduce_min(tf.transpose(img, [3, 1, 2, 0])), tf.math.reduce_max(tf.transpose(img, [3, 1, 2, 0])))
+
+        tf.summary.image(f'img_after_cnn', tf.transpose(img, [3, 1, 2, 0]), step=self.step)
+
+        img_nodes = tf.reshape(img, (-1, self.image_feature_size))
+        img_graph = GraphsTuple(nodes=img_nodes,
                             edges=None,
                             globals=None,
                             receivers=None,
                             senders=None,
-                            n_node=tf.shape(nodes)[0:1],
+                            n_node=tf.shape(img_nodes)[0:1],
                             n_edge=tf.constant([0]))
         connected_graph = fully_connect_graph_dynamic(img_graph)
-        encoded_img = self.encoder_image(connected_graph)
+
+        attended_img = self.attention_graph(connected_graph.nodes,
+                                            connected_graph.nodes,
+                                            connected_graph.nodes,
+                                            connected_graph)
+        encoded_img = self.encoder_image(attended_img)
+
+        # print(f'Convolutional network output shape : {img.shape}')
         # print(f'Encoded particle graph nodes shape : {encoded_graph.nodes.shape}')
         # print(f'Encoded particle graph edges shape : {encoded_graph.edges.shape}')
         # print(f'Encoded image graph nodes shape : {encoded_img.nodes.shape}')
         # print(f'Encoded image graph edges shape : {encoded_img.edges.shape}')
         # print(f'Encoded particle graph globals : {encoded_graph.globals}')
         # print(f'Encoded image graph globals : {encoded_img.globals}')
+
         distance = self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1)) + self.compare(tf.concat([encoded_img.globals, encoded_graph.globals], axis=1))
         return distance
 
@@ -304,11 +375,13 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
 
     return training
 
+
 def feature_to_graph_tuple(name=''):
     return {f'{name}_nodes': tf.io.FixedLenFeature([], dtype=tf.string),
             f'{name}_edges': tf.io.FixedLenFeature([], dtype=tf.string),
             f'{name}_senders': tf.io.FixedLenFeature([], dtype=tf.string),
             f'{name}_receivers': tf.io.FixedLenFeature([], dtype=tf.string)}
+
 
 def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=None):
     """
@@ -363,6 +436,7 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
                         n_edge=tf.shape(graph_edges)[0:1])
     return (graph, image, cluster_idx, projection_idx, vprime)
 
+
 def build_dataset(tfrecords):
     # Extract the dataset (graph tuple, image, example_idx) from the tfrecords files
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
@@ -400,7 +474,8 @@ def build_dataset(tfrecords):
     nn_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
     return nn_dataset
 
-def main(data_dir, config):
+
+def train_identify_medium(data_dir, config):
     strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=11, memory_limit=900)
 
     # lists containing tfrecord files
@@ -431,11 +506,58 @@ def main(data_dir, config):
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
-                          num_epochs=10,
+                          num_epochs=20,
                           early_stop_patience=3,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           debug=False)
+
+def train_autoencoder(data_dir):
+    # strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1, memory_limit=10000)
+
+    # lists containing tfrecord files
+    train_tfrecords = glob.glob(os.path.join(data_dir, 'train', '*.tfrecords'))
+    test_tfrecords = glob.glob(os.path.join(data_dir, 'test', '*.tfrecords'))
+
+    print(f'Number of training tfrecord files : {len(train_tfrecords)}')
+    print(f'Number of test tfrecord files : {len(test_tfrecords)}')
+    print(f'Total : {len(train_tfrecords) + len(test_tfrecords)}')
+
+    train_dataset = build_dataset(train_tfrecords)
+    test_dataset = build_dataset(test_tfrecords)
+
+    train_dataset = train_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
+    test_dataset = test_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
+
+    # with strategy.scope():
+    model = Autoencoder()
+
+    learning_rate = 1e-3
+    opt = snt.optimizers.Adam(learning_rate)
+
+    def loss(model_outputs, batch):
+        (img,) = batch
+        decoded_img = model_outputs
+        return tf.reduce_mean((gaussian_filter2d(img, filter_shape=[6, 6]) - decoded_img[:, 12:-12, 12:-12, :]) ** 2)
+
+    train_one_epoch = TrainOneEpoch(model, loss, opt, strategy=None)
+
+    log_dir = 'autoencoder_log_dir'
+    checkpoint_dir = 'autoencoder_checkpointing'
+
+    vanilla_training_loop(train_one_epoch=train_one_epoch,
+                          training_dataset=train_dataset,
+                          test_dataset=test_dataset,
+                          num_epochs=40,
+                          early_stop_patience=3,
+                          checkpoint_dir=checkpoint_dir,
+                          log_dir=log_dir,
+                          debug=False)
+
+def main(data_dir, config):
+    train_autoencoder(data_dir)
+    # train_identify_medium(data_dir, config)
+
 
 if __name__ == '__main__':
     tfrec_base_dir = '/home/s2675544/data/tf_records'
@@ -443,11 +565,19 @@ if __name__ == '__main__':
 
     import numpy as np
 
-    for kernel_size in [4, 5]:
-        for learning_rate in 10 ** np.linspace(-5, -5, 1):
-            for image_feature_size in [16, 32]:
-                config = dict(model_type='model1',
-                              model_parameters=dict(kernel_size=kernel_size, image_feature_size=image_feature_size),
-                              optimizer_parameters=dict(learning_rate=learning_rate, opt_type='adam'),
-                              loss_parameters=dict())
-                main(tfrec_dir, config)
+    learning_rate = 1e-5
+    kernel_size = 4
+    mlp_layers = 2
+    image_feature_size = 32
+    conv_layers = 6
+    mlp_layer_nodes = 64
+
+    config = dict(model_type='model1',
+                  model_parameters=dict(mlp_layers=mlp_layers,
+                                        mlp_layer_nodes=mlp_layer_nodes,
+                                        conv_layers=conv_layers,
+                                        kernel_size=kernel_size,
+                                        image_feature_size=image_feature_size),
+                  optimizer_parameters=dict(learning_rate=learning_rate, opt_type='adam'),
+                  loss_parameters=dict())
+    main(tfrec_dir, config)
