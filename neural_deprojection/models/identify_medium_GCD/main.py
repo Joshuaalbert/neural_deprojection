@@ -182,10 +182,10 @@ class Autoencoder(AbstractModule):
     def __init__(self, name=None):
         super(Autoencoder, self).__init__(name=name)
         self.encoder = snt.Sequential([snt.Conv2D(2, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
-                                      snt.Conv2D(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
-                                      snt.Conv2D(8, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
-                                      snt.Conv2D(16, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
-                                      snt.Conv2D(32, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2D(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2D(8, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2D(16, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2D(32, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(64, kernel_size, stride=2, padding='SAME'), tf.nn.relu])
 
         self.decoder = snt.Sequential([snt.Conv2DTranspose(64, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
@@ -264,13 +264,25 @@ class Model(AbstractModule):
                                        lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True))
         self.encoder_image = RelationNetwork(lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True),
                                        lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True))
-        seq_argument = []
-        for _ in range(conv_layers - 1):
-            seq_argument.append(snt.Conv2D(16, kernel_size, stride=2, padding='valid'))
-            seq_argument.append(tf.nn.relu)
 
-        self.image_cnn = snt.Sequential(seq_argument +
-                                        [snt.Conv2D(image_feature_size, kernel_size, stride=2, padding='valid'), tf.nn.relu])
+        # Load the autoencoder model from checkpoint
+        my_auto_encoder = Autoencoder()
+
+        checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/identify_medium_GCD/autoencoder_checkpointing'
+        checkpoint = tf.train.Checkpoint(module=my_auto_encoder)
+        status = tf.train.latest_checkpoint(checkpoint_dir)
+        checkpoint.restore(status).assert_consumed()
+
+        self.auto_encoder = my_auto_encoder
+
+        # seq_argument = []
+        # for _ in range(conv_layers - 1):
+        #     seq_argument.append(snt.Conv2D(16, kernel_size, stride=2, padding='valid'))
+        #     seq_argument.append(tf.nn.relu)
+        #
+        # self.image_cnn = snt.Sequential(seq_argument +
+        #                                 [snt.Conv2D(image_feature_size, kernel_size, stride=2, padding='valid'), tf.nn.relu])
+
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size = image_feature_size
 
@@ -288,7 +300,7 @@ class Model(AbstractModule):
         (graph, img, c) = batch
         del c
 
-        print(f'Node example : {graph.nodes[0]}')
+        # print(f'Node example : {graph.nodes[0]}')
         # print(f'Virtual particles in cluster : {graph.nodes.shape}')
         # print(f'Original image shape : {img.shape}')
         # print(f'Image : {tf.reduce_mean(img)}')
@@ -309,14 +321,19 @@ class Model(AbstractModule):
         img_before_cnn = (img_before_cnn - tf.reduce_min(img_before_cnn)) / (tf.reduce_max(img_before_cnn) - tf.reduce_min(img_before_cnn))
         tf.summary.image(f'img_before_cnn', img_before_cnn, step=self.step)
 
-        img = self.image_cnn(img[None, ...])  # 1, w,h,c -> w*h, c
+        img = self.auto_encoder.encoder(img[None, ...])
+        decoded_img = self.auto_encoder.decoder(img)
+        tf.summary.image(f'decoded_img', tf.transpose(decoded_img, [3, 1, 2, 0]), step=self.step)
+        # img = self.image_cnn(img[None, ...])  # 1, w,h,c -> w*h, c
 
         print("IMG SHAPE AFTER CNN:", tf.transpose(img, [3, 1, 2, 0]).shape)
         print("IMG MIN MAX AFTER CNN:", tf.math.reduce_min(tf.transpose(img, [3, 1, 2, 0])), tf.math.reduce_max(tf.transpose(img, [3, 1, 2, 0])))
+        print("DECODED IMG MIN MAX:", tf.math.reduce_min(tf.transpose(decoded_img, [3, 1, 2, 0])), tf.math.reduce_max(tf.transpose(decoded_img, [3, 1, 2, 0])))
 
         tf.summary.image(f'img_after_cnn', tf.transpose(img, [3, 1, 2, 0]), step=self.step)
 
         img_nodes = tf.reshape(img, (-1, self.image_feature_size))
+        print("RESHAPEN IMG NODES:", img_nodes.shape)
         img_graph = GraphsTuple(nodes=img_nodes,
                             edges=None,
                             globals=None,
@@ -510,7 +527,7 @@ def train_identify_medium(data_dir, config):
                           early_stop_patience=3,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
-                          debug=False)
+                          debug=True)
 
 def train_autoencoder(data_dir):
     # strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1, memory_limit=10000)
@@ -555,27 +572,24 @@ def train_autoencoder(data_dir):
                           debug=False)
 
 def main(data_dir, config):
-    train_autoencoder(data_dir)
-    # train_identify_medium(data_dir, config)
+    # train_autoencoder(data_dir)
+    train_identify_medium(data_dir, config)
 
 
 if __name__ == '__main__':
     tfrec_base_dir = '/home/s2675544/data/tf_records'
     tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
 
-    import numpy as np
-
     learning_rate = 1e-5
     kernel_size = 4
     mlp_layers = 2
-    image_feature_size = 32
-    conv_layers = 6
-    mlp_layer_nodes = 64
+    image_feature_size = 64
+    # conv_layers = 6
+    mlp_layer_nodes = 32
 
     config = dict(model_type='model1',
                   model_parameters=dict(mlp_layers=mlp_layers,
                                         mlp_layer_nodes=mlp_layer_nodes,
-                                        conv_layers=conv_layers,
                                         kernel_size=kernel_size,
                                         image_feature_size=image_feature_size),
                   optimizer_parameters=dict(learning_rate=learning_rate, opt_type='adam'),
