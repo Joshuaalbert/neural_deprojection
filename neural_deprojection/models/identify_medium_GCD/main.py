@@ -10,8 +10,8 @@ from graph_nets import blocks
 import sonnet as snt
 from tensorflow_addons.image import gaussian_filter2d
 from graph_nets.graphs import GraphsTuple
-from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer
-from graph_nets.utils_tf import fully_connect_graph_dynamic
+from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer, GraphIndependent, SelfAttention
+from graph_nets.utils_tf import fully_connect_graph_dynamic, concat
 from typing import Callable, Iterable, Optional, Text
 from sonnet.src import initializers
 from sonnet.src import linear
@@ -89,97 +89,67 @@ class RelationNetwork(AbstractModule):
         # print(f'This is the global block :{np.array(output_graph.globals)}')
         return output_graph  # graph.replace(globals=output_graph.globals)
 
+# The maximum number of steps it takes to get from any node to every node is the diameter
 
-class SelfAttention(AbstractModule):
-  """Multi-head self-attention module.
-  The module is based on the following three papers:
-   * A simple neural network module for relational reasoning (RNs):
-       https://arxiv.org/abs/1706.01427
-   * Non-local Neural Networks: https://arxiv.org/abs/1711.07971.
-   * Attention Is All You Need (AIAYN): https://arxiv.org/abs/1706.03762.
-  The input to the modules consists of a graph containing values for each node
-  and connectivity between them, a tensor containing keys for each node
-  and a tensor containing queries for each node.
-  The self-attention step consist of updating the node values, with each new
-  node value computed in a two step process:
-  - Computing the attention weights between each node and all of its senders
-   nodes, by calculating sum(sender_key*receiver_query) and using the softmax
-   operation on all attention weights for each node.
-  - For each receiver node, compute the new node value as the weighted average
-   of the values of the sender nodes, according to the attention weights.
-  - Nodes with no received edges, get an updated value of 0.
-  Values, keys and queries contain a "head" axis to compute independent
-  self-attention for each of the heads.
+class EncodeProcessDecode(snt.Module):
+  """Full encode-process-decode model.
+  The model we explore includes three components:
+  - An "Encoder" graph net, which independently encodes the edge, node, and
+    global attributes (does not compute relations etc.).
+  - A "Core" graph net, which performs N rounds of processing (message-passing)
+    steps. The input to the Core is the concatenation of the Encoder's output
+    and the previous output of the Core (labeled "Hidden(t)" below, where "t" is
+    the processing step).
+  - A "Decoder" graph net, which independently decodes the edge, node, and
+    global attributes (does not compute relations etc.), on each message-passing
+    step.
+                      Hidden(t)   Hidden(t+1)
+                         |            ^
+            *---------*  |  *------*  |  *---------*
+            |         |  |  |      |  |  |         |
+  Input --->| Encoder |  *->| Core |--*->| Decoder |---> Output(t)
+            |         |---->|      |     |         |
+            *---------*     *------*     *---------*
   """
 
-  def __init__(self, name="self_attention"):
-    """Inits the module.
-    Args:
-      name: The module name.
-    """
-    super(SelfAttention, self).__init__(name=name)
-    self._normalizer = _unsorted_segment_softmax
+  def __init__(self,
+               edge_output_size=None,
+               node_output_size=None,
+               global_output_size=None,
+               name="EncodeProcessDecode"):
+    super(EncodeProcessDecode, self).__init__(name=name)
+    self._encoder = MLPGraphIndependent()
+    self._core = MLPGraphNetwork()
+    self._decoder = MLPGraphIndependent()
+    # Transforms the outputs into the appropriate shapes.
+    if edge_output_size is None:
+      edge_fn = None
+    else:
+      edge_fn = lambda: snt.Linear(edge_output_size, name="edge_output")
+    if node_output_size is None:
+      node_fn = None
+    else:
+      node_fn = lambda: snt.Linear(node_output_size, name="node_output")
+    if global_output_size is None:
+      global_fn = None
+    else:
+      global_fn = lambda: snt.Linear(global_output_size, name="global_output")
+    self._output_transform = GraphIndependent(
+        edge_fn, node_fn, global_fn)
 
-  def _build(self, node_values, node_keys, node_queries, attention_graph):
-    """Connects the multi-head self-attention module.
-    The self-attention is only computed according to the connectivity of the
-    input graphs, with receiver nodes attending to sender nodes.
-    Args:
-      node_values: Tensor containing the values associated to each of the nodes.
-        The expected shape is [total_num_nodes, num_heads, key_size].
-      node_keys: Tensor containing the key associated to each of the nodes. The
-        expected shape is [total_num_nodes, num_heads, key_size].
-      node_queries: Tensor containing the query associated to each of the nodes.
-        The expected shape is [total_num_nodes, num_heads, query_size]. The
-        query size must be equal to the key size.
-      attention_graph: Graph containing connectivity information between nodes
-        via the senders and receivers fields. Node A will only attempt to attend
-        to Node B if `attention_graph` contains an edge sent by Node A and
-        received by Node B.
-    Returns:
-      An output `graphs.GraphsTuple` with updated nodes containing the
-      aggregated attended value for each of the nodes with shape
-      [total_num_nodes, num_heads, value_size].
-    Raises:
-      ValueError: if the input graph does not have edges.
-    """
-
-    # Sender nodes put their keys and values in the edges.
-    # [total_num_edges, num_heads, query_size]
-    sender_keys = blocks.broadcast_sender_nodes_to_edges(
-        attention_graph.replace(nodes=node_keys))
-    # [total_num_edges, num_heads, value_size]
-    sender_values = blocks.broadcast_sender_nodes_to_edges(
-        attention_graph.replace(nodes=node_values))
-
-    # Receiver nodes put their queries in the edges.
-    # [total_num_edges, num_heads, key_size]
-    receiver_queries = blocks.broadcast_receiver_nodes_to_edges(
-        attention_graph.replace(nodes=node_queries))
-
-    # Attention weight for each edge.
-    # [total_num_edges, num_heads]
-    attention_weights_logits = tf.reduce_sum(
-        sender_keys * receiver_queries, axis=-1)
-    normalized_attention_weights = _received_edges_normalizer(
-        attention_graph.replace(edges=attention_weights_logits),
-        normalizer=self._normalizer)
-
-    # Attending to sender values according to the weights.
-    # [total_num_edges, num_heads, embedding_size]
-    attented_edges = sender_values * normalized_attention_weights[..., None]
-
-    # Summing all of the attended values from each node.
-    # [total_num_nodes, num_heads, embedding_size]
-    received_edges_aggregator = blocks.ReceivedEdgesToNodesAggregator(
-        reducer=tf.math.unsorted_segment_sum)
-    aggregated_attended_values = received_edges_aggregator(
-        attention_graph.replace(edges=attented_edges))
-
-    return attention_graph.replace(nodes=aggregated_attended_values)
+  def __call__(self, input_op, num_processing_steps):
+    latent = self._encoder(input_op)
+    latent0 = latent
+    output_ops = []
+    for _ in range(num_processing_steps):
+      core_input = concat([latent0, latent], axis=1)
+      latent = self._core(core_input)
+      decoded_op = self._decoder(latent)
+      output_ops.append(self._output_transform(decoded_op))
+    return output_ops
 
 class Autoencoder(AbstractModule):
-    def __init__(self, name=None):
+    def __init__(self, kernel_size=4, name=None):
         super(Autoencoder, self).__init__(name=name)
         self.encoder = snt.Sequential([snt.Conv2D(2, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
@@ -266,14 +236,19 @@ class Model(AbstractModule):
                                        lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True))
 
         # Load the autoencoder model from checkpoint
-        my_auto_encoder = Autoencoder()
+        my_auto_encoder = Autoencoder(kernel_size=kernel_size)
 
         checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/identify_medium_GCD/autoencoder_checkpointing'
-        checkpoint = tf.train.Checkpoint(module=my_auto_encoder)
+        encoder_decoder_cp = tf.train.Checkpoint(encoder=my_auto_encoder.encoder, decoder=my_auto_encoder.decoder)
+        model_cp = tf.train.Checkpoint(_model=encoder_decoder_cp)
+        checkpoint = tf.train.Checkpoint(module=model_cp)
         status = tf.train.latest_checkpoint(checkpoint_dir)
-        checkpoint.restore(status).assert_consumed()
+        checkpoint.restore(status).expect_partial()
 
         self.auto_encoder = my_auto_encoder
+
+        # snt.allow_empty_variables(self.auto_encoder.encoder)
+        # snt.allow_empty_variables(self.auto_encoder.decoder)
 
         # seq_argument = []
         # for _ in range(conv_layers - 1):
@@ -317,18 +292,31 @@ class Model(AbstractModule):
         print("IMG SHAPE:", img[None, ...].shape)
         print("IMG MIN MAX:", tf.math.reduce_min(img[None, ...]), tf.math.reduce_max(img[None, ...]))
 
-        img_before_cnn = img[None, ...]
-        img_before_cnn = (img_before_cnn - tf.reduce_min(img_before_cnn)) / (tf.reduce_max(img_before_cnn) - tf.reduce_min(img_before_cnn))
+        img = gaussian_filter2d(img[None, ...], filter_shape=[6, 6])
+        img_before_cnn = (img - tf.reduce_min(img)) / (tf.reduce_max(img) - tf.reduce_min(img))
         tf.summary.image(f'img_before_cnn', img_before_cnn, step=self.step)
 
-        img = self.auto_encoder.encoder(img[None, ...])
+        img = self.auto_encoder.encoder(img)
         decoded_img = self.auto_encoder.decoder(img)
-        tf.summary.image(f'decoded_img', tf.transpose(decoded_img, [3, 1, 2, 0]), step=self.step)
+        img_after_autoencoder = (decoded_img - tf.reduce_min(decoded_img)) / (
+                tf.reduce_max(decoded_img) - tf.reduce_min(decoded_img))
+        tf.summary.image(f'decoded_img', img_after_autoencoder, step=self.step)
         # img = self.image_cnn(img[None, ...])  # 1, w,h,c -> w*h, c
 
-        print("IMG SHAPE AFTER CNN:", tf.transpose(img, [3, 1, 2, 0]).shape)
-        print("IMG MIN MAX AFTER CNN:", tf.math.reduce_min(tf.transpose(img, [3, 1, 2, 0])), tf.math.reduce_max(tf.transpose(img, [3, 1, 2, 0])))
-        print("DECODED IMG MIN MAX:", tf.math.reduce_min(tf.transpose(decoded_img, [3, 1, 2, 0])), tf.math.reduce_max(tf.transpose(decoded_img, [3, 1, 2, 0])))
+        try:
+            for variable in self.auto_encoder.encoder.trainable_variables:
+                print('Setting variable to False')
+                variable._trainable = False
+            for variable in self.auto_encoder.decoder.trainable_variables:
+                print('Setting variable to False')
+                variable._trainable = False
+        except:
+            pass
+
+        print("IMG SHAPE AFTER CNN:", img.shape)
+        print("IMG MIN MAX AFTER CNN:", tf.math.reduce_min(img), tf.math.reduce_max(img))
+        print("DECODED IMG SHAPE:", img_after_autoencoder.shape)
+        print("DECODED IMG MIN MAX:", tf.math.reduce_min(img_after_autoencoder), tf.math.reduce_max(img_after_autoencoder))
 
         tf.summary.image(f'img_after_cnn', tf.transpose(img, [3, 1, 2, 0]), step=self.step)
 
@@ -516,6 +504,9 @@ def train_identify_medium(data_dir, config):
 
     with strategy.scope():
         train_one_epoch = build_training(**config)
+        # snt.allow_empty_variables(train_one_epoch.model.auto_encoder)
+        # for variable in train_one_epoch.model.auto_encoder.trainable_variables:
+        #     variable.trainable = False
 
     log_dir = build_log_dir('test_log_dir', config)
     checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
@@ -524,10 +515,10 @@ def train_identify_medium(data_dir, config):
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
                           num_epochs=20,
-                          early_stop_patience=3,
+                          early_stop_patience=5,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
-                          debug=True)
+                          debug=False)
 
 def train_autoencoder(data_dir):
     # strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1, memory_limit=10000)
@@ -565,7 +556,7 @@ def train_autoencoder(data_dir):
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
-                          num_epochs=40,
+                          num_epochs=1,
                           early_stop_patience=3,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
@@ -580,7 +571,7 @@ if __name__ == '__main__':
     tfrec_base_dir = '/home/s2675544/data/tf_records'
     tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
 
-    learning_rate = 1e-5
+    learning_rate = 1e-4
     kernel_size = 4
     mlp_layers = 2
     image_feature_size = 64
