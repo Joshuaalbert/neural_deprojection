@@ -3,6 +3,7 @@ import sys
 sys.path.insert(1, '/home/s2675544/git/neural_deprojection/')
 
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, get_distribution_strategy, build_log_dir, build_checkpoint_dir
+# from neural_deprojection.models.identify_medium.generate_data import graph_tuple_to_feature
 import glob, os
 import tensorflow as tf
 from functools import partial
@@ -10,12 +11,14 @@ from graph_nets import blocks
 import sonnet as snt
 from tensorflow_addons.image import gaussian_filter2d
 from graph_nets.graphs import GraphsTuple
-from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer, GraphIndependent, SelfAttention
+from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer, GraphIndependent, SelfAttention, GraphNetwork
 from graph_nets.utils_tf import fully_connect_graph_dynamic, concat
-from typing import Callable, Iterable, Optional, Text
-from sonnet.src import initializers
-from sonnet.src import linear
-import matplotlib.pyplot as plt
+# from typing import Callable, Iterable, Optional, Text
+# from sonnet.src import initializers
+# from sonnet.src import linear
+# import matplotlib.pyplot as plt
+# import networkx as nx
+# import numpy as np
 
 
 class RelationNetwork(AbstractModule):
@@ -78,75 +81,80 @@ class RelationNetwork(AbstractModule):
           ValueError: If any of `graph.nodes`, `graph.receivers` or `graph.senders`
             is `None`.
         """
-        # print(f'Nodes before edge block: {graph.nodes.shape}')
+
         edge_block = self._edge_block(graph)
-        # print(f'Edges after edge block: {edge_block.edges.shape}')
-        # print(f'This is the maximum value of the edge block :{np.max(np.array(edge_block.edges))}')
-        # print(f'This is the minimum value of the edge block :{np.min(np.array(edge_block.edges))}')
-        # print(f'Mean of all edges : {np.mean(np.array(edge_block.edges), axis=0)}')
         output_graph = self._global_block(edge_block)
-        # print(f'Globals after globals block: {output_graph.globals.shape}')
-        # print(f'This is the global block :{np.array(output_graph.globals)}')
-        return output_graph  # graph.replace(globals=output_graph.globals)
+        return output_graph
 
-# The maximum number of steps it takes to get from any node to every node is the diameter
 
-class EncodeProcessDecode(snt.Module):
-  """Full encode-process-decode model.
-  The model we explore includes three components:
-  - An "Encoder" graph net, which independently encodes the edge, node, and
-    global attributes (does not compute relations etc.).
-  - A "Core" graph net, which performs N rounds of processing (message-passing)
-    steps. The input to the Core is the concatenation of the Encoder's output
-    and the previous output of the Core (labeled "Hidden(t)" below, where "t" is
-    the processing step).
-  - A "Decoder" graph net, which independently decodes the edge, node, and
-    global attributes (does not compute relations etc.), on each message-passing
-    step.
-                      Hidden(t)   Hidden(t+1)
-                         |            ^
-            *---------*  |  *------*  |  *---------*
-            |         |  |  |      |  |  |         |
-  Input --->| Encoder |  *->| Core |--*->| Decoder |---> Output(t)
-            |         |---->|      |     |         |
-            *---------*     *------*     *---------*
-  """
+class EncodeProcessDecode(AbstractModule):
+    """Full encode-process-decode model.
+    The model we explore includes three components:
+    - An "Encoder" graph net, which independently encodes the edge, node, and
+      global attributes (does not compute relations etc.).
+    - A "Core" graph net, which performs N rounds of processing (message-passing)
+      steps. The input to the Core is the concatenation of the Encoder's output
+      and the previous output of the Core (labeled "Hidden(t)" below, where "t" is
+      the processing step).
+    - A "Decoder" graph net, which independently decodes the edge, node, and
+      global attributes (does not compute relations etc.), on each message-passing
+      step.
+                        Hidden(t)   Hidden(t+1)
+                           |            ^
+              *---------*  |  *------*  |  *---------*
+              |         |  |  |      |  |  |         |
+    Input --->| Encoder |  *->| Core |--*->| Decoder |---> Output(t)
+              |         |---->|      |     |         |
+              *---------*     *------*     *---------*
+    """
 
-  def __init__(self,
-               edge_output_size=None,
-               node_output_size=None,
-               global_output_size=None,
-               name="EncodeProcessDecode"):
-    super(EncodeProcessDecode, self).__init__(name=name)
-    self._encoder = MLPGraphIndependent()
-    self._core = MLPGraphNetwork()
-    self._decoder = MLPGraphIndependent()
-    # Transforms the outputs into the appropriate shapes.
-    if edge_output_size is None:
-      edge_fn = None
-    else:
-      edge_fn = lambda: snt.Linear(edge_output_size, name="edge_output")
-    if node_output_size is None:
-      node_fn = None
-    else:
-      node_fn = lambda: snt.Linear(node_output_size, name="node_output")
-    if global_output_size is None:
-      global_fn = None
-    else:
-      global_fn = lambda: snt.Linear(global_output_size, name="global_output")
-    self._output_transform = GraphIndependent(
-        edge_fn, node_fn, global_fn)
+    def __init__(self,
+                 encoder,
+                 core,
+                 decoder,
+                 name="EncodeProcessDecode"):
+        super(EncodeProcessDecode, self).__init__(name=name)
+        self._encoder = encoder
+        self._core = core
+        self._decoder = decoder
 
-  def __call__(self, input_op, num_processing_steps):
-    latent = self._encoder(input_op)
-    latent0 = latent
-    output_ops = []
-    for _ in range(num_processing_steps):
-      core_input = concat([latent0, latent], axis=1)
-      latent = self._core(core_input)
-      decoded_op = self._decoder(latent)
-      output_ops.append(self._output_transform(decoded_op))
-    return output_ops
+    def _build(self, input_graph, num_processing_steps):
+        latent_graph = self._encoder(input_graph)
+        latent_graph0 = latent_graph
+        # output_ops = []
+        for _ in range(num_processing_steps):
+            # core_input = concat([latent_graph0, latent_graph], axis=1)
+            latent_graph = self._core(latent_graph0, latent_graph)
+            # decoded_op = self._decoder(latent_graph)
+            # output_ops.append(decoded_op)
+        return self._decoder(latent_graph)
+
+class CoreNetwork(AbstractModule):
+    """
+    Core network which can be used in the EncodeProcessDecode network. Consists of a (full) graph network block
+    and a self attention block.
+    """
+
+    def __init__(self,
+                 node_size,
+                 name='core_network'):
+        super(CoreNetwork, self).__init__(name=name)
+        # self.graph_network = GraphNetwork(edge_model_fn=lambda: snt.nets.MLP([24, 16], activate_final=True),
+        #                                   node_model_fn=lambda: snt.nets.MLP([32, node_size], activate_final=True),
+        #                                   global_model_fn=lambda: snt.nets.MLP([32, 16], activate_final=True),
+        #                                   reducer=tf.math.unsorted_segment_mean,
+        #                                   edge_block_opt=dict(use_edges=False, use_globals=False),
+        #                                   node_block_opt=dict(use_globals=False),
+        #                                   global_block_opt=dict(use_globals=False))
+        self.graph_network = RelationNetwork(lambda: snt.nets.MLP([32, 16], activate_final=True),
+                                       lambda: snt.nets.MLP([32, 16], activate_final=True))
+        self.self_attention = SelfAttention()
+
+    def _build(self, core_input, latent_input):
+        latent = self.graph_network(latent_input)
+        attended_latent = self.self_attention(latent.nodes, core_input.nodes, core_input.nodes, latent)
+        return attended_latent
+
 
 class Autoencoder(AbstractModule):
     def __init__(self, kernel_size=4, name=None):
@@ -228,35 +236,24 @@ class Model(AbstractModule):
 
     def __init__(self, mlp_layers=2, mlp_layer_nodes=32, conv_layers=6, kernel_size=4, image_feature_size=16, name=None):
         super(Model, self).__init__(name=name)
-        self.attention_graph = SelfAttention()
-        self.attention_image = SelfAttention()
-        self.encoder_graph = RelationNetwork(lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True),
-                                       lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True))
-        self.encoder_image = RelationNetwork(lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True),
-                                       lambda: snt.nets.MLP(mlp_layers * [mlp_layer_nodes] + [16], activate_final=True))
+        self.epd_graph = EncodeProcessDecode(encoder=GraphIndependent(),
+                                             core=CoreNetwork(node_size=10),
+                                             decoder=GraphIndependent())
+        self.epd_image = EncodeProcessDecode(encoder=GraphIndependent(),
+                                             core=CoreNetwork(node_size=64),
+                                             decoder=GraphIndependent())
 
         # Load the autoencoder model from checkpoint
-        my_auto_encoder = Autoencoder(kernel_size=kernel_size)
+        pretrained_auto_encoder = Autoencoder(kernel_size=kernel_size)
 
         checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/identify_medium_GCD/autoencoder_checkpointing'
-        encoder_decoder_cp = tf.train.Checkpoint(encoder=my_auto_encoder.encoder, decoder=my_auto_encoder.decoder)
+        encoder_decoder_cp = tf.train.Checkpoint(encoder=pretrained_auto_encoder.encoder, decoder=pretrained_auto_encoder.decoder)
         model_cp = tf.train.Checkpoint(_model=encoder_decoder_cp)
         checkpoint = tf.train.Checkpoint(module=model_cp)
         status = tf.train.latest_checkpoint(checkpoint_dir)
         checkpoint.restore(status).expect_partial()
 
-        self.auto_encoder = my_auto_encoder
-
-        # snt.allow_empty_variables(self.auto_encoder.encoder)
-        # snt.allow_empty_variables(self.auto_encoder.decoder)
-
-        # seq_argument = []
-        # for _ in range(conv_layers - 1):
-        #     seq_argument.append(snt.Conv2D(16, kernel_size, stride=2, padding='valid'))
-        #     seq_argument.append(tf.nn.relu)
-        #
-        # self.image_cnn = snt.Sequential(seq_argument +
-        #                                 [snt.Conv2D(image_feature_size, kernel_size, stride=2, padding='valid'), tf.nn.relu])
+        self.auto_encoder = pretrained_auto_encoder
 
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size = image_feature_size
@@ -275,53 +272,51 @@ class Model(AbstractModule):
         (graph, img, c) = batch
         del c
 
-        # print(f'Node example : {graph.nodes[0]}')
-        # print(f'Virtual particles in cluster : {graph.nodes.shape}')
-        # print(f'Original image shape : {img.shape}')
-        # print(f'Image : {tf.reduce_mean(img)}')
-        # print(f'St dev : {(tf.reduce_mean(img**2) - tf.reduce_mean(img)**2)**(1/2)}')
-        # print(f'Min : {tf.reduce_min(img)}')
-        # print(f'Max : {tf.reduce_max(img)}')
+        # The encoded cluster graph has globals which can be compared against the encoded image graph
+        encoded_graph = self.epd_graph(graph, 20)
 
-        attended_graph = self.attention_graph(graph.nodes,
-                                              graph.nodes,
-                                              graph.nodes,
-                                              graph)
-        encoded_graph = self.encoder_graph(attended_graph)
+        # Add an extra dimension to the image (tf.summary expects a Tensor of rank 4)
+        img = img[None, ...]
 
-        print("IMG SHAPE:", img[None, ...].shape)
-        print("IMG MIN MAX:", tf.math.reduce_min(img[None, ...]), tf.math.reduce_max(img[None, ...]))
+        print("IMG SHAPE:", img.shape)
+        print("IMG MIN MAX:", tf.math.reduce_min(img), tf.math.reduce_max(img))
 
-        img = gaussian_filter2d(img[None, ...], filter_shape=[6, 6])
-        img_before_cnn = (img - tf.reduce_min(img)) / (tf.reduce_max(img) - tf.reduce_min(img))
+        img_before_cnn = (img - tf.reduce_min(img)) / \
+                         (tf.reduce_max(img) - tf.reduce_min(img))
         tf.summary.image(f'img_before_cnn', img_before_cnn, step=self.step)
 
+        # Smooth the image and use the encoder from the autoencoder to reduce the dimensionality of the image
+        # The autoencoder was trained on images that were smoothed in the same way
+        img = gaussian_filter2d(img, filter_shape=[6, 6])
         img = self.auto_encoder.encoder(img)
-        decoded_img = self.auto_encoder.decoder(img)
-        img_after_autoencoder = (decoded_img - tf.reduce_min(decoded_img)) / (
-                tf.reduce_max(decoded_img) - tf.reduce_min(decoded_img))
-        tf.summary.image(f'decoded_img', img_after_autoencoder, step=self.step)
-        # img = self.image_cnn(img[None, ...])  # 1, w,h,c -> w*h, c
 
+        # Prevent the autoencoder from learning
         try:
             for variable in self.auto_encoder.encoder.trainable_variables:
-                print('Setting variable to False')
                 variable._trainable = False
             for variable in self.auto_encoder.decoder.trainable_variables:
-                print('Setting variable to False')
                 variable._trainable = False
         except:
             pass
 
         print("IMG SHAPE AFTER CNN:", img.shape)
         print("IMG MIN MAX AFTER CNN:", tf.math.reduce_min(img), tf.math.reduce_max(img))
-        print("DECODED IMG SHAPE:", img_after_autoencoder.shape)
-        print("DECODED IMG MIN MAX:", tf.math.reduce_min(img_after_autoencoder), tf.math.reduce_max(img_after_autoencoder))
 
-        tf.summary.image(f'img_after_cnn', tf.transpose(img, [3, 1, 2, 0]), step=self.step)
+        img_after_cnn = (img - tf.reduce_min(img)) / \
+                        (tf.reduce_max(img) - tf.reduce_min(img))
+        tf.summary.image(f'img_after_cnn', tf.transpose(img_after_cnn, [3, 1, 2, 0]), step=self.step)
 
+        decoded_img = self.auto_encoder.decoder(img)
+        decoded_img = (decoded_img - tf.reduce_min(decoded_img)) / \
+                                (tf.reduce_max(decoded_img) - tf.reduce_min(decoded_img))
+        tf.summary.image(f'decoded_img', decoded_img, step=self.step)
+
+        # Reshape the encoded image so it can be used for the nodes
         img_nodes = tf.reshape(img, (-1, self.image_feature_size))
-        print("RESHAPEN IMG NODES:", img_nodes.shape)
+
+        # Create a graph that has a node for every encoded pixel. The features of each node
+        # are the channels of the corresponding pixel. Then connect each node with every other
+        # node.
         img_graph = GraphsTuple(nodes=img_nodes,
                             edges=None,
                             globals=None,
@@ -331,20 +326,11 @@ class Model(AbstractModule):
                             n_edge=tf.constant([0]))
         connected_graph = fully_connect_graph_dynamic(img_graph)
 
-        attended_img = self.attention_graph(connected_graph.nodes,
-                                            connected_graph.nodes,
-                                            connected_graph.nodes,
-                                            connected_graph)
-        encoded_img = self.encoder_image(attended_img)
+        # The encoded image graph has globals which can be compared against the encoded cluster graph
+        encoded_img = self.epd_image(connected_graph, 1)
 
-        # print(f'Convolutional network output shape : {img.shape}')
-        # print(f'Encoded particle graph nodes shape : {encoded_graph.nodes.shape}')
-        # print(f'Encoded particle graph edges shape : {encoded_graph.edges.shape}')
-        # print(f'Encoded image graph nodes shape : {encoded_img.nodes.shape}')
-        # print(f'Encoded image graph edges shape : {encoded_img.edges.shape}')
-        # print(f'Encoded particle graph globals : {encoded_graph.globals}')
-        # print(f'Encoded image graph globals : {encoded_img.globals}')
-
+        # Compare the globals from the encoded cluster graph and encoded image graph
+        # to estimate the similarity between the input graph and input image
         distance = self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1)) + self.compare(tf.concat([encoded_img.globals, encoded_graph.globals], axis=1))
         return distance
 
@@ -504,9 +490,6 @@ def train_identify_medium(data_dir, config):
 
     with strategy.scope():
         train_one_epoch = build_training(**config)
-        # snt.allow_empty_variables(train_one_epoch.model.auto_encoder)
-        # for variable in train_one_epoch.model.auto_encoder.trainable_variables:
-        #     variable.trainable = False
 
     log_dir = build_log_dir('test_log_dir', config)
     checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
