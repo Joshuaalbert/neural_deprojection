@@ -189,8 +189,14 @@ class EncodeProcessDecode(AbstractModule):
 
     def _build(self, input_graph, num_processing_steps):
         latent_graph = self._encoder(input_graph)
-        for _ in range(num_processing_steps):
-            latent_graph = self._core(latent_graph)
+        # for _ in range(num_processing_steps):
+        #     latent_graph = self._core(latent_graph)
+
+        # state = (counter, latent_graph)
+        _, latent_graph = tf.while_loop(cond=lambda state: state[0] < num_processing_steps,
+                      body=lambda state: (state[0]+1, self._core(state[1])),
+                      loop_vars=(tf.constant(0), latent_graph))
+
         return self._decoder(latent_graph)
 
 
