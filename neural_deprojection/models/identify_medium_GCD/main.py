@@ -13,12 +13,81 @@ from tensorflow_addons.image import gaussian_filter2d
 from graph_nets.graphs import GraphsTuple
 from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer, GraphIndependent, SelfAttention, GraphNetwork
 from graph_nets.utils_tf import fully_connect_graph_dynamic, concat
+from sonnet.src import utils, once
 # from typing import Callable, Iterable, Optional, Text
 # from sonnet.src import initializers
 # from sonnet.src import linear
 # import matplotlib.pyplot as plt
 # import networkx as nx
 # import numpy as np
+
+
+class MultiHeadLinear(AbstractModule):
+    """Linear module, optionally including bias."""
+
+    def __init__(self,
+                 output_size: int,
+                 num_heads: int = 1,
+                 with_bias: bool = True,
+                 w_init=None,
+                 b_init=None,
+                 name=None):
+        """Constructs a `Linear` module.
+
+        Args:
+          output_size: Output dimensionality.
+          with_bias: Whether to include bias parameters. Default `True`.
+          w_init: Optional initializer for the weights. By default the weights are
+            initialized truncated random normal values with a standard deviation of
+            `1 / sqrt(input_feature_size)`, which is commonly used when the inputs
+            are zero centered (see https://arxiv.org/abs/1502.03167v3).
+          b_init: Optional initializer for the bias. By default the bias is
+            initialized to zero.
+          name: Name of the module.
+        """
+        super(MultiHeadLinear, self).__init__(name=name)
+        self.output_size = output_size
+        self.with_bias = with_bias
+        self.w_init = w_init
+        self.num_heads = num_heads
+        if with_bias:
+            self.b_init = b_init if b_init is not None else snt.initializers.Zeros()
+        elif b_init is not None:
+            raise ValueError("When not using a bias the b_init must be None.")
+
+    @once.once
+    def _initialize(self, inputs: tf.Tensor):
+        """Constructs parameters used by this module."""
+        utils.assert_minimum_rank(inputs, 2)
+
+        input_size = inputs.shape[-1]
+        if input_size is None:  # Can happen inside an @tf.function.
+            raise ValueError("Input size must be specified at module build time.")
+
+        self.input_size = input_size
+
+        if self.w_init is None:
+            # See https://arxiv.org/abs/1502.03167v3.
+            stddev = 1 / tf.math.sqrt(self.input_size * 1.0)
+            self.w_init = snt.initializers.TruncatedNormal(stddev=stddev)
+
+        self.w = tf.Variable(
+            self.w_init([self.num_heads, self.input_size, self.output_size], inputs.dtype),
+            name="w")
+
+        if self.with_bias:
+            self.b = tf.Variable(
+                self.b_init([self.num_heads, self.output_size], inputs.dtype), name="b")
+
+    def _build(self, inputs: tf.Tensor) -> tf.Tensor:
+        self._initialize(inputs)
+
+        # [num_nodes, node_size].[num_heads, node_size, output_size] -> [num_nodes, num_heads, output_size]
+        outputs = tf.einsum('ns,hso->nho', inputs, self.w, optimize='optimal')
+        # outputs = tf.matmul(inputs, self.w)
+        if self.with_bias:
+            outputs = tf.add(outputs, self.b)
+        return outputs
 
 
 class RelationNetwork(AbstractModule):
@@ -33,11 +102,11 @@ class RelationNetwork(AbstractModule):
 
     def \
             __init__(self,
-                 edge_model_fn,
-                 global_model_fn,
-                 reducer=tf.math.unsorted_segment_mean, #try with mean instead of sum
-                 use_globals=False,
-                 name="relation_network"):
+                     edge_model_fn,
+                     global_model_fn,
+                     reducer=tf.math.unsorted_segment_mean,
+                     use_globals=False,
+                     name="relation_network"):
         """Initializes the RelationNetwork module.
 
         Args:
@@ -120,14 +189,10 @@ class EncodeProcessDecode(AbstractModule):
 
     def _build(self, input_graph, num_processing_steps):
         latent_graph = self._encoder(input_graph)
-        latent_graph0 = latent_graph
-        # output_ops = []
         for _ in range(num_processing_steps):
-            # core_input = concat([latent_graph0, latent_graph], axis=1)
-            latent_graph = self._core(latent_graph0, latent_graph)
-            # decoded_op = self._decoder(latent_graph)
-            # output_ops.append(decoded_op)
+            latent_graph = self._core(latent_graph)
         return self._decoder(latent_graph)
+
 
 class CoreNetwork(AbstractModule):
     """
@@ -136,29 +201,67 @@ class CoreNetwork(AbstractModule):
     """
 
     def __init__(self,
-                 node_size,
-                 name='core_network'):
+                 num_heads,
+                 multi_head_output_size,
+                 input_node_size,
+                 name=None):
         super(CoreNetwork, self).__init__(name=name)
-        # self.graph_network = GraphNetwork(edge_model_fn=lambda: snt.nets.MLP([24, 16], activate_final=True),
-        #                                   node_model_fn=lambda: snt.nets.MLP([32, node_size], activate_final=True),
-        #                                   global_model_fn=lambda: snt.nets.MLP([32, 16], activate_final=True),
-        #                                   reducer=tf.math.unsorted_segment_mean,
-        #                                   edge_block_opt=dict(use_edges=False, use_globals=False),
-        #                                   node_block_opt=dict(use_globals=False),
-        #                                   global_block_opt=dict(use_globals=False))
-        self.graph_network = RelationNetwork(lambda: snt.nets.MLP([32, 16], activate_final=True),
-                                       lambda: snt.nets.MLP([32, 16], activate_final=True))
+        self.num_heads = num_heads
+        self.multi_head_output_size = multi_head_output_size
+
+        self.output_linear = snt.Linear(output_size=input_node_size)
+        self.FFN = snt.nets.MLP([32, input_node_size], activate_final=True)
+        self.normalization = lambda x: (x - tf.reduce_mean(x)) / tf.math.reduce_std(x)
+
+        self.v_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # values
+        self.k_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # keys
+        self.q_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # queries
         self.self_attention = SelfAttention()
 
-    def _build(self, core_input, latent_input):
-        latent = self.graph_network(latent_input)
-        attended_latent = self.self_attention(latent.nodes, core_input.nodes, core_input.nodes, latent)
-        return attended_latent
+    def _build(self, latent):
+        node_values = self.v_linear(latent.nodes)
+        node_keys = self.k_linear(latent.nodes)
+        node_queries = self.q_linear(latent.nodes)
+        attended_latent = self.self_attention(node_values=node_values,
+                                              node_keys=node_keys,
+                                              node_queries=node_queries,
+                                              attention_graph=latent)
+        output_nodes = tf.reshape(attended_latent.nodes, (-1, self.num_heads * self.multi_head_output_size))
+        output_nodes = self.normalization(self.output_linear(output_nodes) + latent.nodes)
+        output_nodes = self.normalization(self.FFN(output_nodes))
+        output_graph = latent.replace(nodes=output_nodes)
+        return output_graph
 
 
-class Autoencoder(AbstractModule):
+class EncoderNetwork(AbstractModule):
+    """
+    Core network which can be used in the EncodeProcessDecode network. Consists of a (full) graph network block
+    and a self attention block.
+    """
+
+    def __init__(self,
+                 edge_model_fn,
+                 node_model_fn,
+                 global_model_fn,
+                 name=None):
+        super(EncoderNetwork, self).__init__(name=name)
+        self.node_block = blocks.NodeBlock(node_model_fn,
+                                           use_received_edges=False,
+                                           use_sent_edges=False,
+                                           use_nodes=True,
+                                           use_globals=False)
+        self.relation_network = RelationNetwork(edge_model_fn=edge_model_fn,
+                                                global_model_fn=global_model_fn)
+
+    def _build(self, input_graph):
+        latent = self.node_block(input_graph)
+        output = self.relation_network(latent)
+        return output
+
+
+class AutoEncoder(AbstractModule):
     def __init__(self, kernel_size=4, name=None):
-        super(Autoencoder, self).__init__(name=name)
+        super(AutoEncoder, self).__init__(name=name)
         self.encoder = snt.Sequential([snt.Conv2D(2, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(8, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
@@ -234,17 +337,35 @@ class Model(AbstractModule):
     So we (currently) go from (4880,4880,1) to (35,35,16)
     """
 
-    def __init__(self, mlp_layers=2, mlp_layer_nodes=32, conv_layers=6, kernel_size=4, image_feature_size=16, name=None):
+    def __init__(self,
+                 mlp_size=16,
+                 num_heads=10,
+                 kernel_size=4,
+                 image_feature_size=16,
+                 core_steps=10, name=None):
         super(Model, self).__init__(name=name)
-        self.epd_graph = EncodeProcessDecode(encoder=GraphIndependent(),
-                                             core=CoreNetwork(node_size=10),
-                                             decoder=GraphIndependent())
-        self.epd_image = EncodeProcessDecode(encoder=GraphIndependent(),
-                                             core=CoreNetwork(node_size=64),
-                                             decoder=GraphIndependent())
+        self.epd_graph = EncodeProcessDecode(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                                                    node_model_fn=lambda: snt.Linear(10),
+                                                                    global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)),
+                                             core=CoreNetwork(num_heads=num_heads,
+                                                              multi_head_output_size=10,
+                                                              input_node_size=10),
+                                             decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                                                    node_model_fn=lambda: snt.Linear(10),
+                                                                    global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)))
+
+        self.epd_image = EncodeProcessDecode(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                                                    node_model_fn=lambda: snt.Linear(64),
+                                                                    global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)),
+                                             core=CoreNetwork(num_heads=num_heads,
+                                                              multi_head_output_size=16,
+                                                              input_node_size=64),
+                                             decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                                                    node_model_fn=lambda: snt.Linear(64),
+                                                                    global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)))
 
         # Load the autoencoder model from checkpoint
-        pretrained_auto_encoder = Autoencoder(kernel_size=kernel_size)
+        pretrained_auto_encoder = AutoEncoder(kernel_size=kernel_size)
 
         checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/identify_medium_GCD/autoencoder_checkpointing'
         encoder_decoder_cp = tf.train.Checkpoint(encoder=pretrained_auto_encoder.encoder, decoder=pretrained_auto_encoder.decoder)
@@ -257,6 +378,8 @@ class Model(AbstractModule):
 
         self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size = image_feature_size
+
+        self._core_steps = core_steps
 
     @property
     def step(self):
@@ -273,7 +396,7 @@ class Model(AbstractModule):
         del c
 
         # The encoded cluster graph has globals which can be compared against the encoded image graph
-        encoded_graph = self.epd_graph(graph, 20)
+        encoded_graph = self.epd_graph(graph, self._core_steps)
 
         # Add an extra dimension to the image (tf.summary expects a Tensor of rank 4)
         img = img[None, ...]
@@ -521,7 +644,7 @@ def train_autoencoder(data_dir):
     test_dataset = test_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
 
     # with strategy.scope():
-    model = Autoencoder()
+    model = AutoEncoder()
 
     learning_rate = 1e-3
     opt = snt.optimizers.Adam(learning_rate)
@@ -554,18 +677,22 @@ if __name__ == '__main__':
     tfrec_base_dir = '/home/s2675544/data/tf_records'
     tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
 
-    learning_rate = 1e-4
+    learning_rate = 1e-5
     kernel_size = 4
-    mlp_layers = 2
+    # mlp_layers = 2
     image_feature_size = 64
     # conv_layers = 6
-    mlp_layer_nodes = 32
+    # mlp_layer_nodes = 32
+    mlp_size = 16
+    core_steps = 2
+    num_heads = 4
 
     config = dict(model_type='model1',
-                  model_parameters=dict(mlp_layers=mlp_layers,
-                                        mlp_layer_nodes=mlp_layer_nodes,
+                  model_parameters=dict(mlp_size=mlp_size,
                                         kernel_size=kernel_size,
-                                        image_feature_size=image_feature_size),
+                                        image_feature_size=image_feature_size,
+                                        core_steps=core_steps,
+                                        num_heads=num_heads),
                   optimizer_parameters=dict(learning_rate=learning_rate, opt_type='adam'),
                   loss_parameters=dict())
     main(tfrec_dir, config)
