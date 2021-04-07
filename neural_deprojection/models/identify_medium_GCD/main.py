@@ -193,8 +193,8 @@ class EncodeProcessDecode(AbstractModule):
         #     latent_graph = self._core(latent_graph)
 
         # state = (counter, latent_graph)
-        _, latent_graph = tf.while_loop(cond=lambda state: state[0] < num_processing_steps,
-                      body=lambda state: (state[0]+1, self._core(state[1])),
+        _, latent_graph = tf.while_loop(cond=lambda const, state: const < num_processing_steps,
+                      body=lambda const, state: (const+1, self._core(state)),
                       loop_vars=(tf.constant(0), latent_graph))
 
         return self._decoder(latent_graph)
@@ -216,7 +216,7 @@ class CoreNetwork(AbstractModule):
         self.multi_head_output_size = multi_head_output_size
 
         self.output_linear = snt.Linear(output_size=input_node_size)
-        self.FFN = snt.nets.MLP([32, input_node_size], activate_final=True)
+        self.FFN = snt.nets.MLP([32, input_node_size], activate_final=False)  # Feed forward network
         self.normalization = lambda x: (x - tf.reduce_mean(x)) / tf.math.reduce_std(x)
 
         self.v_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # values
@@ -268,7 +268,7 @@ class EncoderNetwork(AbstractModule):
 class AutoEncoder(AbstractModule):
     def __init__(self, kernel_size=4, name=None):
         super(AutoEncoder, self).__init__(name=name)
-        self.encoder = snt.Sequential([snt.Conv2D(2, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+        self.encoder = snt.Sequential([snt.Conv2D(2, kernel_size, stride=4, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(8, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(16, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
@@ -280,7 +280,7 @@ class AutoEncoder(AbstractModule):
                                        snt.Conv2DTranspose(16, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2DTranspose(8, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
                                        snt.Conv2DTranspose(4, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
-                                       snt.Conv2DTranspose(2, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       snt.Conv2DTranspose(2, kernel_size, stride=4, padding='SAME'), tf.nn.relu,
                                        snt.Conv2D(1, kernel_size, padding='SAME')])
 
     @property
@@ -345,35 +345,37 @@ class Model(AbstractModule):
 
     def __init__(self,
                  mlp_size=16,
+                 cluster_encoded_size=10,
+                 image_encoded_size=64,
                  num_heads=10,
                  kernel_size=4,
                  image_feature_size=16,
                  core_steps=10, name=None):
         super(Model, self).__init__(name=name)
         self.epd_graph = EncodeProcessDecode(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
-                                                                    node_model_fn=lambda: snt.Linear(10),
+                                                                    node_model_fn=lambda: snt.Linear(cluster_encoded_size),
                                                                     global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)),
                                              core=CoreNetwork(num_heads=num_heads,
-                                                              multi_head_output_size=10,
-                                                              input_node_size=10),
+                                                              multi_head_output_size=cluster_encoded_size,
+                                                              input_node_size=cluster_encoded_size),
                                              decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
-                                                                    node_model_fn=lambda: snt.Linear(10),
+                                                                    node_model_fn=lambda: snt.Linear(cluster_encoded_size),
                                                                     global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)))
 
         self.epd_image = EncodeProcessDecode(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
-                                                                    node_model_fn=lambda: snt.Linear(64),
+                                                                    node_model_fn=lambda: snt.Linear(image_encoded_size),
                                                                     global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)),
                                              core=CoreNetwork(num_heads=num_heads,
-                                                              multi_head_output_size=16,
-                                                              input_node_size=64),
+                                                              multi_head_output_size=image_encoded_size,
+                                                              input_node_size=image_encoded_size),
                                              decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
-                                                                    node_model_fn=lambda: snt.Linear(64),
+                                                                    node_model_fn=lambda: snt.Linear(image_encoded_size),
                                                                     global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)))
 
         # Load the autoencoder model from checkpoint
         pretrained_auto_encoder = AutoEncoder(kernel_size=kernel_size)
 
-        checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/identify_medium_GCD/autoencoder_checkpointing'
+        checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/identify_medium_GCD/autoencoder2_checkpointing'
         encoder_decoder_cp = tf.train.Checkpoint(encoder=pretrained_auto_encoder.encoder, decoder=pretrained_auto_encoder.decoder)
         model_cp = tf.train.Checkpoint(_model=encoder_decoder_cp)
         checkpoint = tf.train.Checkpoint(module=model_cp)
@@ -650,7 +652,7 @@ def train_autoencoder(data_dir):
     test_dataset = test_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
 
     # with strategy.scope():
-    model = AutoEncoder()
+    model = AutoEncoder(kernel_size=4)
 
     learning_rate = 1e-3
     opt = snt.optimizers.Adam(learning_rate)
@@ -662,14 +664,14 @@ def train_autoencoder(data_dir):
 
     train_one_epoch = TrainOneEpoch(model, loss, opt, strategy=None)
 
-    log_dir = 'autoencoder_log_dir'
-    checkpoint_dir = 'autoencoder_checkpointing'
+    log_dir = 'autoencoder2_log_dir'
+    checkpoint_dir = 'autoencoder2_checkpointing'
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
-                          num_epochs=1,
-                          early_stop_patience=3,
+                          num_epochs=100,
+                          early_stop_patience=5,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           debug=False)
@@ -690,11 +692,15 @@ if __name__ == '__main__':
     # conv_layers = 6
     # mlp_layer_nodes = 32
     mlp_size = 16
-    core_steps = 2
+    cluster_encoded_size = 4
+    image_encoded_size = 16
+    core_steps = 20
     num_heads = 4
 
     config = dict(model_type='model1',
                   model_parameters=dict(mlp_size=mlp_size,
+                                        cluster_encoded_size=cluster_encoded_size,
+                                        image_encoded_size=image_encoded_size,
                                         kernel_size=kernel_size,
                                         image_feature_size=image_feature_size,
                                         core_steps=core_steps,
