@@ -218,6 +218,8 @@ class CoreNetwork(AbstractModule):
         self.output_linear = snt.Linear(output_size=input_node_size)
         self.FFN = snt.nets.MLP([32, input_node_size], activate_final=False)  # Feed forward network
         self.normalization = lambda x: (x - tf.reduce_mean(x)) / tf.math.reduce_std(x)
+        self.ln1 = snt.LayerNorm(axis=1, eps=1e-6, create_scale=True, create_offset=True)
+        self.ln2 = snt.LayerNorm(axis=1, eps=1e-6, create_scale=True, create_offset=True)
 
         self.v_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # values
         self.k_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # keys
@@ -233,8 +235,8 @@ class CoreNetwork(AbstractModule):
                                               node_queries=node_queries,
                                               attention_graph=latent)
         output_nodes = tf.reshape(attended_latent.nodes, (-1, self.num_heads * self.multi_head_output_size))
-        output_nodes = self.normalization(self.output_linear(output_nodes) + latent.nodes)
-        output_nodes = self.normalization(self.FFN(output_nodes))
+        output_nodes = self.ln1(self.output_linear(output_nodes) + latent.nodes)
+        output_nodes = self.ln2(self.FFN(output_nodes))
         output_graph = latent.replace(nodes=output_nodes)
         return output_graph
 
