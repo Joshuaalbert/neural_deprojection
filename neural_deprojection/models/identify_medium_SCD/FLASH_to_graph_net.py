@@ -354,8 +354,8 @@ def main():
     #     folder_path = '/disks/extern_collab_data/cournoyer/{}/'.format(n)
     #     save_dir = '/data2/hendrix/ClaudeData/{}/'.format(n)
 
-    folder_path = '/disks/extern_collab_data/lewis/run3/'       # run1=M3, run2=M3f, run3=M3f2, run4=M4
-    save_dir = '/data2/hendrix/SeanData/M3f2/'
+    folder_path = '/disks/extern_collab_data/lewis/run1/'       # run1=M3, run2=M3f, run3=M3f2, run4=M4
+    save_dir = '/data2/hendrix/SeanData/M3/'
 
     # snapshot_list = []
     # for snap in all_snapshots:

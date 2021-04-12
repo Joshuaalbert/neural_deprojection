@@ -3,9 +3,12 @@ import sys
 sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
 
 from neural_deprojection.models.identify_medium_SCD.generate_data import generate_data, decode_examples
-from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, get_distribution_strategy
+from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, \
+    get_distribution_strategy, build_log_dir, build_checkpoint_dir
 import glob, os
 import tensorflow as tf
+from tensorflow_addons.image import gaussian_filter2d
+import json
 # import tensorflow_addons as tfa
 import numpy as np
 from functools import partial
@@ -16,6 +19,7 @@ from graph_nets.modules import GraphNetwork
 from graph_nets._base import WrappedModelFnModule
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
+from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer, GraphIndependent, SelfAttention, GraphNetwork
 from graph_nets.utils_np import graphs_tuple_to_networkxs
 from graph_nets.utils_tf import fully_connect_graph_dynamic
 from networkx.drawing import draw
@@ -26,6 +30,7 @@ from typing import Callable, Iterable, Optional, Text
 from sonnet.src import base
 from sonnet.src import initializers
 from sonnet.src import linear
+from sonnet.src import utils, once
 
 
 class RelationNetwork(AbstractModule):
@@ -95,103 +100,227 @@ class RelationNetwork(AbstractModule):
         return output_graph  # graph.replace(globals=output_graph.globals)
 
 
-class MLP_with_bn(snt.Module):
-    """A multi-layer perceptron module."""
+class MultiHeadLinear(AbstractModule):
+    """Linear module, optionally including bias."""
 
     def __init__(self,
-                 output_sizes: Iterable[int],
-                 w_init: Optional[initializers.Initializer] = None,
-                 b_init: Optional[initializers.Initializer] = None,
+                 output_size: int,
+                 num_heads: int = 1,
                  with_bias: bool = True,
-                 activation: Callable[[tf.Tensor], tf.Tensor] = tf.nn.relu, #tfa.activations.mish,
-                 dropout_rate=None,
-                 activate_final: bool = False,
-                 name: Optional[Text] = None,
-                 with_bn=True):
-        """Constructs an MLP.
+                 w_init=None,
+                 b_init=None,
+                 name=None):
+        """Constructs a `Linear` module.
 
         Args:
-          output_sizes: Sequence of layer sizes.
-          w_init: Initializer for Linear weights.
-          b_init: Initializer for Linear bias. Must be `None` if `with_bias` is
-            `False`.
-          with_bias: Whether or not to apply a bias in each layer.
-          activation: Activation function to apply between linear layers. Defaults
-            to ReLU.
-          dropout_rate: Dropout rate to apply, a rate of `None` (the default) or `0`
-            means no dropout will be applied.
-          activate_final: Whether or not to activate the final layer of the MLP.
-          name: Optional name for this module.
-
-        Raises:
-          ValueError: If with_bias is False and b_init is not None.
+          output_size: Output dimensionality.
+          with_bias: Whether to include bias parameters. Default `True`.
+          w_init: Optional initializer for the weights. By default the weights are
+            initialized truncated random normal values with a standard deviation of
+            `1 / sqrt(input_feature_size)`, which is commonly used when the inputs
+            are zero centered (see https://arxiv.org/abs/1502.03167v3).
+          b_init: Optional initializer for the bias. By default the bias is
+            initialized to zero.
+          name: Name of the module.
         """
-        if not with_bias and b_init is not None:
-            raise ValueError("When with_bias=False b_init must not be set.")
+        super(MultiHeadLinear, self).__init__(name=name)
+        self.output_size = output_size
+        self.with_bias = with_bias
+        self.w_init = w_init
+        self.num_heads = num_heads
+        if with_bias:
+            self.b_init = b_init if b_init is not None else snt.initializers.Zeros()
+        elif b_init is not None:
+            raise ValueError("When not using a bias the b_init must be None.")
 
-        super(MLP_with_bn, self).__init__(name=name)
-        self._with_bias = with_bias
-        self._w_init = w_init
-        self._b_init = b_init
-        self._activation = activation
-        self._activate_final = activate_final
-        self._dropout_rate = dropout_rate
-        self._layers = []
-        self._with_bn = with_bn
-        self._bn = []
-        for index, output_size in enumerate(output_sizes):
-            # Besides a layer for every output_size in output_sizes (which are e.g [32, 32, 16])
-            # also make a batch_normalization object except for the last layer
-            # Create scale determines the scale of the normalization, which is 1 by default
-            # Create offset determines the center of the normalization, which is 0 by default
-            if self._with_bn:
-                if index < len(output_sizes) - 1:
-                    self._bn.append(
-                        snt.BatchNorm(
-                            create_scale=False,
-                            create_offset=False))
-            self._layers.append(
-                linear.Linear(
-                    output_size=output_size,
-                    w_init=w_init,
-                    b_init=b_init,
-                    with_bias=with_bias,
-                    name="linear_%d" % index))
-        print(f'Number of batch normalization objects : {len(self._bn)}')
-        print(f'Number of layer objects : {len(self._layers)}')
+    @once.once
+    def _initialize(self, inputs: tf.Tensor):
+        """Constructs parameters used by this module."""
+        utils.assert_minimum_rank(inputs, 2)
 
-    def __call__(self, inputs: tf.Tensor, is_training=True) -> tf.Tensor:
-        """Connects the module to some inputs.
+        input_size = inputs.shape[-1]
+        if input_size is None:  # Can happen inside an @tf.function.
+            raise ValueError("Input size must be specified at module build time.")
 
-        Args:
-          inputs: A Tensor of shape `[batch_size, input_size]`.
-          is_training: A bool indicating if we are currently training. Defaults to
-            `None`. Required if using dropout.
+        self.input_size = input_size
 
-        Returns:
-          output: The output of the model of size `[batch_size, output_size]`.
-        """
+        if self.w_init is None:
+            # See https://arxiv.org/abs/1502.03167v3.
+            stddev = 1 / tf.math.sqrt(self.input_size * 1.0)
+            self.w_init = snt.initializers.TruncatedNormal(stddev=stddev)
 
-        num_layers = len(self._layers)
+        self.w = tf.Variable(
+            self.w_init([self.num_heads, self.input_size, self.output_size], inputs.dtype),
+            name="w")
 
-        for i, (layer, bn) in enumerate(zip(self._layers, self._bn)):
-            # print(f'These are the inputs: {inputs}')
-            inputs = layer(inputs)
-            # print(f'Shape : {inputs.shape}')
-            # print(f'These are the inputs after the layer: {inputs}')
+        if self.with_bias:
+            self.b = tf.Variable(
+                self.b_init([self.num_heads, self.output_size], inputs.dtype), name="b")
 
-            # Activation for all but the last layer, unless specified otherwise.
-            if i < (num_layers - 1) or self._activate_final:
-                inputs = self._activation(inputs)
-                # print(f'These are the inputs after activation: {inputs}')
+    def _build(self, inputs: tf.Tensor) -> tf.Tensor:
+        self._initialize(inputs)
 
-            if self._with_bn:
-                # Apply batch normalization for all but the last layer.
-                if i < (num_layers - 1):
-                    inputs = bn(inputs, is_training=is_training)
-                # print(f'These are the inputs after batch normalization: {inputs}')
+        # [num_nodes, node_size].[num_heads, node_size, output_size] -> [num_nodes, num_heads, output_size]
+        outputs = tf.einsum('ns,hso->nho', inputs, self.w, optimize='optimal')
+        # outputs = tf.matmul(inputs, self.w)
+        if self.with_bias:
+            outputs = tf.add(outputs, self.b)
+        return outputs
 
-        return inputs
+
+class CoreNetwork(AbstractModule):
+    """
+    Core network which can be used in the EncodeProcessDecode network. Consists of a (full) graph network block
+    and a self attention block.
+    """
+
+    def __init__(self,
+                 num_heads,
+                 multi_head_output_size,
+                 input_node_size,
+                 name=None):
+        super(CoreNetwork, self).__init__(name=name)
+        self.num_heads = num_heads
+        self.multi_head_output_size = multi_head_output_size
+
+        self.output_linear = snt.Linear(output_size=input_node_size)
+        self.FFN = snt.nets.MLP([32, input_node_size], activate_final=False)  # Feed forward network
+        self.normalization = lambda x: (x - tf.reduce_mean(x)) / tf.math.reduce_std(x)
+
+        self.v_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # values
+        self.k_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # keys
+        self.q_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # queries
+        self.self_attention = SelfAttention()
+
+    def _build(self, latent):
+        node_values = self.v_linear(latent.nodes)
+        node_keys = self.k_linear(latent.nodes)
+        node_queries = self.q_linear(latent.nodes)
+        attended_latent = self.self_attention(node_values=node_values,
+                                              node_keys=node_keys,
+                                              node_queries=node_queries,
+                                              attention_graph=latent)
+        output_nodes = tf.reshape(attended_latent.nodes, (-1, self.num_heads * self.multi_head_output_size))
+        output_nodes = self.normalization(self.output_linear(output_nodes) + latent.nodes)
+        output_nodes = self.normalization(self.FFN(output_nodes))
+        output_graph = latent.replace(nodes=output_nodes)
+        return output_graph
+
+
+class EncoderNetwork(AbstractModule):
+    """
+    Core network which can be used in the EncodeProcessDecode network. Consists of a (full) graph network block
+    and a self attention block.
+    """
+
+    def __init__(self,
+                 edge_model_fn,
+                 node_model_fn,
+                 global_model_fn,
+                 name=None):
+        super(EncoderNetwork, self).__init__(name=name)
+        self.node_block = blocks.NodeBlock(node_model_fn,
+                                           use_received_edges=False,
+                                           use_sent_edges=False,
+                                           use_nodes=True,
+                                           use_globals=False)
+        self.relation_network = RelationNetwork(edge_model_fn=edge_model_fn,
+                                                global_model_fn=global_model_fn)
+
+    def _build(self, input_graph):
+        latent = self.node_block(input_graph)
+        output = self.relation_network(latent)
+        return output
+
+
+class EncodeProcessDecode(AbstractModule):
+    """Full encode-process-decode model.
+    The model we explore includes three components:
+    - An "Encoder" graph net, which independently encodes the edge, node, and
+      global attributes (does not compute relations etc.).
+    - A "Core" graph net, which performs N rounds of processing (message-passing)
+      steps. The input to the Core is the concatenation of the Encoder's output
+      and the previous output of the Core (labeled "Hidden(t)" below, where "t" is
+      the processing step).
+    - A "Decoder" graph net, which independently decodes the edge, node, and
+      global attributes (does not compute relations etc.), on each message-passing
+      step.
+                        Hidden(t)   Hidden(t+1)
+                           |            ^
+              *---------*  |  *------*  |  *---------*
+              |         |  |  |      |  |  |         |
+    Input --->| Encoder |  *->| Core |--*->| Decoder |---> Output(t)
+              |         |---->|      |     |         |
+              *---------*     *------*     *---------*
+    """
+
+    def __init__(self,
+                 encoder,
+                 core,
+                 decoder,
+                 name="EncodeProcessDecode"):
+        super(EncodeProcessDecode, self).__init__(name=name)
+        self._encoder = encoder
+        self._core = core
+        self._decoder = decoder
+
+    def _build(self, input_graph, num_processing_steps):
+        latent_graph = self._encoder(input_graph)
+        # for _ in range(num_processing_steps):
+        #     latent_graph = self._core(latent_graph)
+
+        # state = (counter, latent_graph)
+        _, latent_graph = tf.while_loop(cond=lambda const, state: const < num_processing_steps,
+                      body=lambda const, state: (const+1, self._core(state)),
+                      loop_vars=(tf.constant(0), latent_graph))
+
+        return self._decoder(latent_graph)
+
+
+class AutoEncoder(AbstractModule):
+    def __init__(self, kernel_size=4, name=None):
+        super(AutoEncoder, self).__init__(name=name)
+        self.encoder = snt.Sequential([snt.Conv2D(4, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu,    # [4, 128, 128]
+                                       snt.Conv2D(8, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu,    # [8, 64, 64]
+                                       snt.Conv2D(16, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu,    # [16, 32, 32]
+                                       snt.Conv2D(32, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu])    # [32, 16, 16]
+                                       # snt.Conv2D(32, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+                                       # snt.Conv2D(64, kernel_size, stride=2, padding='SAME'), tf.nn.relu])
+
+        # self.decoder = snt.Sequential([snt.Conv2DTranspose(64, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+        #                                snt.Conv2DTranspose(32, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+        #                                snt.Conv2DTranspose(16, kernel_size, stride=2, padding='SAME'), tf.nn.relu,
+
+        self.decoder = snt.Sequential([snt.Conv2DTranspose(32, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu, # [32, 16, 16]
+                                       snt.Conv2DTranspose(16, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu, # [16, 32, 32]
+                                       snt.Conv2DTranspose(8, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu, # [8, 64, 64]
+                                       snt.Conv2DTranspose(4, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu, # [4, 128, 128]
+                                       snt.Conv2D(1, kernel_size, padding='SAME')])    # [1, 256, 256]
+
+    @property
+    def step(self):
+        if self._step is None:
+            raise ValueError("Need to set step idx variable. model.step = epoch")
+        return self._step
+
+    @step.setter
+    def step(self, value):
+        self._step = value
+
+    def _build(self, batch):
+        (img, ) = batch
+        # img = gaussian_filter2d(img, filter_shape=[6, 6])
+        img_before_autoencoder = (img - tf.reduce_min(img)) / (tf.reduce_max(img) - tf.reduce_min(img))
+        tf.summary.image(f'img_before_autoencoder', img_before_autoencoder, step=self.step)
+        encoded_img = self.encoder(img)
+
+        print(encoded_img.shape)
+
+        decoded_img = self.decoder(encoded_img)
+        img_after_autoencoder = (decoded_img - tf.reduce_min(decoded_img)) / (
+                tf.reduce_max(decoded_img) - tf.reduce_min(decoded_img))
+        tf.summary.image(f'img_after_autoencoder', img_after_autoencoder, step=self.step)
+        return decoded_img
 
 
 class Model(AbstractModule):
@@ -227,50 +356,118 @@ class Model(AbstractModule):
     So we (currently) go from (256,256,1) to (29,29,16)
     """
 
-    def __init__(self, image_feature_size=16, num_layers=2, name=None):
+    def __init__(self,
+                 mlp_size=16,
+                 cluster_encoded_size=10,
+                 image_encoded_size=64,
+                 num_heads=10,
+                 kernel_size=4,
+                 image_feature_size=16,
+                 core_steps=10, name=None):
         super(Model, self).__init__(name=name)
-        self.encoder_graph = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False),
-                                             lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False))
-        self.encoder_image = RelationNetwork(lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False),
-                                             lambda: MLP_with_bn([32, 32, 16], activate_final=True, with_bn=False))
-        self.image_cnn = snt.Sequential(
-            [snt.Conv2D(16, 3, stride=2, padding='valid'), tf.nn.relu, #  tfa.activations.mish,  # !!!!(126,126,16)
-             snt.Conv2D(16, 3, stride=2, padding='valid'), tf.nn.relu,  # !!!(61,61,16)
-             snt.Conv2D(image_feature_size, 3, stride=2, padding='valid'), tf.nn.relu])  # !!!!(29,29,16)
-        self.compare = snt.nets.MLP([32, 1], activation=tf.nn.relu)
+        self.epd_graph = EncodeProcessDecode(
+            encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                   node_model_fn=lambda: snt.Linear(cluster_encoded_size),
+                                   global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)),
+            core=CoreNetwork(num_heads=num_heads,
+                             multi_head_output_size=cluster_encoded_size,
+                             input_node_size=cluster_encoded_size),
+            decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                   node_model_fn=lambda: snt.Linear(cluster_encoded_size),
+                                   global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)))
+
+        self.epd_image = EncodeProcessDecode(
+            encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                   node_model_fn=lambda: snt.Linear(image_encoded_size),
+                                   global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)),
+            core=CoreNetwork(num_heads=num_heads,
+                             multi_head_output_size=image_encoded_size,
+                             input_node_size=image_encoded_size),
+            decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                   node_model_fn=lambda: snt.Linear(image_encoded_size),
+                                   global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)))
+
+        # Load the autoencoder model from checkpoint
+        pretrained_auto_encoder = AutoEncoder(kernel_size=kernel_size)
+
+        checkpoint_dir = '/home/s1825216/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD/autoencoder_checkpointing'
+        encoder_decoder_cp = tf.train.Checkpoint(encoder=pretrained_auto_encoder.encoder,
+                                                 decoder=pretrained_auto_encoder.decoder)
+        model_cp = tf.train.Checkpoint(_model=encoder_decoder_cp)
+        checkpoint = tf.train.Checkpoint(module=model_cp)
+        status = tf.train.latest_checkpoint(checkpoint_dir)
+        checkpoint.restore(status).expect_partial()
+
+        self.auto_encoder = pretrained_auto_encoder
+
+        self.compare = snt.nets.MLP([32, 1])
         self.image_feature_size = image_feature_size
+
+        self._core_steps = core_steps
+
+    @property
+    def step(self):
+        if self._step is None:
+            raise ValueError("Need to set step idx variable. model.step = epoch")
+        return self._step
+
+    @step.setter
+    def step(self, value):
+        self._step = value
 
     def _build(self, batch, *args, **kwargs):
         (graph, img, c) = batch
-        # print(f'Virtual particles in cluster : {graph.nodes.shape}')
-        # print(f'Original image shape : {img.shape}')
         del c
-        # print('MEAN NODES: ', tf.reduce_mean(graph.nodes, axis=0))
-        encoded_graph = self.encoder_graph(graph)
-        img = self.image_cnn(img[None, ...])  # 1, w,h,c -> w*h, c
-        # print('image cnn built.', img)
-        # print(f'Convolutional network output shape : {img.shape}')
-        nodes = tf.reshape(img, (-1, self.image_feature_size))
+        # The encoded cluster graph has globals which can be compared against the encoded image graph
+        encoded_graph = self.epd_graph(graph, self._core_steps)
+
+        # Add an extra dimension to the image (tf.summary expects a Tensor of rank 4)
+        img = img[None, ...]
+        im_before_cnn = (img - tf.reduce_min(img)) / (tf.reduce_max(img) - tf.reduce_min(img))
+        tf.summary.image(f'img_before_cnn', im_before_cnn, step=self.step)
+
+        img = self.auto_encoder.encoder(img)
+
+        # Prevent the autoencoder from learning
+        try:
+            for variable in self.auto_encoder.encoder.trainable_variables:
+                variable._trainable = False
+            for variable in self.auto_encoder.decoder.trainable_variables:
+                variable._trainable = False
+        except:
+            pass
+
+        img_after_autoencoder = (img - tf.reduce_min(img)) / (tf.reduce_max(img) - tf.reduce_min(img))
+        tf.summary.image(f'img_after_autoencoder', tf.transpose(img_after_autoencoder, [3, 1, 2, 0]), step=self.step)
+
+        decoded_img = self.auto_encoder.decoder(img)
+        decoded_img = (decoded_img - tf.reduce_min(decoded_img)) / (tf.reduce_max(decoded_img) - tf.reduce_min(decoded_img))
+        tf.summary.image(f'decoded_img', decoded_img, step=self.step)
+
+        # Reshape the encoded image so it can be used for the nodes
+        #1, w,h,c -> w*h, c
+        nodes = tf.reshape(img, (-1,self.image_feature_size))
+
+        # Create a graph that has a node for every encoded pixel. The features of each node
+        # are the channels of the corresponding pixel. Then connect each node with every other
+        # node.
         img_graph = GraphsTuple(nodes=nodes,
-                                edges=None,
-                                globals=None,
-                                receivers=None,
-                                senders=None,
-                                n_node=tf.shape(nodes)[0:1],
-                                n_edge=tf.constant([0]))
+                            edges=None,
+                            globals=None,
+                            receivers=None,
+                            senders=None,
+                            n_node=tf.shape(nodes)[0:1],
+                            n_edge=tf.constant([0]))
         connected_graph = fully_connect_graph_dynamic(img_graph)
-        encoded_img = self.encoder_image(connected_graph)
-        # print(f'Encoded particle graph nodes shape : {encoded_graph.nodes.shape}')
-        # print(f'Encoded particle graph edges shape : {encoded_graph.edges.shape}')
-        # print(f'Encoded image graph nodes shape : {encoded_img.nodes.shape}')
-        # print(f'Encoded image graph edges shape : {encoded_img.edges.shape}')
-        # print(f'Encoded particle graph globals : {encoded_graph.globals}')
-        #         # print(f'Encoded particle graph edges : {encoded_graph.edges}')
-        #         # print(f'Encoded image graph globals : {encoded_img.globals}')
-        #         # print(f'Encoded image graph edges : {encoded_img.edges}')
-        distance = self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1)) \
-                   + self.compare(tf.concat([encoded_img.globals, encoded_graph.globals], axis=1))
-        # print('distance', distance)
+
+        # The encoded image graph has globals which can be compared against the encoded cluster graph
+        encoded_img = self.epd_image(connected_graph, 1)
+
+        # Compare the globals from the encoded cluster graph and encoded image graph
+        # to estimate the similarity between the input graph and input image
+        distance = self.compare(tf.concat([encoded_graph.globals, encoded_img.globals], axis=1)) + self.compare(
+            tf.concat([encoded_img.globals, encoded_graph.globals], axis=1))
+
         return distance
 
 
@@ -286,7 +483,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
         opt_type = kwargs.get('opt_type')
         if opt_type == 'adam':
             learning_rate = kwargs.get('learning_rate', 1e-4)
-            opt = snt.optimizers.Adam(learning_rate)
+            opt = snt.optimizers.Adam(learning_rate, beta1=1-1/100., beta2=1-1/500.)
         else:
             raise ValueError('Opt {} invalid'.format(opt_type))
         return opt
@@ -296,7 +493,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
         def loss(model_outputs, batch):
             (graph, img, c) = batch
             # loss =  mean(-sum_k^2 true[k] * log(pred[k]/true[k]))
-            return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None],model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
+            return tf.reduce_mean(tf.losses.binary_crossentropy(c[None,None], model_outputs, from_logits=True))# tf.math.sqrt(tf.reduce_mean(tf.math.square(rank - tf.nn.sigmoid(model_outputs[:, 0]))))
         return loss
 
     loss = build_loss(**loss_parameters)
@@ -307,70 +504,145 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
     return training
 
 
-def main(data_dir):
-    strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=11, memory_limit=900)
+def build_dataset(data_dir):
+    """
+    Build data set from a directory of tfrecords.
 
-    # print(tf.config.list_physical_devices())
+    Args:
+        data_dir: str, path to *.tfrecords
 
-    tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))  # list containing tfrecord files
-    # print(tfrecords)
-
-    # Extract the dataset (graph tuple, image, example_idx) from the tfrecords files
+    Returns: Dataset obj.
+    """
+    tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
                                                              node_shape=(11,),
-                                                             edge_shape=(2,),
                                                              image_shape=(256, 256, 1)))  # (graph, image, spsh, proj)
-
-    # Take the graphs and their corresponding index and shuffle the order of these pairs
-    # Do the same for the images
-    # dataset = dataset.apply(tf.data.experimental.ignore_errors())  # ignore corrput files
-
-    _graphs = dataset.map(lambda graph, img, spsh, proj: (graph, spsh, proj)).shuffle(buffer_size=50)
-    _images = dataset.map(lambda graph, img, spsh, proj: (img, spsh, proj)).shuffle(buffer_size=50)
-    # Zip the shuffled datsets back together so typically the index of the graph and image don't match.
-    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph, idx1), (img, idx2))
-    # Reshape the dataset to the graph and the image and a yes or no whether the indices are the same
-    shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0],
-                                                              (ds1[1] == ds2[1]) and (ds1[2] == ds2[2])))  # (graph, img, yes/no)
-    # Take the subset of the data where the graph and image don't correspond
-    shuffled_dataset = shuffled_dataset.filter(lambda graph, img, c: ~c)
-    # Transform the True/False class into 1/0 integer
-    shuffled_dataset = shuffled_dataset.map(lambda graph, img, c: (graph, img, tf.cast(c, tf.int32)))
-    # Use the original dataset where all indices correspond and give them class True and turn that into an integer
-    # So every instance gets class 1
-
+    _graphs = dataset.map(lambda graph_data_dict, img, spsh, proj: (graph_data_dict, spsh, proj)).shuffle(buffer_size=50)
+    _images = dataset.map(lambda graph_data_dict, img, spsh, proj: (img, spsh, proj)).shuffle(buffer_size=50)
+    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph_data_dict, idx1), (img, idx2))
+    shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], (ds1[1] == ds2[1]) and
+                                                              (ds1[2] == ds2[2])))  # (graph, img, yes/no)
+    shuffled_dataset = shuffled_dataset.filter(lambda graph_data_dict, img, c: ~c)
+    shuffled_dataset = shuffled_dataset.map(lambda graph_data_dict, img, c: (graph_data_dict, img, tf.cast(c, tf.int32)))
     nonshuffeled_dataset = dataset.map(
-        lambda graph, img, spsh, proj : (graph, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
-    # For the training data, take a sample either from the correct or incorrect combinations of graphs and images
-    train_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
+        lambda graph_data_dict, img, spsh, proj : (graph_data_dict, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
+    dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
+    dataset = dataset.map(lambda graph_data_dict, img, c: (GraphsTuple(globals=None, edges=None, **graph_data_dict), img, c))
+    return dataset
 
-    # for (graph, im, c) in iter(train_dataset):
-    #     print(graph, im, c)
-    #     break
 
-    # Use one half as train dataset and the other half as test dataset
-    # train_dataset = train_dataset.shard(2, 0)
-    # test_dataset = train_dataset.shard(2, 1)
+def train_identify_medium(data_dir, config):
+    # Make strategy at the start of your main before any other tf code is run.
+    strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1, memory_limit=11000)
 
-    config = dict(model_type='model1',
-                  model_parameters=dict(num_layers=3),
-                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
-                  loss_parameters=dict())
+    train_dataset = build_dataset(os.path.join(data_dir, 'train'))
+    test_dataset = build_dataset(os.path.join(data_dir, 'test'))
 
+
+    print('\nEXAMPLE FROM TEST DATASET:')
+    for (graph, img, c) in iter(train_dataset):
+        print(img)
+        print('max: ', tf.math.reduce_max(img))
+        break
 
     with strategy.scope():
         train_one_epoch = build_training(**config)
 
-    print('vanilla training loop...')
+    log_dir = build_log_dir('test_log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
+
+    if checkpoint_dir is not None:          # originally from vanilla_training_loop
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+    with open(os.path.join(checkpoint_dir,'config.json'), 'w') as f:        # checkpoint_dir not yet created
+        json.dump(config, f)
+
+
+    print('\nvanilla training loop...')
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
-                          test_dataset=None,
-                          num_epochs=10,
-                          early_stop_patience=3,
-                          checkpoint_dir='test_checkpointing',
+                          test_dataset=test_dataset,
+                          num_epochs=1000,
+                          early_stop_patience=10,
+                          checkpoint_dir=checkpoint_dir,
+                          log_dir=log_dir,
                           debug=False)
 
 
+def train_autoencoder(data_dir):
+    # strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1, memory_limit=10000)
+
+    # lists containing tfrecord files
+    train_dataset = build_dataset(os.path.join(data_dir, 'train'))
+    test_dataset = build_dataset(os.path.join(data_dir, 'test'))
+
+    # print(f'Number of training tfrecord files : {len(train_tfrecords)}')
+    # print(f'Number of test tfrecord files : {len(test_tfrecords)}')
+    # print(f'Total : {len(train_tfrecords) + len(test_tfrecords)}')
+    #
+    # train_dataset = build_dataset(train_tfrecords)
+    # test_dataset = build_dataset(test_tfrecords)
+
+    train_dataset = train_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
+    test_dataset = test_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
+
+    # with strategy.scope():
+    model = AutoEncoder()
+
+    learning_rate = 1.0e-5
+
+    opt = snt.optimizers.Adam(learning_rate)
+
+    def loss(model_outputs, batch):
+        (img,) = batch
+        decoded_img = model_outputs
+        # return tf.reduce_mean((gaussian_filter2d(img, filter_shape=[6, 6]) - decoded_img[:, :, :, :]) ** 2)
+        return 100*tf.reduce_mean((img - decoded_img[:, :, :, :]) ** 2)
+
+    train_one_epoch = TrainOneEpoch(model, loss, opt, strategy=None)
+
+    log_dir = 'autoencoder_log_dir'
+    checkpoint_dir = 'autoencoder_checkpointing'
+
+    vanilla_training_loop(train_one_epoch=train_one_epoch,
+                          training_dataset=train_dataset,
+                          test_dataset=test_dataset,
+                          num_epochs=1000,
+                          early_stop_patience=1000,
+                          checkpoint_dir=checkpoint_dir,
+                          log_dir=log_dir,
+                          debug=False)
+
+
+def main(data_dir):
+    # train_autoencoder(data_dir)
+
+    learning_rate = 1e-5
+    kernel_size = 4
+    # mlp_layers = 2
+    image_feature_size = 32
+    # conv_layers = 6
+    # mlp_layer_nodes = 32
+    mlp_size = 16
+    cluster_encoded_size = 11
+    image_encoded_size = 32
+    core_steps = 20
+    num_heads = 4
+
+    config = dict(model_type='model1',
+                  model_parameters=dict(mlp_size=mlp_size,
+                                        cluster_encoded_size=cluster_encoded_size,
+                                        image_encoded_size=image_encoded_size,
+                                        kernel_size=kernel_size,
+                                        image_feature_size=image_feature_size,
+                                        core_steps=core_steps,
+                                        num_heads=num_heads),
+                  optimizer_parameters=dict(learning_rate=learning_rate, opt_type='adam'),
+                  loss_parameters=dict())
+    train_identify_medium(data_dir, config)
+
+
 if __name__ == '__main__':
-    test_train_dir = '/home/s1825216/data/train_data/SeanData/M3f2'
+    test_train_dir = '/home/s1825216/data/train_data/ClaudeData/'
+    # test_train_dir = '/home/s1825216/data/train_data/auto_encoder/'
     main(test_train_dir)

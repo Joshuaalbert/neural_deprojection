@@ -369,13 +369,14 @@ def save_examples(generator, save_dir=None,
 
 
 def feature_to_graph_tuple(name=''):
-    return {f'{name}_nodes': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_edges': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_senders': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_receivers': tf.io.FixedLenFeature([], dtype=tf.string)}
+    schema = {}
+    schema[f'{name}_nodes'] = tf.io.FixedLenFeature([], dtype=tf.string)
+    schema[f'{name}_senders'] = tf.io.FixedLenFeature([], dtype=tf.string)
+    schema[f'{name}_receivers'] = tf.io.FixedLenFeature([], dtype=tf.string)
+    return schema
 
 
-def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=None):
+def decode_examples(record_bytes, node_shape=None, image_shape=None):
     """
     Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a GraphTuple and image
     Args:
@@ -393,35 +394,41 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
         # Schema
         dict(
             image=tf.io.FixedLenFeature([], dtype=tf.string),
-            example_idx=tf.io.FixedLenFeature([], dtype=tf.string),
+            snapshot=tf.io.FixedLenFeature([], dtype=tf.string),
+            projection=tf.io.FixedLenFeature([], dtype=tf.string),
             **feature_to_graph_tuple('graph')
         )
     )
     image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
-    # image = tf.math.log(image)
-    # image = (image - tf.reduce_mean(image, axis=None)) / std(image, axis=None)
     image.set_shape(image_shape)
-    example_idx = tf.io.parse_tensor(parsed_example['example_idx'], tf.int32)
-    example_idx.set_shape(())
+    snapshot = tf.io.parse_tensor(parsed_example['snapshot'], tf.int32)
+    snapshot.set_shape(())
+    projection = tf.io.parse_tensor(parsed_example['projection'], tf.int32)
+    projection.set_shape(())
     graph_nodes = tf.io.parse_tensor(parsed_example['graph_nodes'], tf.float32)
-    # graph_nodes = (graph_nodes - tf.reduce_mean(graph_nodes, axis=0)) / std(graph_nodes, axis=0)
-    if node_shape is not None:
-        graph_nodes.set_shape([None] + list(node_shape))
-    graph_edges = tf.io.parse_tensor(parsed_example['graph_edges'], tf.float32)
-    if edge_shape is not None:
-        graph_edges.set_shape([None] + list(edge_shape))
+    graph_nodes.set_shape([None] + list(node_shape))
     receivers = tf.io.parse_tensor(parsed_example['graph_receivers'], tf.int64)
     receivers.set_shape([None])
     senders = tf.io.parse_tensor(parsed_example['graph_senders'], tf.int64)
     senders.set_shape([None])
-    graph = GraphsTuple(nodes=graph_nodes,
-                        edges=graph_edges,
-                        globals=tf.zeros([1]),
+    n_node = tf.shape(graph_nodes)[0:1]
+    n_edge = tf.shape(senders)[0:1]
+
+    # graph = GraphsTuple(nodes=graph_nodes,
+    #                     edges=graph_edges,
+    #                     globals=tf.zeros([1]),
+    #                     receivers=receivers,
+    #                     senders=senders,
+    #                     n_node=tf.shape(graph_nodes)[0:1],
+    #                     n_edge=tf.shape(graph_edges)[0:1])
+
+    graph_data_dict = dict(nodes=graph_nodes,
                         receivers=receivers,
                         senders=senders,
-                        n_node=tf.shape(graph_nodes)[0:1],
-                        n_edge=tf.shape(graph_edges)[0:1])
-    return (graph, image, example_idx)
+                        n_node=n_node,
+                        n_edge=n_edge)
+
+    return (graph_data_dict, image, snapshot, projection)
 
 
 def get_data_info(data_dirs):
