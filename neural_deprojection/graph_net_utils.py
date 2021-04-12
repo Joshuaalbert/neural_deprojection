@@ -334,6 +334,7 @@ def batch_dataset_set_graph_tuples(*, all_graphs_same_size=False, dataset: tf.da
 
 def test_batch_dataset_set_graph_tuples():
     graphs = []
+    images = []
     n_node = 5
     n_edge = n_node * 2
     for i in range(5, 11):
@@ -347,9 +348,10 @@ def test_batch_dataset_set_graph_tuples():
                             n_edge=[n_edge]
                             )
         graphs.append(graph)
-    dataset = tf.data.Dataset.from_generator(lambda: iter(graphs),
+        images.append(np.random.normal(size=(24,24,1)))
+    dataset = tf.data.Dataset.from_generator(lambda: iter(zip(graphs, images)),
                                              output_types=
-                                             GraphsTuple(nodes=tf.float32,
+                                             (GraphsTuple(nodes=tf.float32,
                                                          edges=tf.float32,
                                                          senders=tf.int32,
                                                          receivers=tf.int32,
@@ -357,22 +359,25 @@ def test_batch_dataset_set_graph_tuples():
                                                          n_node=tf.int32,
                                                          n_edge=tf.int32
                                                          ),
-                                             output_shapes= GraphsTuple(nodes=tf.TensorShape([None, None]),
+                                              tf.float32),
+                                             output_shapes= (GraphsTuple(nodes=tf.TensorShape([None, None]),
                                                          edges=tf.TensorShape([None, None]),
                                                          senders=tf.TensorShape([None]),
                                                          receivers=tf.TensorShape([None]),
                                                          globals=tf.TensorShape([None, None]),
                                                          n_node=tf.TensorShape([None]),
                                                          n_edge=tf.TensorShape([None])
-                                                         ))
+                                                         ),
+                                                             tf.TensorShape([None,None,None])))
 
     # for graph in iter(dataset):
     #     print(graph.receivers.dtype)
     dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=2)
-    for graph in iter(dataset):
+    for graph, image in iter(dataset):
         assert graph.nodes.shape == (n_node*2, 2)
         assert graph.edges.shape == (n_edge*2, 3)
         assert graph.globals.shape == (2, 4)
+        assert image.shape == (2,24,24,1)
 
 
 def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None, globals=None):
