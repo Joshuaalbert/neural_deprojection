@@ -2,6 +2,7 @@ import sys, glob, os
 sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
 import tensorflow as tf
 import sonnet as snt
+from tensorflow import keras
 
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, get_distribution_strategy, build_log_dir, build_checkpoint_dir
 from neural_deprojection.models.identify_medium_SCD.main import build_dataset
@@ -13,6 +14,8 @@ class VariationalAutoEncoder(AbstractModule):
                  kernel_size=4,
                  name=None):
         super(VariationalAutoEncoder, self).__init__(name=name)
+
+        self.n_latent = n_latent
         self.encoder = snt.Sequential([snt.Conv2D(4, kernel_size, stride=4, padding='SAME'), tf.nn.leaky_relu,    # [b, 128, 128, 4]
                                        snt.Conv2D(8, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu,    # [b, 64, 64, 8]
                                        snt.Conv2D(16, kernel_size, stride=2, padding='SAME'), tf.nn.leaky_relu,   # [b, 32, 32, 16]
@@ -81,13 +84,21 @@ def train_variational_autoencoder(data_dir):
     def loss(model_outputs, batch):
         (img,) = batch
         mn, std, z, decoded_img = model_outputs
-        reconstruction_loss = tf.reduce_mean()
-        return
+        # reconstruction_loss = tf.reduce_mean(tf.reduce_sum(
+        #     keras.losses.binary_crossentropy(img, decoded_img), axis=(1, 2)
+        #         ))
+        reconstruction_loss = tf.reduce_mean((img - decoded_img[:, :, :, :]) ** 2)
+        kl_loss = -0.5 * (1 + std - tf.square(mn) - tf.exp(std))
+        kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
+        total_loss = reconstruction_loss + kl_loss
+        print(f"recon_loss = {reconstruction_loss}")
+        print(f"kl_loss = {kl_loss}")
+        return total_loss
 
     train_one_epoch = TrainOneEpoch(model, loss, opt, strategy=None)
 
-    log_dir = 'autoencoder2_log_dir'
-    checkpoint_dir = 'autoencoder2_checkpointing'
+    log_dir = 'VAE_log_dir'
+    checkpoint_dir = 'VAE_checkpointing'
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
@@ -96,7 +107,7 @@ def train_variational_autoencoder(data_dir):
                           early_stop_patience=5,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
-                          debug=False)
+                          debug=True)
 
 if __name__ == '__main__':
     test_train_dir = '/home/s1825216/data/train_data/ClaudeData/'
