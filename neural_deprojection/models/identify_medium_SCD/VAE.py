@@ -201,6 +201,7 @@ def train_VQVAE(data_dir):
                           log_dir=log_dir,
                           debug=False)
 
+
 if __name__ == '__main__':
     test_train_dir = '/home/s1825216/data/train_data/ClaudeData/'
     # test_train_dir = '/home/s1825216/data/train_data/auto_encoder/'
