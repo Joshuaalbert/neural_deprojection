@@ -1,19 +1,24 @@
 import tensorflow as tf
 from graph_nets.graphs import GraphsTuple
-from graph_nets import utils_tf, blocks
+from graph_nets import utils_tf, blocks, utils_np
+import networkx as nx
 import tqdm
 import sonnet as snt
 from sonnet.src.base import Optimizer, Module
+import tree
 import numpy as np
 import six
 import abc
 import contextlib
 from typing import List
 import os
+from collections import namedtuple
+
 
 @six.add_metaclass(abc.ABCMeta)
 class AbstractModule(snt.Module):
     """Makes Sonnet1-style childs from this look like a Sonnet2 module."""
+
     def __init__(self, *args, **kwargs):
         super(AbstractModule, self).__init__(*args, **kwargs)
         self.__call__.__func__.__doc__ = self._build.__doc__  # pytype: disable=attribute-error
@@ -30,11 +35,13 @@ class AbstractModule(snt.Module):
     def _build(self, *args, **kwargs):
         """Similar to Sonnet 1 ._build method."""
 
-class TrainOneEpoch(Module):
-    _model:AbstractModule
-    _opt:Optimizer
 
-    def __init__(self, model:AbstractModule, loss, opt:Optimizer, strategy:tf.distribute.MirroredStrategy=None, name=None):
+class TrainOneEpoch(Module):
+    _model: AbstractModule
+    _opt: Optimizer
+
+    def __init__(self, model: AbstractModule, loss, opt: Optimizer, strategy: tf.distribute.MirroredStrategy = None,
+                 name=None):
         super(TrainOneEpoch, self).__init__(name=name)
         self.epoch = tf.Variable(0, dtype=tf.int64)
         self.minibatch = tf.Variable(0, dtype=tf.int64)
@@ -44,7 +51,6 @@ class TrainOneEpoch(Module):
         self._loss = loss
         self._strategy = strategy
         self._checkpoint = tf.train.Checkpoint(module=model)
-
 
     @property
     def strategy(self) -> tf.distribute.MirroredStrategy:
@@ -82,7 +88,7 @@ class TrainOneEpoch(Module):
             grads = replica_ctx.all_reduce("mean", grads)
         for (param, grad) in zip(params, grads):
             if grad is not None:
-                tf.summary.histogram(param.name+"_grad",grad, step=self.minibatch)
+                tf.summary.histogram(param.name + "_grad", grad, step=self.minibatch)
         self.opt.apply(grads, params)
         return loss
 
@@ -106,11 +112,11 @@ class TrainOneEpoch(Module):
                 _loss = self.strategy.reduce("sum", _loss, axis=None)
             else:
                 _loss = self.train_step(train_batch)
-            tf.summary.scalar('mini_batch_loss',_loss, step=self.minibatch)
+            tf.summary.scalar('mini_batch_loss', _loss, step=self.minibatch)
             loss += _loss
             num_batches += 1.
-        tf.summary.scalar('epoch_loss', loss/num_batches, step=self.epoch)
-        return loss/num_batches
+        tf.summary.scalar('epoch_loss', loss / num_batches, step=self.epoch)
+        return loss / num_batches
 
     def evaluate(self, test_dataset):
         loss = 0.
@@ -130,7 +136,8 @@ class TrainOneEpoch(Module):
         return loss / num_batches
 
 
-def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1, memory_limit=2000) -> tf.distribute.MirroredStrategy:
+def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1,
+                              memory_limit=2000) -> tf.distribute.MirroredStrategy:
     # trying to set GPU distribution
     physical_gpus = tf.config.experimental.list_physical_devices("GPU")
     physical_cpus = tf.config.experimental.list_physical_devices("CPU")
@@ -169,7 +176,8 @@ def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1, memo
 
     return strategy
 
-def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
+
+def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
                           early_stop_patience=None, checkpoint_dir=None, log_dir=None, debug=False):
     """
     Does simple training.
@@ -187,7 +195,7 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
 
     """
     if checkpoint_dir is not None:
-        os.makedirs(checkpoint_dir,exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
     training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
     if test_dataset is not None:
@@ -203,13 +211,13 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
         evaluate = tf.function(evaluate)
 
     fancy_progress_bar = tqdm.tqdm(range(num_epochs),
-                                    unit='epochs',
-                                    position=0)
+                                   unit='epochs',
+                                   position=0)
     early_stop_min_loss = np.inf
     early_stop_interval = 0
 
-    train_log_dir = os.path.join(log_dir,"train")
-    test_log_dir = os.path.join(log_dir,"test")
+    train_log_dir = os.path.join(log_dir, "train")
+    test_log_dir = os.path.join(log_dir, "test")
     train_summary_writer = tf.summary.create_file_writer(train_log_dir)
     test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 
@@ -247,6 +255,129 @@ def vanilla_training_loop(train_one_epoch:TrainOneEpoch, training_dataset, test_
             manager.save()
     train_summary_writer.close()
     test_summary_writer.close()
+
+
+def batch_dataset_set_graph_tuples(*, all_graphs_same_size=False, dataset: tf.data.Dataset, batch_size) -> tf.data.Dataset:
+    """
+
+    Args:
+        dataset: dataset of GraphTuple containing only a single graph.
+        batch_size:
+        all_graphs_same_size:
+
+    Returns:
+
+    """
+    if not all_graphs_same_size:
+        raise ValueError("Only able to batch graphs with the same number of nodes and edges.")
+
+    TempGraphTuple = namedtuple('TempGraphTuple',['nodes','edges','senders', 'receivers', 'globals','n_node', 'n_edge'])
+
+    def _concat_graph_from_batched(*args):
+        _output_args = []
+        for arg in args:
+            if isinstance(arg, TempGraphTuple):
+                graph: TempGraphTuple = arg
+                # # nodes: [batch_size,nnodes_max,Fnodes]
+                # graph.nodes.set_shape([batch_size, None, None])
+                # # edges: [batch_size,nedges_max,Fedges]
+                # graph.edges.set_shape([batch_size, None, None])
+                # # senders: [batch_size, nedges_max]
+                # graph.senders.set_shape([batch_size, None])
+                # # receivers: [batch_size, nedges_max]
+                # graph.receivers.set_shape([batch_size, None])
+                # # globals: [batch_size, 1, Fglobals]
+                # graph.globals.set_shape([batch_size, None, None])
+                # # nnodes: [batch_size, 1]
+                # graph.n_node.set_shape([batch_size, None])
+                # # nedges: [batch_size, 1]
+                # graph.n_edge.set_shape([batch_size, None])
+
+
+                nodes = tf.unstack(graph.nodes, num=batch_size, name='nodes')
+                edges = tf.unstack(graph.edges, num=batch_size, name='edges')
+                senders = tf.unstack(graph.senders, num=batch_size, name='senders')
+                receivers = tf.unstack(graph.receivers, num=batch_size, name='receivers')
+                _globals = tf.unstack(graph.globals, num=batch_size, name='globals')
+                n_node = tf.unstack(graph.n_node, num=batch_size, name='n_node')
+                n_edge = tf.unstack(graph.n_edge, num=batch_size, name='n_edge')
+                graphs = []
+                for _nodes, _edges, _senders, _receivers, _n_node, _n_edge, __globals in zip(nodes, edges, senders,
+                                                                                             receivers, n_node, n_edge,
+                                                                                             _globals):
+                    graphs.append(GraphsTuple(nodes=_nodes,
+                                              edges=_edges,
+                                              globals=__globals,
+                                              receivers=_receivers,
+                                              senders=_senders,
+                                              n_node=_n_node,
+                                              n_edge=_n_edge))
+                    # print(graphs[-1])
+                graphs = utils_tf.concat(graphs, axis=0)
+                _output_args.append(graphs)
+            else:
+                _output_args.append(arg)
+        if len(_output_args) == 1:
+            return _output_args[0]
+        return tuple(_output_args)
+
+    def _to_temp_graph_tuple(*args):
+        _output_args = []
+        for arg in args:
+            if isinstance(arg, GraphsTuple):
+                _output_args.append(TempGraphTuple(**arg._asdict()))
+            else:
+                _output_args.append(arg)
+        return tuple(_output_args)
+    return dataset.map(_to_temp_graph_tuple).padded_batch(batch_size=batch_size, drop_remainder=True).map(_concat_graph_from_batched)
+
+
+def test_batch_dataset_set_graph_tuples():
+    graphs = []
+    images = []
+    n_node = 5
+    n_edge = n_node * 2
+    for i in range(5, 11):
+
+        graph = GraphsTuple(nodes=np.random.normal(size=(n_node, 2)).astype(np.float32),
+                            edges=np.random.normal(size=(n_edge, 3)).astype(np.float32),
+                            senders=np.random.randint(n_node, size=(n_edge,)).astype(np.int32),
+                            receivers=np.random.randint(n_node, size=(n_edge,)).astype(np.int32),
+                            globals=np.random.normal(size=(1, 4)).astype(np.float32),
+                            n_node=[n_node],
+                            n_edge=[n_edge]
+                            )
+        graphs.append(graph)
+        images.append(np.random.normal(size=(24,24,1)))
+    dataset = tf.data.Dataset.from_generator(lambda: iter(zip(graphs, images)),
+                                             output_types=
+                                             (GraphsTuple(nodes=tf.float32,
+                                                         edges=tf.float32,
+                                                         senders=tf.int32,
+                                                         receivers=tf.int32,
+                                                         globals=tf.float32,
+                                                         n_node=tf.int32,
+                                                         n_edge=tf.int32
+                                                         ),
+                                              tf.float32),
+                                             output_shapes= (GraphsTuple(nodes=tf.TensorShape([None, None]),
+                                                         edges=tf.TensorShape([None, None]),
+                                                         senders=tf.TensorShape([None]),
+                                                         receivers=tf.TensorShape([None]),
+                                                         globals=tf.TensorShape([None, None]),
+                                                         n_node=tf.TensorShape([None]),
+                                                         n_edge=tf.TensorShape([None])
+                                                         ),
+                                                             tf.TensorShape([None,None,None])))
+
+    # for graph in iter(dataset):
+    #     print(graph.receivers.dtype)
+    dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=2)
+    for graph, image in iter(dataset):
+        assert graph.nodes.shape == (n_node*2, 2)
+        assert graph.edges.shape == (n_edge*2, 3)
+        assert graph.globals.shape == (2, 4)
+        assert image.shape == (2,24,24,1)
 
 
 def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None, globals=None):
@@ -287,7 +418,8 @@ def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None
 
     return graphs_with_nodes_edges_globals
 
-def save_graph_examples(graphs:List[GraphsTuple], save_dir=None, examples_per_file=1):
+
+def save_graph_examples(graphs: List[GraphsTuple], save_dir=None, examples_per_file=1):
     """
     Saves a list of GraphTuples to tfrecords.
 
@@ -307,14 +439,17 @@ def save_graph_examples(graphs:List[GraphsTuple], save_dir=None, examples_per_fi
         if count == examples_per_file:
             count = 0
             file_idx += 1
-        #schema
-        features = dict(nodes=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.nodes).numpy()])),
-                        edges=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.edges).numpy()])),
-                        senders=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.senders).numpy()])),
-                        receivers=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.receivers).numpy()])))
+        # schema
+        features = dict(
+            nodes=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.nodes).numpy()])),
+            edges=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.edges).numpy()])),
+            senders=tf.train.Feature(
+                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.senders).numpy()])),
+            receivers=tf.train.Feature(
+                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.receivers).numpy()])))
         features = tf.train.Features(feature=features)
         example = tf.train.Example(features=features)
-        file = os.path.join(save_dir,'train_{:03d}.tfrecords'.format(file_idx))
+        file = os.path.join(save_dir, 'train_{:03d}.tfrecords'.format(file_idx))
         files.add(file)
         with tf.io.TFRecordWriter(file) as writer:
             writer.write(example.SerializeToString())
@@ -337,25 +472,26 @@ def decode_graph_examples(record_bytes):
         record_bytes,
         # Schema
         dict(
-            nodes=tf.io.FixedLenFeature([],dtype=tf.string),
-            edges=tf.io.FixedLenFeature([],dtype=tf.string),
-            senders=tf.io.FixedLenFeature([],dtype=tf.string),
-            receivers=tf.io.FixedLenFeature([],dtype=tf.string)
+            nodes=tf.io.FixedLenFeature([], dtype=tf.string),
+            edges=tf.io.FixedLenFeature([], dtype=tf.string),
+            senders=tf.io.FixedLenFeature([], dtype=tf.string),
+            receivers=tf.io.FixedLenFeature([], dtype=tf.string)
         )
     )
     nodes = tf.io.parse_tensor(parsed_example['nodes'], tf.float64)
     edges = tf.io.parse_tensor(parsed_example['edges'], tf.float64)
     graph = GraphsTuple(nodes=nodes,
-              edges=edges,
-              globals=None,
-              receivers=tf.io.parse_tensor(parsed_example['receivers'], tf.int64),
-              senders=tf.io.parse_tensor(parsed_example['senders'], tf.int64),
-              n_node=tf.shape(nodes)[0:1],
-              n_edge=tf.shape(edges)[0:1])
+                        edges=edges,
+                        globals=None,
+                        receivers=tf.io.parse_tensor(parsed_example['receivers'], tf.int64),
+                        senders=tf.io.parse_tensor(parsed_example['senders'], tf.int64),
+                        n_node=tf.shape(nodes)[0:1],
+                        n_edge=tf.shape(edges)[0:1])
     return graph
 
 
-def save_graph_and_image_examples(graphs:List[GraphsTuple], images:List[tf.Tensor], save_dir=None, examples_per_file=1):
+def save_graph_and_image_examples(graphs: List[GraphsTuple], images: List[tf.Tensor], save_dir=None,
+                                  examples_per_file=1):
     """
     Saves a list of GraphTuples to tfrecords.
 
@@ -376,15 +512,18 @@ def save_graph_and_image_examples(graphs:List[GraphsTuple], images:List[tf.Tenso
         if count == examples_per_file:
             count = 0
             file_idx += 1
-        features = dict(nodes=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.nodes).numpy()])),
-                        edges=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.edges).numpy()])),
-                        senders=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.senders).numpy()])),
-                        receivers=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.receivers).numpy()])),
-                        image=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(image).numpy()])),
-                        )
+        features = dict(
+            nodes=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.nodes).numpy()])),
+            edges=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.edges).numpy()])),
+            senders=tf.train.Feature(
+                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.senders).numpy()])),
+            receivers=tf.train.Feature(
+                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.receivers).numpy()])),
+            image=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(image).numpy()])),
+        )
         features = tf.train.Features(feature=features)
         example = tf.train.Example(features=features)
-        file = os.path.join(save_dir,'train_{:03d}.tfrecords'.format(file_idx))
+        file = os.path.join(save_dir, 'train_{:03d}.tfrecords'.format(file_idx))
         files.add(file)
         with tf.io.TFRecordWriter(file) as writer:
             writer.write(example.SerializeToString())
@@ -408,23 +547,23 @@ def decode_graph_and_image_examples(record_bytes):
 
         # Schema
         dict(
-            nodes=tf.io.FixedLenFeature([],dtype=tf.string),
-            edges=tf.io.FixedLenFeature([],dtype=tf.string),
-            senders=tf.io.FixedLenFeature([],dtype=tf.string),
-            receivers=tf.io.FixedLenFeature([],dtype=tf.string),
-            image=tf.io.FixedLenFeature([],dtype=tf.string),
+            nodes=tf.io.FixedLenFeature([], dtype=tf.string),
+            edges=tf.io.FixedLenFeature([], dtype=tf.string),
+            senders=tf.io.FixedLenFeature([], dtype=tf.string),
+            receivers=tf.io.FixedLenFeature([], dtype=tf.string),
+            image=tf.io.FixedLenFeature([], dtype=tf.string),
         )
     )
     nodes = tf.io.parse_tensor(parsed_example['nodes'], tf.float64)
     edges = tf.io.parse_tensor(parsed_example['edges'], tf.float64)
     image = tf.io.parse_tensor(parsed_example['image'], tf.float64)
     graph = GraphsTuple(nodes=nodes,
-              edges=edges,
-              globals=None,
-              receivers=tf.io.parse_tensor(parsed_example['receivers'], tf.int64),
-              senders=tf.io.parse_tensor(parsed_example['senders'], tf.int64),
-              n_node=tf.shape(nodes)[0:1],
-              n_edge=tf.shape(edges)[0:1])
+                        edges=edges,
+                        globals=None,
+                        receivers=tf.io.parse_tensor(parsed_example['receivers'], tf.int64),
+                        senders=tf.io.parse_tensor(parsed_example['senders'], tf.int64),
+                        n_node=tf.shape(nodes)[0:1],
+                        n_edge=tf.shape(edges)[0:1])
     return (graph, image)
 
 
@@ -450,6 +589,7 @@ def build_log_dir(base_log_dir, config):
     log_dir = os.path.join(base_log_dir, log_dir_subdir)
     return log_dir
 
+
 def build_checkpoint_dir(base_checkpoint_dir, config):
     """
     Builds log dir.
@@ -471,6 +611,7 @@ def build_checkpoint_dir(base_checkpoint_dir, config):
     checkpoint_dir_subdir = stringify_config(config)
     checkpoint_dir = os.path.join(base_checkpoint_dir, checkpoint_dir_subdir)
     return checkpoint_dir
+
 
 def stringify_config(config):
     def transform_key(key: str):
