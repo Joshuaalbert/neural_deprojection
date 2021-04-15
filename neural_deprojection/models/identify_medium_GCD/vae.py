@@ -14,6 +14,7 @@ class ResidualStack(AbstractModule):
                  num_hiddens,
                  num_residual_layers,
                  num_residual_hiddens,
+                 residual_name='',
                  name=None):
         super(ResidualStack, self).__init__(name=name)
         self._num_hiddens = num_hiddens
@@ -26,12 +27,12 @@ class ResidualStack(AbstractModule):
                 output_channels=num_residual_hiddens,
                 kernel_shape=(3, 3),
                 stride=(1, 1),
-                name="res3x3_%d" % i)
+                name=f"res3x3_{residual_name}_{i}")
             conv1 = snt.Conv2D(
                 output_channels=num_hiddens,
                 kernel_shape=(1, 1),
                 stride=(1, 1),
-                name="res1x1_%d" % i)
+                name=f"res1x1_{residual_name}_{i}")
             self._layers.append((conv3, conv1))
 
     def _build(self, inputs):
@@ -102,35 +103,63 @@ class VariationalAutoEncoder(AbstractModule):
 class VectorQuantizerVariationalAutoEncoder(AbstractModule):
     def __init__(self,
                  embedding_dim=64,
-                 num_embeddings=64,
+                 num_embeddings=512,
                  kernel_size=4,
+                 num_layers=5,
+                 num_residual_layers=2,
                  name=None):
         super(VectorQuantizerVariationalAutoEncoder, self).__init__(name=name)
 
-        self.residual = ResidualStack(num_hiddens=64, num_residual_layers=2, num_residual_hiddens=32)
-
         self.embedding_dim = embedding_dim
         self.num_embeddings = num_embeddings
-        self.encoder = snt.Sequential([snt.Conv2D(4, kernel_size, stride=2, padding='SAME', name='conv4'), tf.nn.relu,  # [b, 500, 500, 4]
-                                       snt.Conv2D(8, kernel_size, stride=2, padding='SAME', name='conv8'), tf.nn.relu,  # [b, 250, 250, 8]
-                                       snt.Conv2D(16, kernel_size, stride=2, padding='SAME', name='conv16'), tf.nn.relu,  # [b, 125, 125, 16]
-                                       snt.Conv2D(32, kernel_size, stride=2, padding='SAME', name='conv32'), tf.nn.relu,  # [b, 63, 63, 32]
-                                       snt.Conv2D(64, kernel_size, stride=2, padding='SAME', name='conv64'), tf.nn.relu,  # [b, 32, 32, 64]
-                                       self.residual])
+        self.num_layers = num_layers
 
+        self.num_residual_layers = num_residual_layers
+
+        encoder_layers = []
+        decoder_layers = []
+        for i in range(self.num_layers):
+            num_filters = 4 * 2**i
+            conv_layer = snt.Conv2D(output_channels=num_filters,
+                                    kernel_shape=kernel_size,
+                                    stride=2,
+                                    padding='SAME',
+                                    name=f'conv{num_filters}')
+            residual_layer = ResidualStack(num_hiddens=num_filters,
+                                           num_residual_layers=self.num_residual_layers,
+                                           num_residual_hiddens=num_filters,
+                                           residual_name=f'enc_{num_filters}')
+            encoder_layers.append(conv_layer)
+            encoder_layers.append(tf.nn.relu)
+            encoder_layers.append(residual_layer)
+
+
+        for i in range(self.num_layers - 2, -1, -1):
+            num_filters = 4 * 2 ** i
+            conv_layer = snt.Conv2DTranspose(output_channels=num_filters,
+                                             kernel_shape=kernel_size,
+                                             stride=2,
+                                             padding='SAME',
+                                             name=f'convt{num_filters}')
+            residual_layer = ResidualStack(num_hiddens=num_filters,
+                                           num_residual_layers=self.num_residual_layers,
+                                           num_residual_hiddens=num_filters,
+                                           residual_name=f'enc_{num_filters}')
+            decoder_layers.append(conv_layer)
+            decoder_layers.append(tf.nn.relu)
+            decoder_layers.append(residual_layer)
+        decoder_layers.append(snt.Conv2DTranspose(1, kernel_size, stride=2, padding='SAME', name='convt1'))
+        decoder_layers.append(tf.nn.relu)
+        decoder_layers.append(snt.Conv2D(1, kernel_size, padding='SAME', name='conv1'))
+
+        self.encoder = snt.Sequential(encoder_layers)
+        self.decoder = snt.Sequential(decoder_layers)
 
         self.VQVAE = snt.nets.VectorQuantizerEMA(embedding_dim=embedding_dim,
                                                  num_embeddings=num_embeddings,
                                                  commitment_cost=0.25,
                                                  decay=0.994413,
                                                  name='VQ')
-
-        self.decoder = snt.Sequential([snt.Conv2DTranspose(32, kernel_size, stride=2, padding='SAME', name='convt32'), tf.nn.relu,  # [b, 64, 64, 32]
-                                       snt.Conv2DTranspose(16, kernel_size, stride=2, padding='SAME', name='convt16'), tf.nn.relu,  # [b, 128, 128, 16]
-                                       snt.Conv2DTranspose(8, kernel_size, stride=2, padding='SAME', name='convt8'), tf.nn.relu,  # [b, 256, 256, 8]
-                                       snt.Conv2DTranspose(4, kernel_size, stride=2, padding='SAME', name='convt4'), tf.nn.relu,  # [b, 512, 512, 4]
-                                       snt.Conv2DTranspose(1, kernel_size, stride=2, padding='SAME', name='convt1'), tf.nn.relu,  # [b, 1024, 1024, 1]
-                                       snt.Conv2D(1, kernel_size, padding='SAME', name='conv1')])  # [b, 1024, 1024, 1]
 
     @property
     def step(self):
@@ -156,9 +185,9 @@ class VectorQuantizerVariationalAutoEncoder(AbstractModule):
         quantized_img = (vq_dict['quantize'] - tf.reduce_min(vq_dict['quantize'])) / (
                 tf.reduce_max(vq_dict['quantize']) - tf.reduce_min(vq_dict['quantize']))
 
-        print('SHAPE : ', quantized_img[:, :, :, np.random.randint(low=0, high=32)][:,:,:,None])
-
-        tf.summary.image(f'quantized_img', quantized_img[:, :, :, np.random.randint(low=0, high=32)][:,:,:,None], step=self.step)
+        # quantized_img has shape [32, 32, 32, 64] (batch, x, y, channels),
+        # for the tf.summary we only show one of the 64 channels.
+        tf.summary.image(f'quantized_img', quantized_img[:, :, :, np.random.randint(low=0, high=64)][:, :, :, None], step=self.step)
 
         decoded_img = self.decoder(vq_dict['quantize'])
 
@@ -230,11 +259,14 @@ def train_VQVAE(data_dir):
     test_dataset = test_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
 
     # with strategy.scope():
-    model = VectorQuantizerVariationalAutoEncoder(embedding_dim=64,
+    autoencoder_depth = 6
+    model = VectorQuantizerVariationalAutoEncoder(embedding_dim=2 * 2**autoencoder_depth,
                                                   num_embeddings=1024,
-                                                  kernel_size=4)
+                                                  kernel_size=4,
+                                                  num_layers=autoencoder_depth,
+                                                  num_residual_layers=2)
 
-    learning_rate = 1e-4
+    learning_rate = 1e-6
     opt = snt.optimizers.Adam(learning_rate)
 
     def loss(model_outputs, batch):
@@ -251,8 +283,8 @@ def train_VQVAE(data_dir):
 
     train_one_epoch = TrainOneEpoch(model, loss, opt, strategy=None)
 
-    log_dir = 'vqvae_log_dir'
-    checkpoint_dir = 'vqvae_checkpointing'
+    log_dir = 'vqvae2_log_dir'
+    checkpoint_dir = 'vqvae2_checkpointing'
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
