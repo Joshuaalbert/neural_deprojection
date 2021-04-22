@@ -1,16 +1,13 @@
 import tensorflow as tf
 from graph_nets.graphs import GraphsTuple
-from graph_nets import utils_tf, blocks, utils_np
-import networkx as nx
+from graph_nets import utils_tf, blocks
 import tqdm
 import sonnet as snt
 from sonnet.src.base import Optimizer, Module
-import tree
 import numpy as np
 import six
 import abc
 import contextlib
-from typing import List
 import os
 from collections import namedtuple
 
@@ -86,9 +83,9 @@ class TrainOneEpoch(Module):
         if self.strategy is not None:
             replica_ctx = tf.distribute.get_replica_context()
             grads = replica_ctx.all_reduce("mean", grads)
-        for (param, grad) in zip(params, grads):
-            if grad is not None:
-                tf.summary.histogram(param.name + "_grad", grad, step=self.minibatch)
+        # for (param, grad) in zip(params, grads):
+        #     if grad is not None:
+        #         tf.summary.histogram(param.name + "_grad", grad, step=self.minibatch)
         self.opt.apply(grads, params)
         return loss
 
@@ -257,7 +254,8 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
     test_summary_writer.close()
 
 
-def batch_dataset_set_graph_tuples(*, all_graphs_same_size=False, dataset: tf.data.Dataset, batch_size) -> tf.data.Dataset:
+def batch_dataset_set_graph_tuples(*, all_graphs_same_size=False, dataset: tf.data.Dataset,
+                                   batch_size) -> tf.data.Dataset:
     """
 
     Args:
@@ -271,7 +269,8 @@ def batch_dataset_set_graph_tuples(*, all_graphs_same_size=False, dataset: tf.da
     if not all_graphs_same_size:
         raise ValueError("Only able to batch graphs with the same number of nodes and edges.")
 
-    TempGraphTuple = namedtuple('TempGraphTuple',['nodes','edges','senders', 'receivers', 'globals','n_node', 'n_edge'])
+    TempGraphTuple = namedtuple('TempGraphTuple',
+                                ['nodes', 'edges', 'senders', 'receivers', 'globals', 'n_node', 'n_edge'])
 
     def _concat_graph_from_batched(*args):
         _output_args = []
@@ -292,7 +291,6 @@ def batch_dataset_set_graph_tuples(*, all_graphs_same_size=False, dataset: tf.da
                 # graph.n_node.set_shape([batch_size, None])
                 # # nedges: [batch_size, 1]
                 # graph.n_edge.set_shape([batch_size, None])
-
 
                 nodes = tf.unstack(graph.nodes, num=batch_size, name='nodes')
                 edges = tf.unstack(graph.edges, num=batch_size, name='edges')
@@ -329,7 +327,9 @@ def batch_dataset_set_graph_tuples(*, all_graphs_same_size=False, dataset: tf.da
             else:
                 _output_args.append(arg)
         return tuple(_output_args)
-    return dataset.map(_to_temp_graph_tuple).padded_batch(batch_size=batch_size, drop_remainder=True).map(_concat_graph_from_batched)
+
+    return dataset.map(_to_temp_graph_tuple).padded_batch(batch_size=batch_size, drop_remainder=True).map(
+        _concat_graph_from_batched)
 
 
 def test_batch_dataset_set_graph_tuples():
@@ -338,7 +338,6 @@ def test_batch_dataset_set_graph_tuples():
     n_node = 5
     n_edge = n_node * 2
     for i in range(5, 11):
-
         graph = GraphsTuple(nodes=np.random.normal(size=(n_node, 2)).astype(np.float32),
                             edges=np.random.normal(size=(n_edge, 3)).astype(np.float32),
                             senders=np.random.randint(n_node, size=(n_edge,)).astype(np.int32),
@@ -348,36 +347,36 @@ def test_batch_dataset_set_graph_tuples():
                             n_edge=[n_edge]
                             )
         graphs.append(graph)
-        images.append(np.random.normal(size=(24,24,1)))
+        images.append(np.random.normal(size=(24, 24, 1)))
     dataset = tf.data.Dataset.from_generator(lambda: iter(zip(graphs, images)),
                                              output_types=
                                              (GraphsTuple(nodes=tf.float32,
-                                                         edges=tf.float32,
-                                                         senders=tf.int32,
-                                                         receivers=tf.int32,
-                                                         globals=tf.float32,
-                                                         n_node=tf.int32,
-                                                         n_edge=tf.int32
-                                                         ),
+                                                          edges=tf.float32,
+                                                          senders=tf.int32,
+                                                          receivers=tf.int32,
+                                                          globals=tf.float32,
+                                                          n_node=tf.int32,
+                                                          n_edge=tf.int32
+                                                          ),
                                               tf.float32),
-                                             output_shapes= (GraphsTuple(nodes=tf.TensorShape([None, None]),
-                                                         edges=tf.TensorShape([None, None]),
-                                                         senders=tf.TensorShape([None]),
-                                                         receivers=tf.TensorShape([None]),
-                                                         globals=tf.TensorShape([None, None]),
-                                                         n_node=tf.TensorShape([None]),
-                                                         n_edge=tf.TensorShape([None])
-                                                         ),
-                                                             tf.TensorShape([None,None,None])))
+                                             output_shapes=(GraphsTuple(nodes=tf.TensorShape([None, None]),
+                                                                        edges=tf.TensorShape([None, None]),
+                                                                        senders=tf.TensorShape([None]),
+                                                                        receivers=tf.TensorShape([None]),
+                                                                        globals=tf.TensorShape([None, None]),
+                                                                        n_node=tf.TensorShape([None]),
+                                                                        n_edge=tf.TensorShape([None])
+                                                                        ),
+                                                            tf.TensorShape([None, None, None])))
 
     # for graph in iter(dataset):
     #     print(graph.receivers.dtype)
     dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=2)
     for graph, image in iter(dataset):
-        assert graph.nodes.shape == (n_node*2, 2)
-        assert graph.edges.shape == (n_edge*2, 3)
+        assert graph.nodes.shape == (n_node * 2, 2)
+        assert graph.edges.shape == (n_edge * 2, 3)
         assert graph.globals.shape == (2, 4)
-        assert image.shape == (2,24,24,1)
+        assert image.shape == (2, 24, 24, 1)
 
 
 def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None, globals=None):
@@ -417,154 +416,6 @@ def batched_tensor_to_fully_connected_graph_tuple_dynamic(nodes_tensor, pos=None
             graphs_with_nodes_edges, global_size=1)
 
     return graphs_with_nodes_edges_globals
-
-
-def save_graph_examples(graphs: List[GraphsTuple], save_dir=None, examples_per_file=1):
-    """
-    Saves a list of GraphTuples to tfrecords.
-
-    Args:
-        graphs: list of GraphTuples
-        save_dir: dir to save in
-        examples_per_file: int, max number examples per file
-
-    Returns: list of tfrecord files.
-    """
-    if save_dir is None:
-        save_dir = os.getcwd()
-    count = 0
-    file_idx = 0
-    files = set()
-    for graph in graphs:
-        if count == examples_per_file:
-            count = 0
-            file_idx += 1
-        # schema
-        features = dict(
-            nodes=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.nodes).numpy()])),
-            edges=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.edges).numpy()])),
-            senders=tf.train.Feature(
-                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.senders).numpy()])),
-            receivers=tf.train.Feature(
-                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.receivers).numpy()])))
-        features = tf.train.Features(feature=features)
-        example = tf.train.Example(features=features)
-        file = os.path.join(save_dir, 'train_{:03d}.tfrecords'.format(file_idx))
-        files.add(file)
-        with tf.io.TFRecordWriter(file) as writer:
-            writer.write(example.SerializeToString())
-        count += 1
-    files = list(files)
-    print("Saved in tfrecords: {}".format(files))
-    return files
-
-
-def decode_graph_examples(record_bytes):
-    """
-    Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a graph tuple
-    Args:
-        record_bytes: raw bytes
-
-    Returns: GraphTuple
-    """
-    parsed_example = tf.io.parse_single_example(
-        # Data
-        record_bytes,
-        # Schema
-        dict(
-            nodes=tf.io.FixedLenFeature([], dtype=tf.string),
-            edges=tf.io.FixedLenFeature([], dtype=tf.string),
-            senders=tf.io.FixedLenFeature([], dtype=tf.string),
-            receivers=tf.io.FixedLenFeature([], dtype=tf.string)
-        )
-    )
-    nodes = tf.io.parse_tensor(parsed_example['nodes'], tf.float64)
-    edges = tf.io.parse_tensor(parsed_example['edges'], tf.float64)
-    graph = GraphsTuple(nodes=nodes,
-                        edges=edges,
-                        globals=None,
-                        receivers=tf.io.parse_tensor(parsed_example['receivers'], tf.int64),
-                        senders=tf.io.parse_tensor(parsed_example['senders'], tf.int64),
-                        n_node=tf.shape(nodes)[0:1],
-                        n_edge=tf.shape(edges)[0:1])
-    return graph
-
-
-def save_graph_and_image_examples(graphs: List[GraphsTuple], images: List[tf.Tensor], save_dir=None,
-                                  examples_per_file=1):
-    """
-    Saves a list of GraphTuples to tfrecords.
-
-    Args:
-        graphs: list of GraphTuples
-        images: list of images
-        save_dir: dir to save in
-        examples_per_file: int, max number examples per file
-
-    Returns: list of tfrecord files.
-    """
-    if save_dir is None:
-        save_dir = os.getcwd()
-    count = 0
-    file_idx = 0
-    files = set()
-    for graph, image in zip(graphs, images):
-        if count == examples_per_file:
-            count = 0
-            file_idx += 1
-        features = dict(
-            nodes=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.nodes).numpy()])),
-            edges=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.edges).numpy()])),
-            senders=tf.train.Feature(
-                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.senders).numpy()])),
-            receivers=tf.train.Feature(
-                bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(graph.receivers).numpy()])),
-            image=tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(image).numpy()])),
-        )
-        features = tf.train.Features(feature=features)
-        example = tf.train.Example(features=features)
-        file = os.path.join(save_dir, 'train_{:03d}.tfrecords'.format(file_idx))
-        files.add(file)
-        with tf.io.TFRecordWriter(file) as writer:
-            writer.write(example.SerializeToString())
-        count += 1
-    files = list(files)
-    print("Saved in tfrecords: {}".format(files))
-    return files
-
-
-def decode_graph_and_image_examples(record_bytes):
-    """
-    Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a GraphTuple and image
-    Args:
-        record_bytes: raw bytes
-
-    Returns: (GraphTuple, image)
-    """
-    parsed_example = tf.io.parse_single_example(
-        # Data
-        record_bytes,
-
-        # Schema
-        dict(
-            nodes=tf.io.FixedLenFeature([], dtype=tf.string),
-            edges=tf.io.FixedLenFeature([], dtype=tf.string),
-            senders=tf.io.FixedLenFeature([], dtype=tf.string),
-            receivers=tf.io.FixedLenFeature([], dtype=tf.string),
-            image=tf.io.FixedLenFeature([], dtype=tf.string),
-        )
-    )
-    nodes = tf.io.parse_tensor(parsed_example['nodes'], tf.float64)
-    edges = tf.io.parse_tensor(parsed_example['edges'], tf.float64)
-    image = tf.io.parse_tensor(parsed_example['image'], tf.float64)
-    graph = GraphsTuple(nodes=nodes,
-                        edges=edges,
-                        globals=None,
-                        receivers=tf.io.parse_tensor(parsed_example['receivers'], tf.int64),
-                        senders=tf.io.parse_tensor(parsed_example['senders'], tf.int64),
-                        n_node=tf.shape(nodes)[0:1],
-                        n_edge=tf.shape(edges)[0:1])
-    return (graph, image)
 
 
 def build_log_dir(base_log_dir, config):
@@ -643,3 +494,58 @@ def stringify_config(config):
     loss_parameters = stringify_dict(config['loss_parameters'])
     subdir = "".join([model_type, model_parameters, optimizer_parameters, loss_parameters])
     return subdir
+
+
+def tf_ravel_multi_index(multi_index, dims):
+    """
+    Equivalent of np.ravel_multi_index.
+
+    Args:
+        multi_index: [N, D]
+        dims: [D]
+
+    Returns: [N]
+    """
+    strides = tf.math.cumprod(dims, exclusive=True, reverse=True)  # D
+    return tf.reduce_sum(multi_index * strides[:, None], axis=0)  # D,N -> N
+
+
+def histogramdd(sample, bins=10, weights=None, density=None):
+    N, D = sample.shape
+
+    if not isinstance(bins, int):
+        raise ValueError("Only support integer bins")
+
+    bin_idx_by_dim = D * [None]
+    nbins = np.empty(D, int)
+    bin_edges_by_dim = D * [None]
+    dedges = D * [None]
+
+    vmin = tf.reduce_min(sample, axis=0)
+    vmax = tf.reduce_max(sample, axis=0)
+    bin_edges = tf.cast(tf.linspace(0., 1., bins + 1), sample.dtype)[:, None] * (vmax - vmin) + vmin
+    for i in range(D):
+        dim_bin_edges = bin_edges[:, i]
+        bin_idx = tf.searchsorted(dim_bin_edges, sample[:, i], side='right')
+        bin_idx = tf.where(sample[:, i] == dim_bin_edges[-1], bin_idx - 1, bin_idx)
+        bin_idx_by_dim[i] = bin_idx
+        nbins[i] = dim_bin_edges.shape[0] + 1
+        bin_edges_by_dim[i] = dim_bin_edges
+        dedges[i] = bin_edges_by_dim[i][1:] - bin_edges_by_dim[i][:-1]
+
+    xy = tf_ravel_multi_index(bin_idx_by_dim, nbins)
+    hist = tf.math.bincount(tf.cast(xy, tf.int32), weights, minlength=nbins.prod(), maxlength=nbins.prod())
+    hist = tf.reshape(hist, nbins)
+    core = D * (slice(1, -1),)
+    hist = hist[core]
+
+    if density:
+        raise ValueError('Density doesnt work')
+        # s = sum(hist)
+        # for i in range(D):
+        #     _shape = np.ones(D, int)
+        #     _shape[i] = nbins[i] - 2
+        #     hist = hist / tf.maximum(1, tf.cast(tf.reshape(dedges[i], _shape), hist.dtype))
+        # hist /= tf.cast(s, hist.dtype)
+
+    return hist, bin_edges_by_dim
