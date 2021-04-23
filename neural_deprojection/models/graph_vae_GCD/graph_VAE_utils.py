@@ -1,28 +1,16 @@
 import sys
 
-sys.path.insert(1, '/home/s2675544/git/neural_deprojection/')
+sys.path.insert(1, '/data/s2675544/git/neural_deprojection/')
 
-from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, \
-    get_distribution_strategy, build_log_dir, build_checkpoint_dir, batch_dataset_set_graph_tuples
-# from neural_deprojection.models.identify_medium.generate_data import graph_tuple_to_feature
-
-import glob, os
+from neural_deprojection.graph_net_utils import AbstractModule, \
+    histogramdd
 import tensorflow as tf
-from functools import partial
+# import tensorflow_addons as tfa
+
 from graph_nets import blocks
 import sonnet as snt
-from tensorflow_addons.image import gaussian_filter2d
-from graph_nets.graphs import GraphsTuple
-from graph_nets.modules import _unsorted_segment_softmax, _received_edges_normalizer, GraphIndependent, SelfAttention, GraphNetwork
-from graph_nets.utils_tf import fully_connect_graph_dynamic, concat
+from graph_nets.modules import SelfAttention
 from sonnet.src import utils, once
-import time
-# from typing import Callable, Iterable, Optional, Text
-# from sonnet.src import initializers
-# from sonnet.src import linear
-# import matplotlib.pyplot as plt
-# import networkx as nx
-import numpy as np
 
 
 class MultiHeadLinear(AbstractModule):
@@ -158,8 +146,8 @@ class RelationNetwork(AbstractModule):
         output_graph = self._global_block(edge_block)
         return output_graph
 
-
-class EncodeProcessDecode(AbstractModule):
+# TODO: give option to feed position in the core network
+class EncodeProcessDecode_E(AbstractModule):
     """Full encode-process-decode model.
     The model we explore includes three components:
     - An "Encoder" graph net, which independently encodes the edge, node, and
@@ -184,8 +172,8 @@ class EncodeProcessDecode(AbstractModule):
                  encoder,
                  core,
                  decoder,
-                 name="EncodeProcessDecode"):
-        super(EncodeProcessDecode, self).__init__(name=name)
+                 name="EncodeProcessDecode_E"):
+        super(EncodeProcessDecode_E, self).__init__(name=name)
         self._encoder = encoder
         self._core = core
         self._decoder = decoder
@@ -203,9 +191,50 @@ class EncodeProcessDecode(AbstractModule):
         return self._decoder(latent_graph, positions)
 
 
+class EncodeProcessDecode_D(AbstractModule):
+    """Full encode-process-decode model.
+    The model we explore includes three components:
+    - An "Encoder" graph net, which independently encodes the edge, node, and
+      global attributes (does not compute relations etc.).
+    - A "Core" graph net, which performs N rounds of processing (message-passing)
+      steps. The input to the Core is the concatenation of the Encoder's output
+      and the previous output of the Core (labeled "Hidden(t)" below, where "t" is
+      the processing step).
+    - A "Decoder" graph net, which independently decodes the edge, node, and
+      global attributes (does not compute relations etc.), on each message-passing
+      step.
+                        Hidden(t)   Hidden(t+1)
+                           |            ^
+              *---------*  |  *------*  |  *---------*
+              |         |  |  |      |  |  |         |
+    Input --->| Encoder |  *->| Core |--*->| Decoder |---> Output(t)
+              |         |---->|      |     |         |
+              *---------*     *------*     *---------*
+    """
+
+    def __init__(self,
+                 encoder,
+                 core,
+                 decoder,
+                 name="EncodeProcessDecode_D"):
+        super(EncodeProcessDecode_D, self).__init__(name=name)
+        self._encoder = encoder
+        self._core = core
+        self._decoder = decoder
+
+    def _build(self, input_graph, num_processing_steps, positions):
+        latent_graph = self._encoder(input_graph, positions)
+        _, latent_graph = tf.while_loop(cond=lambda const, state: const < num_processing_steps,
+                      body=lambda const, state: (const+1, self._core(state, positions)),
+                      loop_vars=(tf.constant(0), latent_graph))
+
+        return self._decoder(latent_graph)
+
+
 class CoreNetwork(AbstractModule):
     """
-    Core network which can be used in the EncodeProcessDecode network. Closely follows the transformer architecture.
+    Core network which can be used in the EncodeProcessDecode network. Consists of a (full) graph network block
+    and a self attention block.
     """
 
     def __init__(self,
@@ -241,8 +270,8 @@ class CoreNetwork(AbstractModule):
         output_nodes = self.ln2(self.FFN(output_nodes))
         output_graph = latent.replace(nodes=output_nodes)
         if positions is not None:
-            prepend_nodes = tf.concat([positions, latent.nodes[:, 3:]], axis=1)
-            latent.replace(nodes=prepend_nodes)
+            prepend_nodes = tf.concat([positions, output_graph.nodes[:, 3:]], axis=1)
+            output_graph = output_graph.replace(nodes=prepend_nodes)
         return output_graph
 
 
@@ -271,7 +300,7 @@ class EncoderNetwork(AbstractModule):
 
         if positions is not None:
             prepend_nodes = tf.concat([positions, latent.nodes[:, 3:]], axis=1)
-            latent.replace(nodes=prepend_nodes)
+            latent = latent.replace(nodes=prepend_nodes)
 
         output = self.relation_network(latent)
         return output
@@ -279,63 +308,94 @@ class EncoderNetwork(AbstractModule):
 
 class DecoderNetwork(AbstractModule):
     """
-    Decoder network that updates the nodes of a graph.
-    By default only uses the globals to update the nodes, but can also use nodes and edges.
+    Encoder network that updates the graph to viable input for the Core network.
+    Contains a node block to update the edges and a relation network to generate edges and globals.
     """
 
     def __init__(self,
                  node_model_fn,
-                 use_received_edges=False,
-                 use_sent_edges=False,
-                 use_nodes=False,
-                 use_globals=True,
                  name=None):
         super(DecoderNetwork, self).__init__(name=name)
         self.node_block = blocks.NodeBlock(node_model_fn,
-                                           use_received_edges=use_received_edges,
-                                           use_sent_edges=use_sent_edges,
-                                           use_nodes=use_nodes,
-                                           use_globals=use_globals)
+                                           use_received_edges=False,
+                                           use_sent_edges=False,
+                                           use_nodes=False,
+                                           use_globals=True)
 
     def _build(self, input_graph, positions):
         output = self.node_block(input_graph)
-
+        output = output._replace(edges=tf.constant(1.))
         if positions is not None:
             prepend_nodes = tf.concat([positions, output.nodes[:, 3:]], axis=1)
-            output.replace(nodes=prepend_nodes)
-
+            output = output.replace(nodes=prepend_nodes)
         return output
 
 
-class GraphAutoEncoder(AbstractModule):
+class Model(AbstractModule):
+    """Model inherits from AbstractModule, which contains a __call__ function which executes a _build function
+    that is to be specified in the child class. So for example:
+    model = Model(), then model() returns the output of _build()
+
+    AbstractModule inherits from snt.Module, which has useful functions that can return the (trainable) variables,
+    so the Model class has this functionality as well
+    An instance of the RelationNetwork class also inherits from AbstractModule,
+    so it also executes its _build() function when called and it can return its (trainable) variables
+
+
+    A RelationNetwork contains an edge block and a global block:
+
+    The edge block generally uses the edge, receiver, sender and global attributes of the input graph
+    to calculate the new edges.
+    In our case we currently only use the receiver and sender attributes to calculate the edges.
+
+    The global block generally uses the aggregated edge, aggregated node and the global attributes of the input graph
+    to calculate the new globals.
+    In our case we currently only use the aggregated edge attributes to calculate the new globals.
+
+
+    As input the RelationNetwork needs two (neural network) functions:
+    one to calculate the new edges from receiver and sender nodes
+    and one to calculate the globals from the aggregated edges.
+
+    The new edges will be a vector with size 16 (i.e. the output of the first function in the RelationNetwork)
+    The new globals will also be a vector with size 16 (i.e. the output of the second function in the RelationNetwork)
+
+    The image_cnn downscales the image (currently from 4880x4880 to 35x35) and encodes the image in 16 channels.
+    So we (currently) go from (4880,4880,1) to (35,35,16)
+    """
+
     def __init__(self,
                  mlp_size=16,
                  cluster_encoded_size=10,
-                 image_encoded_size=64,
                  num_heads=10,
-                 kernel_size=4,
-                 image_feature_size=16,
                  core_steps=10, name=None):
-        super(GraphAutoEncoder, self).__init__(name=name)
+        super(Model, self).__init__(name=name)
 
-        self.epd_encoder = EncodeProcessDecode(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+        self.epd_encoder = EncodeProcessDecode_E(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu),
                                                                       node_model_fn=lambda: snt.Linear(cluster_encoded_size),
-                                                                      global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True)),
+                                                                      global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu)),
                                                core=CoreNetwork(num_heads=num_heads,
                                                                 multi_head_output_size=cluster_encoded_size,
                                                                 input_node_size=cluster_encoded_size),
-                                               decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True),
+                                               decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu),
                                                                       node_model_fn=lambda: snt.Linear(cluster_encoded_size),
-                                                                      global_model_fn=lambda: snt.nets.MLP([32, 32, 64], activate_final=True)))
+                                                                      global_model_fn=lambda: snt.nets.MLP([32, 32, 64], activate_final=True, activation=tf.nn.leaky_relu)))
 
-        self.epd_decoder = EncodeProcessDecode(encoder=DecoderNetwork(node_model_fn=lambda: snt.Linear(cluster_encoded_size)),
+        self.epd_decoder = EncodeProcessDecode_D(encoder=DecoderNetwork(node_model_fn=lambda: snt.nets.MLP([32, 32, cluster_encoded_size], activate_final=True, activation=tf.nn.leaky_relu)),
                                                core=CoreNetwork(num_heads=num_heads,
                                                                 multi_head_output_size=cluster_encoded_size,
                                                                 input_node_size=cluster_encoded_size),
-                                               decoder=DecoderNetwork(node_model_fn=lambda: snt.Linear(cluster_encoded_size),
-                                                                      use_nodes=True))
-
-        self.image_feature_size = image_feature_size
+                                               decoder=snt.Sequential([RelationNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu),
+                                                                                       global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu)),
+                                                                       blocks.NodeBlock(
+                                                                           node_model_fn=lambda: snt.nets.MLP(
+                                                                               [cluster_encoded_size-3], activate_final=True, activation=tf.nn.leaky_relu),
+                                                                           use_received_edges=True,
+                                                                           use_sent_edges=True,
+                                                                           use_nodes=True,
+                                                                           use_globals=True)
+                                                                       ])
+                                               )
 
         self._core_steps = core_steps
 
@@ -352,188 +412,31 @@ class GraphAutoEncoder(AbstractModule):
     def _build(self, batch, *args, **kwargs):
         graph = batch
 
-        positions = graph.nodes[:, 0:3]
+        # del img
+        # del c
+
+        positions = graph.nodes[:, :3]
+
+
+        for i in range(3, 10):
+            image_before, _ = histogramdd(positions[:, :2], bins=50, weights=graph.nodes[:, i])
+            image_before -= tf.reduce_min(image_before)
+            image_before /= tf.reduce_max(image_before)
+            tf.summary.image(f"{i}_xy_image_before", image_before[None, :, :, None], step=self.step)
+
+            tf.summary.scalar(f"properties{i}_std_before", tf.math.reduce_std(graph.nodes[:,i]), step=self.step)
 
         encoded_graph = self.epd_encoder(graph, self._core_steps, positions)
+        encoded_graph = encoded_graph._replace(nodes=None, edges=None)   # only pass through globals for sure
         decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, positions)
+
+        for i in range(7):
+            image_after, _ = histogramdd(positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
+            image_after -= tf.reduce_min(image_after)
+            image_after /= tf.reduce_max(image_after)
+            tf.summary.image(f"{i+3}_xy_image_after", image_after[None, :, :, None], step=self.step)
+            tf.summary.scalar(f"properties{i+3}_std_after", tf.math.reduce_std(decoded_graph.nodes[:,i]), step=self.step)
 
         return decoded_graph
 
 
-def feature_to_graph_tuple(name=''):
-    return {f'{name}_nodes': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_edges': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_senders': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_receivers': tf.io.FixedLenFeature([], dtype=tf.string)}
-
-
-def decode_examples(record_bytes,
-                    node_shape=None,
-                    edge_shape=None,
-                    image_shape=None):
-    """
-    Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a GraphTuple and image
-    Args:
-        record_bytes: raw bytes
-        node_shape: shape of nodes if known.
-        edge_shape: shape of edges if known.
-        image_shape: shape of image if known.
-
-    Returns: (GraphTuple, image)
-    """
-    parsed_example = tf.io.parse_single_example(
-        # Data
-        record_bytes,
-
-        # Schema
-        dict(
-            image=tf.io.FixedLenFeature([], dtype=tf.string),
-            cluster_idx=tf.io.FixedLenFeature([], dtype=tf.string),
-            projection_idx=tf.io.FixedLenFeature([], dtype=tf.string),
-            vprime=tf.io.FixedLenFeature([], dtype=tf.string),
-            **feature_to_graph_tuple('graph')
-        )
-    )
-    image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
-
-    # image = tf.math.log(image / 43.) + tf.math.log(0.5)
-    image.set_shape(image_shape)
-    vprime = tf.io.parse_tensor(parsed_example['vprime'], tf.float32)
-    vprime.set_shape((3, 3))
-    cluster_idx = tf.io.parse_tensor(parsed_example['cluster_idx'], tf.int32)
-    cluster_idx.set_shape(())
-    projection_idx = tf.io.parse_tensor(parsed_example['projection_idx'], tf.int32)
-    projection_idx.set_shape(())
-    graph_nodes = tf.io.parse_tensor(parsed_example['graph_nodes'], tf.float32)
-    if node_shape is not None:
-        graph_nodes.set_shape([None] + list(node_shape))
-    graph_edges = tf.io.parse_tensor(parsed_example['graph_edges'], tf.float32)
-    if edge_shape is not None:
-        graph_edges.set_shape([None] + list(edge_shape))
-    receivers = tf.io.parse_tensor(parsed_example['graph_receivers'], tf.int64)
-    receivers.set_shape([None])
-    receivers = tf.cast(receivers, tf.int32)
-    senders = tf.io.parse_tensor(parsed_example['graph_senders'], tf.int64)
-    senders.set_shape([None])
-    senders = tf.cast(senders, tf.int32)
-    graph = GraphsTuple(nodes=graph_nodes,
-                        edges=graph_edges,
-                        globals=tf.zeros([1]),
-                        receivers=receivers,
-                        senders=senders,
-                        n_node=tf.shape(graph_nodes)[0:1],
-                        n_edge=tf.shape(graph_edges)[0:1])
-    return (graph, image, cluster_idx, projection_idx, vprime)
-
-
-def build_dataset(tfrecords):
-    # Extract the dataset (graph tuple, image, example_idx) from the tfrecords files
-    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
-                                                             node_shape=(10,),
-                                                             edge_shape=(2,),
-                                                             image_shape=(1000, 1000, 1)))  # (graph, image, idx)
-    # Take the graphs and their corresponding index and shuffle the order of these pairs
-    # Do the same for the images
-    _graphs = dataset.map(
-        lambda graph, img, cluster_idx, projection_idx, vprime:
-        (graph, 26 * cluster_idx + projection_idx)).shuffle(
-        buffer_size=260)  # .replace(globals=tf.zeros((1, 1)))
-    _images = dataset.map(
-        lambda graph, img, cluster_idx, projection_idx, vprime: (img, 26 * cluster_idx + projection_idx)).shuffle(
-        buffer_size=260)
-
-    # Zip the shuffled datasets back together so typically the index of the graph and image don't match.
-    shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph, idx1), (img, idx2))
-
-    # Reshape the dataset to the graph, the image and a yes or no whether the indices are the same
-    # So ((graph, idx1), (img, idx2)) --> (graph, img, True/False)
-    shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], ds1[1] == ds2[1]))  # (graph, img, yes/no)
-
-    # Take the subset of the data where the graph and image don't correspond (which is most of the dataset, since it's shuffled)
-    shuffled_dataset = shuffled_dataset.filter(lambda graph, img, c: ~c)
-
-    # Transform the True/False class into 1/0 integer
-    shuffled_dataset = shuffled_dataset.map(lambda graph, img, c: (graph, img, tf.cast(c, tf.int32)))
-
-    # Use the original dataset where all indices correspond and give them class True and turn that into an integer
-    # So every instance gets class 1
-    nonshuffeled_dataset = dataset.map(lambda graph, img, cluster_idx, projection_idx, vprime: (
-    graph, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
-
-    # For the training data, take a sample either from the correct or incorrect combinations of graphs and images
-    nn_dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
-    return nn_dataset
-
-
-def train_ae_3d(data_dir, config):
-    train_tfrecords = glob.glob(os.path.join(data_dir, 'train', '*.tfrecords'))
-    test_tfrecords = glob.glob(os.path.join(data_dir, 'test', '*.tfrecords'))
-
-    print(f'Number of training tfrecord files : {len(train_tfrecords)}')
-    print(f'Number of test tfrecord files : {len(test_tfrecords)}')
-    print(f'Total : {len(train_tfrecords) + len(test_tfrecords)}')
-
-    train_dataset = build_dataset(train_tfrecords)
-    test_dataset = build_dataset(test_tfrecords)
-
-    train_dataset = train_dataset.map(lambda graph, img, c: (graph,))
-    test_dataset = test_dataset.map(lambda graph, img, c: (graph,))
-
-    train_dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=train_dataset, batch_size=2)
-    test_dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=test_dataset, batch_size=2)
-
-    model = GraphAutoEncoder(mlp_size=16,
-                             cluster_encoded_size=10,
-                             image_encoded_size=64,
-                             num_heads=10,
-                             kernel_size=4,
-                             image_feature_size=16,
-                             core_steps=10, name=None)
-
-    learning_rate = 1e-5
-    opt = snt.optimizers.Adam(learning_rate)
-
-    def loss(model_outputs, batch):
-        graph = batch
-        decoded_graph = model_outputs
-        return tf.reduce_mean((graph.nodes - decoded_graph.nodes) ** 2)
-
-    train_one_epoch = TrainOneEpoch(model, loss, opt, strategy=None)
-
-    log_dir = build_log_dir('test_log_dir', config)
-    checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
-
-    vanilla_training_loop(train_one_epoch=train_one_epoch,
-                          training_dataset=train_dataset,
-                          test_dataset=test_dataset,
-                          num_epochs=20,
-                          early_stop_patience=5,
-                          checkpoint_dir=checkpoint_dir,
-                          log_dir=log_dir,
-                          debug=False)
-
-def main(data_dir, config):
-    # train_autoencoder(data_dir)
-    train_ae_3d(data_dir, config)
-
-
-if __name__ == '__main__':
-    tfrec_base_dir = '/home/s2675544/data/tf_records'
-    tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
-
-    learning_rate = 1e-5
-    mlp_size = 16
-    cluster_encoded_size = 10
-    image_encoded_size = 64
-    core_steps = 28
-    num_heads = 1
-
-    config = dict(model_type='model1',
-                  model_parameters=dict(mlp_size=mlp_size,
-                                        cluster_encoded_size=cluster_encoded_size,
-                                        image_encoded_size=image_encoded_size,
-                                        core_steps=core_steps,
-                                        num_heads=num_heads),
-                  optimizer_parameters=dict(learning_rate=learning_rate, opt_type='adam'),
-                  loss_parameters=dict())
-    main(tfrec_dir, config)
