@@ -1,3 +1,5 @@
+# TEST TEST
+
 import yt
 from random import gauss
 import os
@@ -276,7 +278,12 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
 
     _values = []
     for name, transform, unit in zip(property_names, property_transforms, unit_names):
+        print('\nproperty name: ', name)
+        print('in unit', ad[name].in_units(unit).to_value())
+        print('transform', transform(ad[name].in_units(unit).to_value()))
         _values.append(transform(ad[name].in_units(unit).to_value()))
+
+    return 1
 
     # property_values = np.array(property_values)  # n f
     property_values = np.array(_values).T  # n f
@@ -355,7 +362,7 @@ def main():
     #     save_dir = '/data2/hendrix/ClaudeData/{}/'.format(n)
 
     folder_path = '/disks/extern_collab_data/lewis/run1/'       # run1=M3, run2=M3f, run3=M3f2, run4=M4
-    save_dir = '/data2/hendrix/SeanData/M3/'
+    save_dir = '/net/para33/data2/hendrix/SeanData/M3/'
 
     # snapshot_list = []
     # for snap in all_snapshots:

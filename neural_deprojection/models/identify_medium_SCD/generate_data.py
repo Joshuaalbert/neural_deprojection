@@ -66,8 +66,8 @@ def generate_example_random_choice(positions, properties, k=26, plot=False):
 
     virtual_properties = np.zeros((len(np.bincount(indices)), len(properties[0])))
 
-    mean_sum = [lambda x: np.bincount(indices, weights=x) / np.maximum(1., np.bincount(indices)),       # mean
-                lambda x: np.bincount(indices, weights=x)]              # sum
+    mean_sum = [lambda x: np.bincount(indices, weights=x) / np.maximum(1., np.bincount(indices)),  # mean
+                lambda x: np.bincount(indices, weights=x)]  # sum
 
     mean_sum_enc = [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1]
 
@@ -114,7 +114,6 @@ def generate_example_random_choice(positions, properties, k=26, plot=False):
     return networkxs_to_graphs_tuple([graph],
                                      node_shape_hint=[virtual_positions.shape[1] + virtual_properties.shape[1]],
                                      edge_shape_hint=[2])
-
 
 
 def generate_example_nn(positions, properties, k=26, resolution=2, plot=False):
@@ -408,8 +407,10 @@ def decode_examples(record_bytes, node_shape=None, image_shape=None):
     graph_nodes = tf.io.parse_tensor(parsed_example['graph_nodes'], tf.float32)
     graph_nodes.set_shape([None] + list(node_shape))
     receivers = tf.io.parse_tensor(parsed_example['graph_receivers'], tf.int64)
+    receivers = tf.cast(receivers, tf.int32)
     receivers.set_shape([None])
     senders = tf.io.parse_tensor(parsed_example['graph_senders'], tf.int64)
+    senders = tf.cast(senders, tf.int32)
     senders.set_shape([None])
     n_node = tf.shape(graph_nodes)[0:1]
     n_edge = tf.shape(senders)[0:1]
@@ -423,10 +424,12 @@ def decode_examples(record_bytes, node_shape=None, image_shape=None):
     #                     n_edge=tf.shape(graph_edges)[0:1])
 
     graph_data_dict = dict(nodes=graph_nodes,
-                        receivers=receivers,
-                        senders=senders,
-                        n_node=n_node,
-                        n_edge=n_edge)
+                           edges=tf.zeros((n_edge[0], 1)),
+                           globals=tf.zeros([1]),
+                           receivers=receivers,
+                           senders=senders,
+                           n_node=n_node,
+                           n_edge=n_edge)
 
     return (graph_data_dict, image, snapshot, projection)
 
@@ -495,7 +498,7 @@ def get_data_image(data_dirs):
         print('save image...')
         proj_image_idx = len(glob.glob(os.path.join(image_dir, 'proj_image_*')))
         plt.imsave(os.path.join(image_dir, 'proj_image_{}.png'.format(proj_image_idx)),
-                   image[:,:,0])
+                   image[:, :, 0])
         print('saved.')
 
 
@@ -647,4 +650,3 @@ if __name__ == '__main__':
 
     pool = Pool(1)
     pool.map(generate_data, example_dirs)
-

@@ -267,11 +267,18 @@ if __name__ == '__main__':
                                                              node_shape=(11,),
                                                              image_shape=(256, 256, 1)))  # (graph, image, idx)
 
-    dataset = dataset.map(lambda graph_data_dict, img, s, p: (GraphsTuple(globals=None, edges=None, **graph_data_dict),
-                                                              img, s, p))
+    # dataset = dataset.map(lambda graph_data_dict, img, s, p: (GraphsTuple(globals=None, edges=None, **graph_data_dict),
+    #                                                           img, s, p))
 
     for ds_item in iter(dataset):
-        print(ds_item)
-        plot_from_big_ds_item(ds_item)
+        # print(ds_item)
+        # plot_from_big_ds_item(ds_item)
+
+        (graph_data_dict, image, snapshot, projection) = ds_item
+        nodes = graph_data_dict['nodes']
+        for i in range(11): # [6,9,10]:
+            print(f'\nmax_{i}', tf.reduce_max(nodes[:, i]))
+            print(f'min_{i}', tf.reduce_min(nodes[:, i]))
+        break
 
 
