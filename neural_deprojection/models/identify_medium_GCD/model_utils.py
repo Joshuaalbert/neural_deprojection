@@ -515,11 +515,12 @@ def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=
     graph_edges = tf.io.parse_tensor(parsed_example['graph_edges'], tf.float32)
     if edge_shape is not None:
         graph_edges.set_shape([None] + list(edge_shape))
-    receivers = tf.io.parse_tensor(parsed_example['graph_receivers'], tf.int32)
+    receivers = tf.io.parse_tensor(parsed_example['graph_receivers'], tf.int64)
+    receivers = tf.cast(receivers, tf.int32)
     receivers.set_shape([None])
-    senders = tf.io.parse_tensor(parsed_example['graph_senders'], tf.int32)
+    senders = tf.io.parse_tensor(parsed_example['graph_senders'], tf.int64)
+    senders = tf.cast(senders, tf.int32)
     senders.set_shape([None])
-
     n_node = tf.shape(graph_nodes)[0:1]
     n_edge = tf.shape(graph_edges)[0:1]
 

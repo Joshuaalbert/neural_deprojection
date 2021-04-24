@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
+sys.path.insert(1, '/data/s2675544/git/neural_deprojection/')
 
 from functools import partial
 from graph_nets.graphs import GraphsTuple
@@ -31,7 +31,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
         def loss(model_outputs, batch):
             graph = batch
             decoded_graph = model_outputs
-            return tf.reduce_mean((graph.nodes[:, 3:] - decoded_graph.nodes) ** 2, dtype=graph.nodes.dtype)
+            return tf.reduce_mean((graph.nodes[:, 3:] - decoded_graph.nodes) ** 2)
         return loss
 
     loss = build_loss(**loss_parameters)
@@ -41,7 +41,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
 
     return training
 
-def build_dataset(data_dir):
+def build_dataset(tfrecords):
     """
     Build data set from a directory of tfrecords. With graph batching
 
@@ -50,23 +50,13 @@ def build_dataset(data_dir):
 
     Returns: Dataset obj.
     """
-    tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
-                                                             node_shape=(11,),
-                                                             image_shape=(256, 256, 1)))  # (graph, image, spsh, proj)
+                                                             node_shape=(10,),
+                                                             edge_shape=(2,),
+                                                             image_shape=(1000, 1000, 1)))  # (graph, image, idx)
 
-    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj: graph_data_dict).shuffle(buffer_size=50)
-
-    # _graphs = dataset.map(lambda graph_data_dict, img, spsh, proj: (graph_data_dict, spsh, proj)).shuffle(buffer_size=50)
-    # _images = dataset.map(lambda graph_data_dict, img, spsh, proj: (img, spsh, proj)).shuffle(buffer_size=50)
-    # shuffled_dataset = tf.data.Dataset.zip((_graphs, _images))  # ((graph_data_dict, idx1), (img, idx2))
-    # shuffled_dataset = shuffled_dataset.map(lambda ds1, ds2: (ds1[0], ds2[0], (ds1[1] == ds2[1]) and
-    #                                                           (ds1[2] == ds2[2])))  # (graph, img, yes/no)
-    # shuffled_dataset = shuffled_dataset.filter(lambda graph_data_dict, img, c: ~c)
-    # shuffled_dataset = shuffled_dataset.map(lambda graph_data_dict, img, c: (graph_data_dict, img, tf.cast(c, tf.int32)))
-    # nonshuffeled_dataset = dataset.map(
-    #     lambda graph_data_dict, img, spsh, proj : (graph_data_dict, img, tf.constant(1, dtype=tf.int32)))  # (graph, img, yes)
-    # dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
+    dataset = dataset.map(lambda graph_data_dict, img, cluster_idx, projection_idx, vprime:
+                          graph_data_dict).shuffle(buffer_size=50)
     dataset = dataset.map(lambda graph_data_dict: GraphsTuple(**graph_data_dict))
 
     dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=1)
@@ -95,11 +85,11 @@ def train_ae_3d(data_dir, config):
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
-                          num_epochs=20,
+                          num_epochs=100,
                           early_stop_patience=10,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
-                          debug=True)
+                          debug=False)
 
 
 def main(data_dir):
