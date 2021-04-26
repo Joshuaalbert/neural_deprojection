@@ -18,9 +18,9 @@ ad = ds.all_data() # Can call on the data set's property .all_data() to generate
 # print(ad['temperature'])
 
 # To see all the possible field values contained within the hydro (plt) and particle (part) files:
-for e in ds.derived_field_list:
-    print(e)
-ds.print_stats()
+# for e in ds.derived_field_list:
+#     print(e)
+# ds.print_stats()
 # print(ds.derived_field_list)
 # print("-"*20 + "\n", ad['x'])
 # print(len(ad['x']))
@@ -31,18 +31,11 @@ ds.print_stats()
 field ='density' # dens, temp, and pres are some shorthand strings recognized by yt.
 # ax = 'y' # the axis our slice plot will be "looking down on".
 
-L = [1,0,0] # vector normal to cutting plane
-v_elements = [-1, 0, 1]
-folder_path = '~/Desktop/SCD/SeanData/offaxisplots/'
+L = [0,0,1] # vector normal to cutting plane
 
-for x_e in v_elements:
-    for y_e in v_elements:
-        for z_e in v_elements:
-            if x_e == y_e == z_e == 0: continue
-            L = [x_e, y_e, z_e]
-            plot_ = yt.OffAxisProjectionPlot(ds, L, field)
-            im_name = folder_path + '{}_offaxis_testplot1.png'.format(str(x_e)+str(y_e)+str(z_e))
-            plot_.save(im_name)
+plot_ = yt.OffAxisProjectionPlot(ds, L, field)
+im_name = 'off_axis_yt.png'
+plot_.save(im_name)
 # plot_ = yt.SlicePlot(ds, ax, field)
 # plot_ = yt.ProjectionPlot(ds, ax, field)
 # plot_.set_cmap(field, "binary")
