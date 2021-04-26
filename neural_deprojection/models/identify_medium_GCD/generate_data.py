@@ -1,22 +1,22 @@
 import os
 import glob
+import yt
+import h5py
+import soxs
+import pyxsim
 import tensorflow as tf
-from graph_nets.graphs import GraphsTuple
-from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
 import numpy as np
 import networkx as nx
+import pylab as plt
+import neural_deprojection.models.identify_medium_GCD.gadget as g
+from graph_nets.utils_np import networkxs_to_graphs_tuple, get_graph
+from neural_deprojection.models.identify_medium_GCD.model_utils import graph_tuple_to_feature, feature_to_graph_tuple, \
+    decode_examples
 from networkx.drawing import draw
 from tqdm import tqdm
 from scipy.spatial.ckdtree import cKDTree
-import pylab as plt
-import yt
 from astropy.io import fits
-import h5py
-import soxs
-import gadget as g
-import pyxsim
 from scipy import interpolate
-
 from multiprocessing import Pool, Lock
 
 mp_lock = Lock()
@@ -112,7 +112,7 @@ def generate_example_random_choice(positions,
         virtual_properties = properties
 
     # Directed graph
-    graph = nx.DiGraph()
+    graph = nx.OrderedMultiDiGraph()
 
     # Create cKDTree class to find the nearest neighbours of the positions
     kdtree = cKDTree(virtual_properties)
@@ -274,103 +274,6 @@ def generate_example_random_choice(positions,
                                      edge_shape_hint=[2])
 
 
-def graph_tuple_to_feature(graph: GraphsTuple, name=''):
-    return {
-        f'{name}_nodes': tf.train.Feature(
-            bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(graph.nodes, tf.float32)).numpy()])),
-        f'{name}_edges': tf.train.Feature(
-            bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(graph.edges, tf.float32)).numpy()])),
-        f'{name}_senders': tf.train.Feature(
-            bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(graph.senders, tf.int64)).numpy()])),
-        f'{name}_receivers': tf.train.Feature(
-            bytes_list=tf.train.BytesList(value=[tf.io.serialize_tensor(tf.cast(graph.receivers, tf.int64)).numpy()]))}
-
-
-def feature_to_graph_tuple(name=''):
-    return {f'{name}_nodes': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_edges': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_senders': tf.io.FixedLenFeature([], dtype=tf.string),
-            f'{name}_receivers': tf.io.FixedLenFeature([], dtype=tf.string)}
-
-
-def decode_examples(record_bytes, node_shape=None, edge_shape=None, image_shape=None):
-    """
-    Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a GraphTuple and image
-    Args:
-        record_bytes: raw bytes
-        node_shape: shape of nodes if known.
-        edge_shape: shape of edges if known.
-        image_shape: shape of image if known.
-
-    Returns: (GraphTuple, image)
-    """
-    parsed_example = tf.io.parse_single_example(
-        # Data
-        record_bytes,
-
-        # Schema
-        dict(
-            image=tf.io.FixedLenFeature([], dtype=tf.string),
-            cluster_idx=tf.io.FixedLenFeature([], dtype=tf.string),
-            projection_idx=tf.io.FixedLenFeature([], dtype=tf.string),
-            vprime=tf.io.FixedLenFeature([], dtype=tf.string),
-            **feature_to_graph_tuple('graph')
-        )
-    )
-    image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
-
-    # image = tf.math.log(image / 43.) + tf.math.log(0.5)
-    image.set_shape(image_shape)
-    vprime = tf.io.parse_tensor(parsed_example['vprime'], tf.float32)
-    vprime.set_shape((3, 3))
-    cluster_idx = tf.io.parse_tensor(parsed_example['cluster_idx'], tf.int32)
-    cluster_idx.set_shape(())
-    projection_idx = tf.io.parse_tensor(parsed_example['projection_idx'], tf.int32)
-    projection_idx.set_shape(())
-    graph_nodes = tf.io.parse_tensor(parsed_example['graph_nodes'], tf.float32)
-    if node_shape is not None:
-        graph_nodes.set_shape([None] + list(node_shape))
-    graph_edges = tf.io.parse_tensor(parsed_example['graph_edges'], tf.float32)
-    if edge_shape is not None:
-        graph_edges.set_shape([None] + list(edge_shape))
-    receivers = tf.io.parse_tensor(parsed_example['graph_receivers'], tf.int64)
-    receivers.set_shape([None])
-    senders = tf.io.parse_tensor(parsed_example['graph_senders'], tf.int64)
-    senders.set_shape([None])
-    graph = GraphsTuple(nodes=graph_nodes,
-                        edges=graph_edges,
-                        globals=tf.zeros([1]),
-                        receivers=receivers,
-                        senders=senders,
-                        n_node=tf.shape(graph_nodes)[0:1],
-                        n_edge=tf.shape(graph_edges)[0:1])
-    return (graph, image, cluster_idx, projection_idx, vprime)
-
-###
-# specific to project
-
-def existing_clusters(record_bytes):
-    """
-    Determines which clusters are already made into tfrecords
-    Args:
-        record_bytes: raw bytes
-
-    Returns: (cluster_idx, projection_idx)
-    """
-    parsed_example = tf.io.parse_single_example(
-        # Data
-        record_bytes,
-
-        # Schema
-        dict(
-            cluster_idx=tf.io.FixedLenFeature([], dtype=tf.string),
-            projection_idx=tf.io.FixedLenFeature([], dtype=tf.string)
-        )
-    )
-    cluster_idx = tf.io.parse_tensor(parsed_example['cluster_idx'], tf.int32)
-    projection_idx = tf.io.parse_tensor(parsed_example['projection_idx'], tf.int32)
-    return (cluster_idx, projection_idx)
-
 def save_examples(generator, save_dir=None,
                   examples_per_file=32, num_examples=1, exp_time=None, prefix='train'):
     """
@@ -451,6 +354,32 @@ def save_examples(generator, save_dir=None,
                 pbar.update(1)
     print("Saved in tfrecords: {}".format(files))
     return files
+
+
+###
+# specific to project
+
+def existing_clusters(record_bytes):
+    """
+    Determines which clusters are already made into tfrecords
+    Args:
+        record_bytes: raw bytes
+
+    Returns: (cluster_idx, projection_idx)
+    """
+    parsed_example = tf.io.parse_single_example(
+        # Data
+        record_bytes,
+
+        # Schema
+        dict(
+            cluster_idx=tf.io.FixedLenFeature([], dtype=tf.string),
+            projection_idx=tf.io.FixedLenFeature([], dtype=tf.string)
+        )
+    )
+    cluster_idx = tf.io.parse_tensor(parsed_example['cluster_idx'], tf.int32)
+    projection_idx = tf.io.parse_tensor(parsed_example['projection_idx'], tf.int32)
+    return (cluster_idx, projection_idx)
 
 def generate_data(cluster,
                   save_dir,
@@ -602,7 +531,7 @@ def generate_data(cluster,
             _properties[:, 6] = _properties[:, 6]  # n f
             _positions = xyz  # n 3
 
-            _properties[:, 0:3] = _properties[:, 0:3] - np.mean(_properties[:, 0:3], axis=0) / units[0:3]
+            _properties[:, 0:3] = (_properties[:, 0:3] - np.mean(_properties[:, 0:3], axis=0)) / units[0:3]
             _properties[:, 3:6] = _properties[:, 3:6] / units[3:6]
             _properties[:, 6:] = np.log10(_properties[:, 6:] / units[6:])
 
@@ -712,7 +641,7 @@ if __name__ == '__main__':
     my_tf_records_dir = os.path.join(base_data_dir, 'tf_records')
 
     # Determine which snapshots to use
-    magneticum_snap_dirs = ['snap_136']
+    magneticum_snap_dirs = ['snap_132']
     # Possible Magneticum dirs ['snap_128', 'snap_132', 'snap_136']
 
     bahamas_snap_dirs = []
@@ -721,26 +650,26 @@ if __name__ == '__main__':
     # Whether to use multiprocessing and to rewrite tfrecord directories (if safe is True, doesn't rewrite)
     _multiprocessing = True
     safe = True
-    addition = True
+    addition = False
     check_clusters = False
 
     my_number_of_virtual_nodes = 10000
     number_of_projections = 26
     exposure_time = 1000.
     plotting = 0
-    cores = 8
+    cores = 16
     number_of_neighbours = 6
 
     magneticum_snap_dirs = [os.path.join(my_magneticum_data_dir, snap_dir) for snap_dir in magneticum_snap_dirs]
     bahamas_snap_dirs = [os.path.join(my_bahamas_data_dir, snap_dir) for snap_dir in bahamas_snap_dirs]
 
-    defect_clusters = {'snap_128': {'split': [109, 16, 72, 48], 'photon_max': []},
-                       'snap_132': {'split': [75, 50, 110, 18], 'photon_max': [8, 52, 55, 93]},
+    defect_clusters = {'snap_128': {'split': [109, 16, 72, 48], 'photon_max': [53, 78]},
+                       'snap_132': {'split': [75, 50, 110, 18], 'photon_max': [8, 52, 55, 93, 139, 289]},
                        'snap_136': {'split': [75, 107, 52, 15], 'photon_max': [96, 137, 51, 315, 216, 55, 102, 101, 20, 3]},
                        'AGN_TUNED_nu0_L100N256_WMAP9': {'split': [], 'photon_max': []},
                        'AGN_TUNED_nu0_L400N1024_WMAP9': {'split': [], 'photon_max': []}}
 
-    for snap_dir in magneticum_snap_dirs + bahamas_snap_dirs:
+    for snap_idx, snap_dir in enumerate(magneticum_snap_dirs + bahamas_snap_dirs):
         print(f'Snapshot directory : {snap_dir}')
         if os.path.basename(snap_dir)[0:3] == 'AGN':
             cluster_dirs = glob.glob(os.path.join(snap_dir, '*'))
@@ -791,24 +720,34 @@ if __name__ == '__main__':
             print(f'Clusters remaining : {len(cluster_dirs)}')
             print(f'Remaining cluster indices : {[get_index(cluster) for cluster in cluster_dirs]}')
         else:
-            if addition or len(tfrecords) != 0:
+            bad_cluster_dirs = []
+
+            print(f'All cluster indices : {[get_index(cluster) for cluster in cluster_dirs]}')
+
+            if addition and len(tfrecords) != 0:
                 # Remove clusters which are already processed, lie on a periodic boundary
                 # or will take too long to process
-                print(f'All cluster indices : {[get_index(cluster) for cluster in cluster_dirs]}')
+                # good_cluster_dirs = [53, 78]  # snap_128
+                # good_cluster_dirs = [139, 289, 1]  # snap_132
+                # good_cluster_dirs = [0, 7, 28, 59, 2, 53, 46, 152]  # snap_132
+                good_cluster_dirs = [[], [1], [0, 7, 28, 59, 2, 53, 46, 152]]
 
-                bad_cluster_dirs = []
-                good_cluster_dirs = [0, 7, 45, 97, 41, 234, 43, 10, 2, 53, 94, 177, 292, 46, 152, 108, 266]
 
                 for cluster_dir in cluster_dirs:
-                    if get_index(cluster_dir) not in good_cluster_dirs:
+                    if get_index(cluster_dir) not in good_cluster_dirs[snap_idx]:
+                        bad_cluster_dirs.append(cluster_dir)
+            else:
+                for cluster_dir in cluster_dirs:
+                    if get_index(cluster_dir) in defect_clusters[os.path.basename(snap_dir)]['split'] + \
+                            defect_clusters[os.path.basename(snap_dir)]['photon_max']:
                         bad_cluster_dirs.append(cluster_dir)
 
-                for bad_cluster_dir in bad_cluster_dirs:
-                    cluster_dirs.remove(bad_cluster_dir)
+            for bad_cluster_dir in bad_cluster_dirs:
+                cluster_dirs.remove(bad_cluster_dir)
 
-                print(f'Already processed clusters: {len(bad_cluster_dirs)}')
-                print(f'Clusters remaining : {len(cluster_dirs)}')
-                print(f'Remaining cluster indices : {[get_index(cluster) for cluster in cluster_dirs]}')
+            print(f'Already processed clusters: {len(bad_cluster_dirs)}')
+            print(f'Clusters remaining : {len(cluster_dirs)}')
+            print(f'Remaining cluster indices : {[get_index(cluster) for cluster in cluster_dirs]}')
 
             if _multiprocessing:
                 params = [(cluster,

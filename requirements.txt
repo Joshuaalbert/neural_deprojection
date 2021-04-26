@@ -17,3 +17,6 @@ graph_nets
 dm_sonnet
 tqdm
 yt
+astropy
+soxs
+pyxsim
