@@ -1,4 +1,4 @@
-# TEST TEST
+# TEST TEST TEST
 
 import yt
 from random import gauss
@@ -148,8 +148,18 @@ def generate_example_random_choice(positions, properties, number_of_virtual_node
 
     mean_sum_enc = [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1]
 
-    for p, enc in zip(np.arange(len(properties[0])), mean_sum_enc):
-        virtual_properties[:, p] = mean_sum[enc](properties[:, p])
+    property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
+                           np.log10, np.log10, np.log10, np.log10]
+
+    for p, enc, transform in zip(np.arange(len(properties[0])), mean_sum_enc, property_transforms):
+        # print('\nproperty name: ', p)
+        # print('in unit:')
+        # print('    max: ', np.max(mean_sum[enc](properties[:, p])))
+        # print('    min: ', np.min(mean_sum[enc](properties[:, p])))
+        # print('transform: ')
+        # print('    max: ', np.max(transform(mean_sum[enc](properties[:, p]))))
+        # print('    min: ', np.min(transform(mean_sum[enc](properties[:, p]))))
+        virtual_properties[:, p] = transform(mean_sum[enc](properties[:, p]))
         virtual_positions = virtual_properties[:, :3]
 
     graph = nx.OrderedMultiDiGraph()
@@ -268,8 +278,8 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
     t_0 = default_timer()
 
     property_values = []
-    property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
-                           np.log10, np.log10, np.log10, np.log10]
+    # property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
+    #                        np.log10, np.log10, np.log10, np.log10]
 
     property_names = ['x', 'y', 'z', 'velocity_x', 'velocity_y', 'velocity_z', 'gravitational_potential',
                       'density', 'temperature', 'cell_mass', 'cell_volume']
@@ -277,13 +287,15 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
     unit_names = ['pc', 'pc', 'pc', '10*km/s', '10*km/s', '10*km/s', 'J/mg', 'Msun/pc**3', 'K', 'Msun', 'pc**3']
 
     _values = []
-    for name, transform, unit in zip(property_names, property_transforms, unit_names):
-        print('\nproperty name: ', name)
-        print('in unit', ad[name].in_units(unit).to_value())
-        print('transform', transform(ad[name].in_units(unit).to_value()))
-        _values.append(transform(ad[name].in_units(unit).to_value()))
-
-    return 1
+    for name, unit in zip(property_names, unit_names):
+        # print('\nproperty name: ', name)
+        # print('in unit:')
+        # print('    max: ', np.max(ad[name].in_units(unit).to_value()))
+        # print('    min: ', np.min(ad[name].in_units(unit).to_value()))
+        # print('transform: ')
+        # print('    max: ', np.max(transform(ad[name].in_units(unit).to_value())))
+        # print('    min: ', np.min(transform(ad[name].in_units(unit).to_value())))
+        _values.append(ad[name].in_units(unit).to_value())
 
     # property_values = np.array(property_values)  # n f
     property_values = np.array(_values).T  # n f
@@ -299,7 +311,7 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
 
     projections = 0
     while projections < num_of_projections:
-        # print(projections)
+        print(projections)
 
         V = np.eye(3)
         R = _random_special_ortho_matrix(3)
@@ -341,69 +353,67 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
 
 
 def main():
-    # claude_name_list = ['M4r5b',
-    #                     'M4r5b-3',
-    #                     'M4r5b-5',
-    #                     'M4r5s-2',
-    #                     'M4r5s-4',
-    #                     'M4r6b',
-    #                     'M4r6b-3',
-    #                     'M4r6s',
-    #                     'M4r5b-2',
-    #                     'M4r5b-4',
-    #                     'M4r5s',
-    #                     'M4r5s-3',
-    #                     'M4r5s-5',
-    #                     'M4r6b-2',
-    #                     'M4r6b-4']
+    claude_name_list = ['M4r5b',
+                        'M4r5b-3',
+                        'M4r5b-5',
+                        'M4r5s-2',
+                        'M4r5s-4',
+                        'M4r6b',
+                        'M4r6b-3',
+                        'M4r6s',
+                        'M4r5b-2',
+                        'M4r5b-4',
+                        'M4r5s',
+                        'M4r5s-3',
+                        'M4r5s-5',
+                        'M4r6b-2',
+                        'M4r6b-4']
+
+    for n in claude_name_list:
+        folder_path = '/disks/extern_collab_data/cournoyer/{}/'.format(n)
+        save_dir = '/data2/hendrix/ClaudeData/{}/'.format(n)
+
+    # sean_name_list = ['M3', 'M3f', 'M3f2', 'M4']
     #
-    # for n in claude_name_list:
-    #     folder_path = '/disks/extern_collab_data/cournoyer/{}/'.format(n)
-    #     save_dir = '/data2/hendrix/ClaudeData/{}/'.format(n)
+    # for i in range(4):
+    #     if i == 1:
+    #         continue
+    #     folder_path = f'/disks/extern_collab_data/lewis/run{i+1}/'  # run1=M3, run2=M3f, run3=M3f2, run4=M4
+    #     save_dir = f'/net/para33/data2/hendrix/SeanData/{sean_name_list[i]}/'
 
-    folder_path = '/disks/extern_collab_data/lewis/run1/'       # run1=M3, run2=M3f, run3=M3f2, run4=M4
-    save_dir = '/net/para33/data2/hendrix/SeanData/M3/'
+        # snapshot_list = []
+        # for snap in all_snapshots:
+        #     file = os.path.join(folder_path,'turbsph_hdf5_plt_cnt_{:04d}'.format(snap))
+        #     snapshot_list.append(file)
+        #
+        # if i == 1:
+        #     snapshot_list = np.array(snapshot_list)
+        #     snapshot_list = snapshot_list[[int(s[-4:]) % 3 == 0 for s in snapshot_list]]       # only keep every third snapshot
 
-    # snapshot_list = []
-    # for snap in all_snapshots:
-    #     file = os.path.join(folder_path,'turbsph_hdf5_plt_cnt_{:04d}'.format(snap))
-    #     snapshot_list.append(file)
 
-    snapshot_list = glob.glob(os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_*'))
-    print('len(snapshot_list): ', len(snapshot_list))
+        snapshot_list = glob.glob(os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_*'))
+        print('len(snapshot_list): ', len(snapshot_list))
 
-    # snapshot_list = np.array(snapshot_list)
-    # snapshot_list = snapshot_list[[int(s[-4:]) % 3 == 0 for s in snapshot_list]]       # only keep every third snapshot
+        print('len(snapshot_list): ', len(snapshot_list))
+        print(snapshot_list)
 
-    print('len(snapshot_list): ', len(snapshot_list))
-    print(snapshot_list)
+        number_of_projections = 26
+        number_of_virtual_nodes = 50000
+        number_of_neighbours = 6
+        plotting = False
 
-    number_of_projections = 26
-    number_of_virtual_nodes = 50000
-    number_of_neighbours = 6
-    plotting = False
+        params = [(snapsh,
+                   save_dir,
+                   number_of_projections,
+                   number_of_virtual_nodes,
+                   number_of_neighbours,
+                   plotting) for snapsh in snapshot_list]
 
-    params = [(snapsh,
-               save_dir,
-               number_of_projections,
-               number_of_virtual_nodes,
-               number_of_neighbours,
-               plotting) for snapsh in snapshot_list]
-
-    # file = os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_{:04d}'.format(265))
-    #
-    # snapshot_to_tfrec(file,
-    #                   save_dir,
-    #                   number_of_projections,
-    #                   number_of_virtual_nodes,
-    #                   number_of_neighbours,
-    #                   plotting
-    #                   )
-
-    with get_context("spawn").Pool(processes=15) as pool:
-        # pool = Pool(15)
-        pool.starmap(snapshot_to_tfrec, params)
-        pool.close()
+        with get_context("spawn").Pool(processes=30) as pool:
+        # with get_context("spawn").Pool(processes=1) as pool:
+            # pool = Pool(15)
+            pool.starmap(snapshot_to_tfrec, params)
+            pool.close()
 
     # for param in params:
     #     file, save_dir, number_of_projections, number_of_virtual_nodes, number_of_neighbours, plotting = param
