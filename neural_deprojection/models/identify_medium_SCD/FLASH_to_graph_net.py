@@ -371,7 +371,7 @@ def main():
 
     for n in claude_name_list:
         folder_path = '/disks/extern_collab_data/cournoyer/{}/'.format(n)
-        save_dir = '/data2/hendrix/ClaudeData/{}/'.format(n)
+        save_dir = '/net/para33/data2/hendrix/ClaudeData/{}/'.format(n)
 
     # sean_name_list = ['M3', 'M3f', 'M3f2', 'M4']
     #
@@ -409,7 +409,7 @@ def main():
                    number_of_neighbours,
                    plotting) for snapsh in snapshot_list]
 
-        with get_context("spawn").Pool(processes=30) as pool:
+        with get_context("spawn").Pool(processes=16) as pool:
         # with get_context("spawn").Pool(processes=1) as pool:
             # pool = Pool(15)
             pool.starmap(snapshot_to_tfrec, params)
