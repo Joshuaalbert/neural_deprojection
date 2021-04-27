@@ -8,6 +8,7 @@ from neural_deprojection.models.graph_vae_GCD.graph_VAE_utils import Model
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, build_log_dir, \
     build_checkpoint_dir, batch_dataset_set_graph_tuples
 import glob, os
+import numpy as np
 import tensorflow as tf
 import json
 import sonnet as snt
@@ -82,6 +83,32 @@ def train_ae_3d(data_dir, config):
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
 
+    checkpoint = tf.train.Checkpoint(module=train_one_epoch)
+    manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3,
+                                         checkpoint_name=train_one_epoch.model.__class__.__name__)
+
+    if manager.latest_checkpoint is not None:
+        checkpoint.restore(manager.latest_checkpoint)
+        print(f"Restored from {manager.latest_checkpoint}")
+    output_dir = './output_evaluations'
+    os.makedirs(output_dir, exist_ok=True)
+
+    property_names = ['vx','vy','vz','rho','U','mass','smoothing_length']
+    for i, test_graph in enumerate(iter(test_dataset)):
+        input_properties = test_graph.nodes[:,3:].numpy()
+        reconstructed_graph = train_one_epoch.model(test_graph)
+        decoded_properties = reconstructed_graph.nodes.numpy()
+        positions = test_graph.nodes[:,:3].numpy()
+        save_dict = dict(positions=positions)
+        for j in range(len(property_names)):
+            save_dict[f"prop_{property_names[j]}_input"] = input_properties[:, j]
+            save_dict[f"prop_{property_names[j]}_decoded"] = decoded_properties[:, j]
+        np.savez(os.path.join(output_dir,'test_example_{:04d}.npz'.format(i)), **save_dict)
+        if i == 20:
+            break
+
+
+    exit(0)
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
