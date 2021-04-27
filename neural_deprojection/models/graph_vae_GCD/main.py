@@ -31,7 +31,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
         def loss(model_outputs, batch):
             graph = batch
             decoded_graph = model_outputs
-            return tf.reduce_mean((graph.nodes[:, 3:] - decoded_graph.nodes) ** 2)
+            return tf.reduce_mean((graph.nodes[:, 3:] - decoded_graph.nodes) ** 2 * tf.constant([0,0,0,1,0,0,0],dtype=graph.nodes.dtype))
         return loss
 
     loss = build_loss(**loss_parameters)
