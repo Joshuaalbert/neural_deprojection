@@ -11,6 +11,8 @@ from graph_nets import blocks
 import sonnet as snt
 from graph_nets.modules import SelfAttention
 from sonnet.src import utils, once
+from tensorflow_probability.python.math.psd_kernels.internal import util
+from graph_nets.utils_tf import fully_connect_graph_static
 
 
 class MultiHeadLinear(AbstractModule):
@@ -323,7 +325,7 @@ class DecoderNetwork(AbstractModule):
                                            use_globals=True)
 
     def _build(self, input_graph, positions):
-        output = self.node_block(input_graph)
+        output = self.node_block(input_graph.replace(n_node=tf.constant([positions.shape[0]], dtype=tf.int32)))
         output = output._replace(edges=tf.constant(1.))
         if positions is not None:
             prepend_nodes = tf.concat([positions, output.nodes[:, 3:]], axis=1)
@@ -427,16 +429,26 @@ class Model(AbstractModule):
             tf.summary.scalar(f"properties{i}_std_before", tf.math.reduce_std(graph.nodes[:,i]), step=self.step)
 
         encoded_graph = self.epd_encoder(graph, self._core_steps, positions)
-        encoded_graph = encoded_graph._replace(nodes=None, edges=None)   # only pass through globals for sure
-        decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, positions)
+        encoded_graph = encoded_graph._replace(nodes=None, edges=None, receivers=None, senders=None)   # only pass through globals for sure
 
+        number_of_nodes = 1000
+        decode_positions = tf.random.uniform(shape=(number_of_nodes, 3),
+                                             minval=tf.reduce_min(positions, axis=0),
+                                             maxval=tf.reduce_max(positions, axis=0))
+
+        distance_matrix = util.pairwise_square_distance_matrix(positions, decode_positions, 1)  # [10000, 1000]
+        encoded_graph = encoded_graph._replace(nodes=decode_positions)
+        nn_index = tf.argmin(distance_matrix, axis=0)  # [1000]
+        encoded_graph = fully_connect_graph_static(encoded_graph)  # TODO: only works if batch_size=1, might need to use dynamic
+        encoded_graph = encoded_graph._replace(nodes=None)
+        decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, decode_positions)
         for i in range(7):
-            image_after, _ = histogramdd(positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
+            image_after, _ = histogramdd(decode_positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
             image_after -= tf.reduce_min(image_after)
             image_after /= tf.reduce_max(image_after)
             tf.summary.image(f"{i+3}_xy_image_after", image_after[None, :, :, None], step=self.step)
             tf.summary.scalar(f"properties{i+3}_std_after", tf.math.reduce_std(decoded_graph.nodes[:,i]), step=self.step)
 
-        return decoded_graph
+        return decoded_graph, nn_index
 
 
