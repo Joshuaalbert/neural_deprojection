@@ -1,5 +1,5 @@
 numpy<1.19.0
-tensorflow==2.4
+tensorflow
 tensorflow_datasets
 tensorflow_probability
 matplotlib==3.2
