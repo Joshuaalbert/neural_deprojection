@@ -11,6 +11,23 @@ import contextlib
 import os
 from collections import namedtuple
 
+from neural_deprojection.tests import test_efficient_nn_index
+
+
+def efficient_nn_index(query_positions, positions):
+    """
+    For each point in query_positions, find the index of the closest point in positions.
+
+    :param query_positions: [N, D]
+    :param positions: [M, D]
+    :return: int64, indices of shape [N]
+    """
+    def _nearest_neighbour_index(state, point):
+        return tf.argmin(tf.reduce_sum(tf.math.square(point - positions),axis=1))
+
+    results = tf.scan(_nearest_neighbour_index,query_positions,initializer=tf.zeros((),dtype=tf.int64))
+    return results
+
 
 @six.add_metaclass(abc.ABCMeta)
 class AbstractModule(snt.Module):
@@ -549,3 +566,6 @@ def histogramdd(sample, bins=10, weights=None, density=None):
         # hist /= tf.cast(s, hist.dtype)
 
     return hist, bin_edges_by_dim
+
+if __name__ == '__main__':
+    test_efficient_nn_index()

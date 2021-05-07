@@ -5,7 +5,8 @@ from graph_nets.graphs import GraphsTuple
 from neural_deprojection.data.geometric_graph import find_screen_length, generate_example
 from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, \
     save_graph_examples, \
-    decode_graph_examples, save_graph_and_image_examples, decode_graph_and_image_examples, histogramdd
+    decode_graph_examples, save_graph_and_image_examples, decode_graph_and_image_examples, histogramdd, \
+    efficient_nn_index
 
 
 class TestClass(object):
@@ -119,3 +120,10 @@ def test_histogramdd():
     # plt.show()
     hist_np, _, _ = np.histogram2d(sample[:,0], sample[:,1], bins=30)
     assert np.all(hist.numpy() == hist_np)
+
+
+def test_efficient_nn_index():
+    query_positions = tf.range(10)[:,None]
+    positions = tf.range(20)[::-1,None]
+
+    assert (efficient_nn_index(query_positions, positions).numpy() == tf.range(10,20)[::-1].numpy()).all()
