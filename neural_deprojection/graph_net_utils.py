@@ -11,7 +11,7 @@ import contextlib
 import os
 from collections import namedtuple
 
-from neural_deprojection.tests import test_efficient_nn_index
+# from neural_deprojection.tests import test_efficient_nn_index
 
 
 def efficient_nn_index(query_positions, positions):
@@ -571,5 +571,5 @@ def histogramdd(sample, bins=10, weights=None, density=None):
 
     return hist, bin_edges_by_dim
 
-if __name__ == '__main__':
-    test_efficient_nn_index()
+# if __name__ == '__main__':
+#     test_efficient_nn_index()

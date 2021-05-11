@@ -3,7 +3,7 @@ import sys
 sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
 
 from neural_deprojection.graph_net_utils import AbstractModule, \
-    histogramdd
+    histogramdd, efficient_nn_index
 import tensorflow as tf
 # import tensorflow_addons as tfa
 
@@ -11,6 +11,12 @@ from graph_nets import blocks
 import sonnet as snt
 from graph_nets.modules import SelfAttention
 from sonnet.src import utils, once
+from tensorflow_probability.python.math.psd_kernels.internal import util
+from graph_nets.utils_tf import fully_connect_graph_static
+from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
+import numpy as np
+import networkx as nx
+from scipy.spatial.ckdtree import cKDTree
 
 
 class MultiHeadLinear(AbstractModule):
@@ -323,12 +329,40 @@ class DecoderNetwork(AbstractModule):
                                            use_globals=True)
 
     def _build(self, input_graph, positions):
-        output = self.node_block(input_graph)
+        output = self.node_block(input_graph.replace(n_node=tf.constant([positions.shape[0]], dtype=tf.int32)))
         output = output._replace(edges=tf.constant(1.))
         if positions is not None:
             prepend_nodes = tf.concat([positions, output.nodes[:, 3:]], axis=1)
             output = output.replace(nodes=prepend_nodes)
         return output
+
+
+def nearest_neighbours_connected_graph(pos, virtual_positions, k):
+    graph = nx.OrderedMultiDiGraph()
+    kdtree = cKDTree(virtual_positions)
+    dist, idx = kdtree.query(virtual_positions, k=k + 1)
+    receivers = idx[:, 1:]  # N,k
+    senders = np.arange(virtual_positions.shape[0])  # N
+    senders = np.tile(senders[:, None], [1, k])  # N,k
+
+    receivers = receivers.flatten()
+    senders = senders.flatten()
+
+    n_nodes = virtual_positions.shape[0]
+
+    for node, position in zip(np.arange(n_nodes), virtual_positions):
+        graph.add_node(node, features=position)
+
+    # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
+    for u, v in zip(senders, receivers):
+        graph.add_edge(u, v, features=[1,0])
+        graph.add_edge(v, u, features=[1,0])
+
+    graph.graph["features"] = np.array([0.])
+
+    return networkxs_to_graphs_tuple([graph],
+                                     node_shape_hint=[virtual_positions.shape[1]],
+                                     edge_shape_hint=[2])
 
 
 class Model(AbstractModule):
@@ -365,31 +399,39 @@ class Model(AbstractModule):
     """
 
     def __init__(self,
+                 activation='leaky_relu',
                  mlp_size=16,
                  cluster_encoded_size=11,
                  num_heads=10,
                  core_steps=10, name=None):
         super(Model, self).__init__(name=name)
 
-        self.epd_encoder = EncodeProcessDecode_E(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu),
-                                                                      node_model_fn=lambda: snt.Linear(cluster_encoded_size),
-                                                                      global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu)),
-                                               core=CoreNetwork(num_heads=num_heads,
-                                                                multi_head_output_size=cluster_encoded_size,
-                                                                input_node_size=cluster_encoded_size),
-                                               decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu),
-                                                                      node_model_fn=lambda: snt.Linear(cluster_encoded_size),
-                                                                      global_model_fn=lambda: snt.nets.MLP([32, 32, 64], activate_final=True, activation=tf.nn.leaky_relu)))
+        if activation == 'leaky_relu':
+            self.activation = tf.nn.leaky_relu
+        elif activation == 'relu':
+            self.activation = tf.nn.relu
+        else:
+            self.activation = tf.nn.relu
 
-        self.epd_decoder = EncodeProcessDecode_D(encoder=DecoderNetwork(node_model_fn=lambda: snt.nets.MLP([32, 32, cluster_encoded_size], activate_final=True, activation=tf.nn.leaky_relu)),
+        self.epd_encoder = EncodeProcessDecode_E(encoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=self.activation),
+                                                                      node_model_fn=lambda: snt.Linear(cluster_encoded_size),
+                                                                      global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=self.activation)),
                                                core=CoreNetwork(num_heads=num_heads,
                                                                 multi_head_output_size=cluster_encoded_size,
                                                                 input_node_size=cluster_encoded_size),
-                                               decoder=snt.Sequential([RelationNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu),
-                                                                                       global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=tf.nn.leaky_relu)),
+                                               decoder=EncoderNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=self.activation),
+                                                                      node_model_fn=lambda: snt.Linear(cluster_encoded_size),
+                                                                      global_model_fn=lambda: snt.nets.MLP([32, 32, 64], activate_final=True, activation=self.activation)))
+
+        self.epd_decoder = EncodeProcessDecode_D(encoder=DecoderNetwork(node_model_fn=lambda: snt.nets.MLP([32, 32, cluster_encoded_size], activate_final=True, activation=self.activation)),
+                                               core=CoreNetwork(num_heads=num_heads,
+                                                                multi_head_output_size=cluster_encoded_size,
+                                                                input_node_size=cluster_encoded_size),
+                                               decoder=snt.Sequential([RelationNetwork(edge_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=self.activation),
+                                                                                       global_model_fn=lambda: snt.nets.MLP([mlp_size], activate_final=True, activation=self.activation)),
                                                                        blocks.NodeBlock(
                                                                            node_model_fn=lambda: snt.nets.MLP(
-                                                                               [cluster_encoded_size-3], activate_final=True, activation=tf.nn.leaky_relu),
+                                                                               [cluster_encoded_size-3], activate_final=True, activation=self.activation),
                                                                            use_received_edges=True,
                                                                            use_sent_edges=True,
                                                                            use_nodes=True,
@@ -427,16 +469,31 @@ class Model(AbstractModule):
             tf.summary.scalar(f"properties{i}_std_before", tf.math.reduce_std(graph.nodes[:,i]), step=self.step)
 
         encoded_graph = self.epd_encoder(graph, self._core_steps, positions)
-        encoded_graph = encoded_graph._replace(nodes=None, edges=None)   # only pass through globals for sure
-        decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, positions)
+        encoded_graph = encoded_graph._replace(nodes=None, edges=None, receivers=None, senders=None)   # only pass through globals for sure
+        # decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, positions)
+
+        number_of_nodes = positions.shape[0]
+        decode_positions = tf.random.uniform(shape=(number_of_nodes, 3),
+                                             minval=tf.reduce_min(positions, axis=0),
+                                             maxval=tf.reduce_max(positions, axis=0))
+
+        # encoded_graph = encoded_graph._replace(nodes=decode_positions)
+
+        random_pos_graph = nearest_neighbours_connected_graph(positions, decode_positions, 6)
+        random_pos_graph = random_pos_graph._replace(nodes=None, edges=None, globals=encoded_graph.globals.numpy())
+        # encoded_graph = fully_connect_graph_static(encoded_graph)  # TODO: only works if batch_size=1, might need to use dynamic
+
+        decoded_graph = self.epd_decoder(random_pos_graph, self._core_steps, decode_positions)
+
+        nn_index = efficient_nn_index(decode_positions, positions)
 
         for i in range(8):
-            image_after, _ = histogramdd(positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
+            image_after, _ = histogramdd(decode_positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
             image_after -= tf.reduce_min(image_after)
             image_after /= tf.reduce_max(image_after)
             tf.summary.image(f"{i+3}_xy_image_after", image_after[None, :, :, None], step=self.step)
             tf.summary.scalar(f"properties{i+3}_std_after", tf.math.reduce_std(decoded_graph.nodes[:,i]), step=self.step)
 
-        return decoded_graph
+        return decoded_graph, nn_index
 
 
