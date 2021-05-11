@@ -17,6 +17,8 @@ from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_t
 import numpy as np
 import networkx as nx
 from scipy.spatial.ckdtree import cKDTree
+import time
+from graph_nets.graphs import GraphsTuple
 
 
 class MultiHeadLinear(AbstractModule):
@@ -337,8 +339,7 @@ class DecoderNetwork(AbstractModule):
         return output
 
 
-def nearest_neighbours_connected_graph(pos, virtual_positions, k):
-    graph = nx.OrderedMultiDiGraph()
+def nearest_neighbours_connected_graph(virtual_positions, k):
     kdtree = cKDTree(virtual_positions)
     dist, idx = kdtree.query(virtual_positions, k=k + 1)
     receivers = idx[:, 1:]  # N,k
@@ -348,21 +349,24 @@ def nearest_neighbours_connected_graph(pos, virtual_positions, k):
     receivers = receivers.flatten()
     senders = senders.flatten()
 
-    n_nodes = virtual_positions.shape[0]
+    graph_nodes = tf.convert_to_tensor(virtual_positions, tf.float32)
+    graph_nodes.set_shape([None, 3])
+    receivers = tf.convert_to_tensor(receivers, tf.int32)
+    receivers.set_shape([None])
+    senders = tf.convert_to_tensor(senders, tf.int32)
+    senders.set_shape([None])
+    n_node = tf.shape(graph_nodes)[0:1]
+    n_edge = tf.shape(senders)[0:1]
 
-    for node, position in zip(np.arange(n_nodes), virtual_positions):
-        graph.add_node(node, features=position)
+    graph_data_dict = dict(nodes=graph_nodes,
+                           edges=tf.zeros((n_edge[0], 1)),
+                           globals=tf.zeros([1]),
+                           receivers=receivers,
+                           senders=senders,
+                           n_node=n_node,
+                           n_edge=n_edge)
 
-    # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
-    for u, v in zip(senders, receivers):
-        graph.add_edge(u, v, features=[1,0])
-        graph.add_edge(v, u, features=[1,0])
-
-    graph.graph["features"] = np.array([0.])
-
-    return networkxs_to_graphs_tuple([graph],
-                                     node_shape_hint=[virtual_positions.shape[1]],
-                                     edge_shape_hint=[2])
+    return GraphsTuple(**graph_data_dict)
 
 
 class Model(AbstractModule):
@@ -468,24 +472,46 @@ class Model(AbstractModule):
 
             tf.summary.scalar(f"properties{i}_std_before", tf.math.reduce_std(graph.nodes[:,i]), step=self.step)
 
+        t0 = time.time()
         encoded_graph = self.epd_encoder(graph, self._core_steps, positions)
         encoded_graph = encoded_graph._replace(nodes=None, edges=None, receivers=None, senders=None)   # only pass through globals for sure
         # decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, positions)
+        t1 = time.time()
+        print(f'encoder time {t1-t0} s')
 
         number_of_nodes = positions.shape[0]
         decode_positions = tf.random.uniform(shape=(number_of_nodes, 3),
                                              minval=tf.reduce_min(positions, axis=0),
                                              maxval=tf.reduce_max(positions, axis=0))
 
+        t2 = time.time()
+        print(f'decode pos time {t2 - t1} s')
+
         # encoded_graph = encoded_graph._replace(nodes=decode_positions)
 
-        random_pos_graph = nearest_neighbours_connected_graph(positions, decode_positions, 6)
+        random_pos_graph = nearest_neighbours_connected_graph(decode_positions, 6)
+        t3 = time.time()
+        print(f'random pos time {t3 - t2} s')
+
         random_pos_graph = random_pos_graph._replace(nodes=None, edges=None, globals=encoded_graph.globals.numpy())
+
+        t4 = time.time()
+        print(f'replace pos time {t4 - t3} s')
+
         # encoded_graph = fully_connect_graph_static(encoded_graph)  # TODO: only works if batch_size=1, might need to use dynamic
+
+        t4 = time.time()
+        print(f'random pos time {t4 - t3} s')
 
         decoded_graph = self.epd_decoder(random_pos_graph, self._core_steps, decode_positions)
 
+        t5 = time.time()
+        print(f'decoder time {t5 - t4} s')
+
         nn_index = efficient_nn_index(decode_positions, positions)
+
+        t6 = time.time()
+        print(f'nn time {t6 - t5} s')
 
         for i in range(8):
             image_after, _ = histogramdd(decode_positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
