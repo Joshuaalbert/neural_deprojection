@@ -14,6 +14,7 @@ import glob, os
 import tensorflow as tf
 import json
 import sonnet as snt
+import numpy as np
 
 MODEL_MAP = {'model1': Model}
 
@@ -33,8 +34,8 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
     def build_loss(**loss_parameters):
         def loss(model_outputs, batch):
             graph = batch
-            decoded_graph = model_outputs
-            return tf.reduce_mean((graph.nodes[:, 3:] - decoded_graph.nodes) ** 2 * tf.constant([1,1,1,0,1,1,0,0], dtype=graph.nodes.dtype))
+            decoded_graph, nn_index = model_outputs
+            return tf.reduce_mean((tf.gather(graph.nodes[:, 3:], nn_index) - decoded_graph.nodes) ** 2 * tf.constant([0,0,0,0,1,0,0,0], dtype=graph.nodes.dtype))
         return loss
 
     loss = build_loss(**loss_parameters)
@@ -73,7 +74,7 @@ def build_dataset(data_dir):
     # dataset = tf.data.experimental.sample_from_datasets([shuffled_dataset, nonshuffeled_dataset])
     dataset = dataset.map(lambda graph_data_dict: GraphsTuple(**graph_data_dict))
 
-    dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=1)
+    # dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=1)
 
     return dataset
 
@@ -98,8 +99,8 @@ def train_ae_3d(data_dir, config):
 
     train_one_epoch = build_training(**config)
 
-    log_dir = build_log_dir('test_log_dir', config)
-    checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
+    log_dir = build_log_dir('new_test_log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('new_test_checkpointing', config)
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
@@ -116,11 +117,13 @@ def train_ae_3d(data_dir, config):
 
 def main(data_dir):
     config = dict(model_type='model1',
-                  model_parameters=dict(mlp_size=16,
+                  model_parameters=dict(activation='leaky_relu',
+                      mlp_size=16,
                       cluster_encoded_size=11,
                       num_heads=1,
-                      core_steps=15),
-                  optimizer_parameters=dict(learning_rate=5e-6,
+                      core_steps=15,
+                      name='with_random_positions'),
+                  optimizer_parameters=dict(learning_rate=1e-5,
                                             opt_type='adam'),
                   loss_parameters=dict())
     train_ae_3d(data_dir, config)

@@ -13,6 +13,10 @@ from graph_nets.modules import SelfAttention
 from sonnet.src import utils, once
 from tensorflow_probability.python.math.psd_kernels.internal import util
 from graph_nets.utils_tf import fully_connect_graph_static
+from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
+import numpy as np
+import networkx as nx
+from scipy.spatial.ckdtree import cKDTree
 
 
 class MultiHeadLinear(AbstractModule):
@@ -333,6 +337,34 @@ class DecoderNetwork(AbstractModule):
         return output
 
 
+def nearest_neighbours_connected_graph(pos, virtual_positions, k):
+    graph = nx.OrderedMultiDiGraph()
+    kdtree = cKDTree(virtual_positions)
+    dist, idx = kdtree.query(virtual_positions, k=k + 1)
+    receivers = idx[:, 1:]  # N,k
+    senders = np.arange(virtual_positions.shape[0])  # N
+    senders = np.tile(senders[:, None], [1, k])  # N,k
+
+    receivers = receivers.flatten()
+    senders = senders.flatten()
+
+    n_nodes = virtual_positions.shape[0]
+
+    for node, position in zip(np.arange(n_nodes), virtual_positions):
+        graph.add_node(node, features=position)
+
+    # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
+    for u, v in zip(senders, receivers):
+        graph.add_edge(u, v, features=[1,0])
+        graph.add_edge(v, u, features=[1,0])
+
+    graph.graph["features"] = np.array([0.])
+
+    return networkxs_to_graphs_tuple([graph],
+                                     node_shape_hint=[virtual_positions.shape[1]],
+                                     edge_shape_hint=[2])
+
+
 class Model(AbstractModule):
     """Model inherits from AbstractModule, which contains a __call__ function which executes a _build function
     that is to be specified in the child class. So for example:
@@ -440,20 +472,28 @@ class Model(AbstractModule):
         encoded_graph = encoded_graph._replace(nodes=None, edges=None, receivers=None, senders=None)   # only pass through globals for sure
         # decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, positions)
 
-        number_of_nodes = positions.shape[0]
+        number_of_nodes = 1000 #int(positions.shape[0] / 10)
         decode_positions = tf.random.uniform(shape=(number_of_nodes, 3),
                                              minval=tf.reduce_min(positions, axis=0),
                                              maxval=tf.reduce_max(positions, axis=0))
 
-        encoded_graph = encoded_graph._replace(nodes=decode_positions)
-        encoded_graph = fully_connect_graph_static(encoded_graph)  # TODO: only works if batch_size=1, might need to use dynamic
-        encoded_graph = encoded_graph._replace(nodes=None)
-        decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, decode_positions)
+        # encoded_graph = encoded_graph._replace(nodes=decode_positions)
+
+        random_pos_graph = nearest_neighbours_connected_graph(positions, decode_positions, 6)
+        print(random_pos_graph)
+        print('ENCODED G', encoded_graph.globals)
+        random_pos_graph._replace(globals=encoded_graph.globals.numpy())    # this is not working...
+        print(random_pos_graph)
+        # encoded_graph = fully_connect_graph_static(encoded_graph)  # TODO: only works if batch_size=1, might need to use dynamic
+
+        random_pos_graph = encoded_graph._replace(nodes=None, edges=None)
+
+        decoded_graph = self.epd_decoder(random_pos_graph, self._core_steps, decode_positions)
 
         nn_index = efficient_nn_index(decode_positions, positions)
 
         for i in range(8):
-            image_after, _ = histogramdd(positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
+            image_after, _ = histogramdd(decode_positions[:, :2], bins=50, weights=decoded_graph.nodes[:, i])
             image_after -= tf.reduce_min(image_after)
             image_after /= tf.reduce_max(image_after)
             tf.summary.image(f"{i+3}_xy_image_after", image_after[None, :, :, None], step=self.step)
