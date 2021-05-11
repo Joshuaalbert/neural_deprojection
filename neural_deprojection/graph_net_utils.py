@@ -192,7 +192,7 @@ def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1,
 
 
 def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
-                          early_stop_patience=None, checkpoint_dir=None, log_dir=None, debug=False):
+                          early_stop_patience=None, checkpoint_dir=None, log_dir=None, save_model_dir=None, debug=False):
     """
     Does simple training.
 
@@ -210,6 +210,8 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
     """
     if checkpoint_dir is not None:
         os.makedirs(checkpoint_dir, exist_ok=True)
+    if save_model_dir is not None:
+        os.makedirs(save_model_dir, exist_ok=True)
 
     training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
     if test_dataset is not None:
@@ -244,6 +246,8 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
     for step_num in fancy_progress_bar:
         with train_summary_writer.as_default():
             loss = step(iter(training_dataset))
+            if save_model_dir is not None:
+                tf.saved_model.save(train_one_epoch.model, save_model_dir)
         tqdm.tqdm.write(
             '\nEpoch = {}/{} (loss = {:.02f})'.format(
                 train_one_epoch.epoch.numpy(), num_epochs, loss))
