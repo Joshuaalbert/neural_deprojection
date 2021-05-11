@@ -472,7 +472,7 @@ class Model(AbstractModule):
         encoded_graph = encoded_graph._replace(nodes=None, edges=None, receivers=None, senders=None)   # only pass through globals for sure
         # decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, positions)
 
-        number_of_nodes = 1000 #int(positions.shape[0] / 10)
+        number_of_nodes = positions.shape[0]
         decode_positions = tf.random.uniform(shape=(number_of_nodes, 3),
                                              minval=tf.reduce_min(positions, axis=0),
                                              maxval=tf.reduce_max(positions, axis=0))
@@ -480,13 +480,8 @@ class Model(AbstractModule):
         # encoded_graph = encoded_graph._replace(nodes=decode_positions)
 
         random_pos_graph = nearest_neighbours_connected_graph(positions, decode_positions, 6)
-        print(random_pos_graph)
-        print('ENCODED G', encoded_graph.globals)
-        random_pos_graph._replace(globals=encoded_graph.globals.numpy())    # this is not working...
-        print(random_pos_graph)
+        random_pos_graph = random_pos_graph._replace(nodes=None, edges=None, globals=encoded_graph.globals.numpy())
         # encoded_graph = fully_connect_graph_static(encoded_graph)  # TODO: only works if batch_size=1, might need to use dynamic
-
-        random_pos_graph = encoded_graph._replace(nodes=None, edges=None)
 
         decoded_graph = self.epd_decoder(random_pos_graph, self._core_steps, decode_positions)
 
