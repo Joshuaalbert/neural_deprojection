@@ -1,4 +1,5 @@
 # TEST TEST TEST
+from time import sleep
 
 import yt
 from random import gauss
@@ -11,7 +12,7 @@ from itertools import product
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
 import numpy as np
-import networkx as nx
+# import networkx as nx
 from networkx.drawing import draw
 from tqdm import tqdm
 from scipy.optimize import bisect
@@ -152,19 +153,13 @@ def generate_example_random_choice(positions, properties, number_of_virtual_node
                            np.log10, np.log10, np.log10, np.log10]
 
     for p, enc, transform in zip(np.arange(len(properties[0])), mean_sum_enc, property_transforms):
-        # print('\nproperty name: ', p)
-        # print('in unit:')
-        # print('    max: ', np.max(mean_sum[enc](properties[:, p])))
-        # print('    min: ', np.min(mean_sum[enc](properties[:, p])))
-        # print('transform: ')
-        # print('    max: ', np.max(transform(mean_sum[enc](properties[:, p]))))
-        # print('    min: ', np.min(transform(mean_sum[enc](properties[:, p]))))
         virtual_properties[:, p] = transform(mean_sum[enc](properties[:, p]))
         virtual_positions = virtual_properties[:, :3]
 
-    graph = nx.OrderedMultiDiGraph()
+    # graph = nx.OrderedMultiDiGraph()
     kdtree = cKDTree(virtual_positions)
     dist, idx = kdtree.query(virtual_positions, k=k + 1)
+
     receivers = idx[:, 1:]  # N,k
     senders = np.arange(virtual_positions.shape[0])  # N
     senders = np.tile(senders[:, None], [1, k])  # N,k
@@ -172,36 +167,66 @@ def generate_example_random_choice(positions, properties, number_of_virtual_node
     receivers = receivers.flatten()
     senders = senders.flatten()
 
-    n_nodes = virtual_positions.shape[0]
+    receivers_bi_directional = np.concatenate((receivers, senders))
+    senders_bi_directional = np.concatenate((senders, receivers))
 
-    pos = dict()  # for plotting node positions.
-    edgelist = []
-    for node, feature, position in zip(np.arange(n_nodes), virtual_properties, virtual_positions):
-        graph.add_node(node, features=feature)
-        pos[node] = position[:2]
+    graph_nodes = tf.convert_to_tensor(virtual_positions, tf.float32)
+    graph_nodes.set_shape([None, 3])
+    receivers = tf.convert_to_tensor(receivers_bi_directional, tf.int32)
+    receivers.set_shape([None])
+    senders = tf.convert_to_tensor(senders_bi_directional, tf.int32)
+    senders.set_shape([None])
+    n_node = tf.shape(graph_nodes)[0:1]
+    n_edge = tf.shape(senders)[0:1]
 
-    # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
-    for u, v in zip(senders, receivers):
-        graph.add_edge(u, v, features=np.array([1., 0.]))
-        graph.add_edge(v, u, features=np.array([1., 0.]))
-        edgelist.append((u, v))
-        edgelist.append((v, u))
+    graph_data_dict = dict(nodes=graph_nodes,
+                           edges=tf.zeros((n_edge[0], 1)),
+                           globals=tf.zeros([1]),
+                           receivers=receivers,
+                           senders=senders,
+                           n_node=n_node,
+                           n_edge=n_edge)
 
-    graph.graph["features"] = np.array([0.])
-    # plotting
+    return GraphsTuple(**graph_data_dict)
 
-    print('len(pos) = {}\nlen(edgelist) = {}'.format(len(pos), len(edgelist)))
-    if plot:
-        fig, ax = plt.subplots(1, 1, figsize=(20, 20))
-        draw(graph, ax=ax, pos=pos, node_color='blue', edge_color='red', node_size=10, width=0.1)
+    # receivers = idx[:, 1:]  # N,k
+    # senders = np.arange(virtual_positions.shape[0])  # N
+    # senders = np.tile(senders[:, None], [1, k])  # N,k
+    #
+    # receivers = receivers.flatten()
+    # senders = senders.flatten()
+    #
+    # n_nodes = virtual_positions.shape[0]
+    #
+    # pos = dict()  # for plotting node positions.
+    # edgelist = []
+    # for node, feature, position in zip(np.arange(n_nodes), virtual_properties, virtual_positions):
+    #     graph.add_node(node, features=feature)
+    #     pos[node] = position[:2]
+    #
+    # # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
+    # for u, v in zip(senders, receivers):
+    #     graph.add_edge(u, v, features=np.array([1., 0.]))
+    #     graph.add_edge(v, u, features=np.array([1., 0.]))
+    #     edgelist.append((u, v))
+    #     edgelist.append((v, u))
+    #
+    # graph.graph["features"] = np.array([0.])
+    # # plotting
+    #
+    # print('len(pos) = {}\nlen(edgelist) = {}'.format(len(pos), len(edgelist)))
+    # if plot:
+    #     fig, ax = plt.subplots(1, 1, figsize=(20, 20))
+    #     draw(graph, ax=ax, pos=pos, node_color='blue', edge_color='red', node_size=10, width=0.1)
+    #
+    #     image_dir = '/data2/hendrix/images/'
+    #     graph_image_idx = len(glob.glob(os.path.join(image_dir, 'graph_image_*')))
+    #     plt.savefig(os.path.join(image_dir, 'graph_image_{}'.format(graph_image_idx)))
+    #
+    # return networkxs_to_graphs_tuple([graph],
+    #                                  node_shape_hint=[virtual_positions.shape[1] + virtual_properties.shape[1]],
+    #                                  edge_shape_hint=[2])
 
-        image_dir = '/data2/hendrix/images/'
-        graph_image_idx = len(glob.glob(os.path.join(image_dir, 'graph_image_*')))
-        plt.savefig(os.path.join(image_dir, 'graph_image_{}'.format(graph_image_idx)))
-
-    return networkxs_to_graphs_tuple([graph],
-                                     node_shape_hint=[virtual_positions.shape[1] + virtual_properties.shape[1]],
-                                     edge_shape_hint=[2])
 
 
 def generate_data(positions, properties, proj_images, extra_info, number_of_virtual_nodes, plotting,
@@ -394,13 +419,15 @@ def main():
         snapshot_list = glob.glob(os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_*'))
         print('len(snapshot_list): ', len(snapshot_list))
 
-        print('len(snapshot_list): ', len(snapshot_list))
-        print(snapshot_list)
+        # print('len(snapshot_list): ', len(snapshot_list))
+        # print(snapshot_list)
 
         number_of_projections = 26
         number_of_virtual_nodes = 50000
         number_of_neighbours = 6
         plotting = False
+
+        num_workers = 16
 
         params = [(snapsh,
                    save_dir,
@@ -420,7 +447,9 @@ def main():
     #     snapshot_to_tfrec(file, save_dir, number_of_projections, number_of_virtual_nodes, number_of_neighbours, plotting)
 
 
-if __name__ == '__main__':
-    set_start_method("spawn")
 
+if __name__ == '__main__':
+
+    # debug()
     main()
+
