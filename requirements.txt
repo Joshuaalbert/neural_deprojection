@@ -20,3 +20,4 @@ yt
 astropy
 soxs
 pyxsim
+dask
