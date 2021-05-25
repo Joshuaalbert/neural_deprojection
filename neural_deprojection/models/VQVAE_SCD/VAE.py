@@ -189,6 +189,20 @@ class VectorQuantizerVariationalAutoEncoder(AbstractModule):
     def step(self, value):
         self._step = value
 
+    @tf.function(input_signature=[tf.TensorSpec([None, None, None, 1], dtype=tf.float32)])
+    def encode(self, img):
+        encoded_img = self.encoder(img)
+        vq_dict = self.VQVAE(encoded_img, is_training=True)
+        encoded_img = vq_dict['quantize']
+
+        return encoded_img
+
+    @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32)])
+    def decode(self, encoded_img):
+        decoded_img = self.decoder(encoded_img)
+        return decoded_img
+
+
     def _build(self, batch):
         (img, ) = batch
         img_before_autoencoder = (img - tf.reduce_min(img)) / (
@@ -256,6 +270,7 @@ def train_VQVAE(data_dir):
 
     log_dir = 'VQVAE_log_dir_leaky_relu'
     checkpoint_dir = 'VQVAE_checkpointing_leaky_relu'
+    model_dir = 'trained_VAE_models'
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
@@ -264,7 +279,8 @@ def train_VQVAE(data_dir):
                           early_stop_patience=10000,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
-                          debug=False)
+                          debug=False,
+                          save_model_dir=model_dir)
 
 
 if __name__ == '__main__':
