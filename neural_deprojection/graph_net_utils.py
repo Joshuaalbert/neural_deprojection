@@ -1,9 +1,12 @@
 import tensorflow as tf
 from graph_nets.graphs import GraphsTuple
+from graph_nets.modules import SelfAttention
+import tensorflow_probability as tfp
 from graph_nets import utils_tf, blocks
 import tqdm
 import sonnet as snt
 from sonnet.src.base import Optimizer, Module
+from sonnet.src import utils, once
 import numpy as np
 import six
 import abc
@@ -12,6 +15,96 @@ import os
 from collections import namedtuple
 
 # from neural_deprojection.tests import test_efficient_nn_index
+
+def reconstruct_fields_from_gaussians(tokens, positions):
+    """
+
+        rho(x) = sum_i w_i * e^{-0.5 * (x - mu_i)^T @ R_i^T @ W_i^{-1} @ R_i (x - mu_i)}
+
+        M = (R^T @ W^{-1} @ R)
+        = L^T @ L
+
+        (x - mu_i)^T @ M (x - mu_i)
+        ((x - mu_i)^T @ L^T) @ (L @ (x - mu_i))
+
+        dx = (L @ (x - mu))
+
+        dx^T @ dx
+
+        L = [a, 0, 0],
+            [b, c, 0],
+            [d, e, f]
+
+
+    Args:
+        tokens: [batch, num_components, num_properties * 10]
+        positions: [batch, n_nodes_per_graph, 3]
+
+    Returns:
+        [batch, n_nodes_per_graph, num_properties]
+
+    """
+    def _single_gaussian_property(positions, weight, mu, L):
+        """
+
+        Args:
+            positions: [N, 3]
+            weight: [C]
+            mu: [C, 3]
+            L: [C, 3, 3]
+
+        Returns: [N]
+
+        """
+        dx = (positions - mu[:, None, :])#C, N, 3
+        dx = tf.einsum("cij,cnj->cni", L, dx )#C, N, 3
+        maha = tf.einsum("cni,cni->cn",dx,dx)#C,N
+        return tf.reduce_sum(weight[:, None] * tf.math.exp(-0.5 * maha), axis=0)#N
+
+    def _single_batch_evaluation(positions, tokens):
+        """
+        Evaluation Gaussian for single graph
+        Args:
+            positions: [N, 3]
+            tokens: [C, P*10]
+
+        Returns:
+            [N,P]
+        """
+        P = tokens.shape[1]//10
+        weights = tf.transpose(tokens[:, 0:P], (1, 0))#P, C
+        mu = tf.transpose(tf.reshape(tokens[:, P:P*3+P], (-1, P, 3)), (1, 0, 2))#P,C,3
+        L_flat = tf.transpose(tf.reshape(tokens[:, P*3+P:], (-1, P, 6)), (1,0,2))#P,C,6
+        L = tfp.math.fill_triangular(L_flat)#P,C,3,3
+        properties = tf.vectorized_map(lambda weights, mu, L: _single_gaussian_property(positions, weights, mu, L), weights, mu, L)#P,N
+        properties = tf.transpose(properties, (1,0))
+        return properties
+
+
+    return tf.vectorized_map(_single_batch_evaluation, positions, tokens)
+
+def gaussian_loss_function(model_outputs, batch):
+    """
+
+    Args:
+        batch: (graph, img)
+            graph.nodes: [n_nodes, num_positions + num_properties]
+        model_outputs: (tokens,)
+
+    Returns:
+
+    """
+    (graph, img) = batch
+    (tokens, ) = model_outputs
+
+    positions = graph.nodes[:,:3]
+    input_properties = graph.nodes[:,3:]
+    field_properties = reconstruct_fields_from_gaussians(tokens, positions)#N,P
+
+    diff_properties = (input_properties - field_properties)
+
+    return tf.reduce_mean(tf.reduce_sum(tf.math.square(diff_properties),axis=1),axis=0)
+
 
 
 def efficient_nn_index(query_positions, positions):
@@ -571,5 +664,131 @@ def histogramdd(sample, bins=10, weights=None, density=None):
 
     return hist, bin_edges_by_dim
 
-# if __name__ == '__main__':
-#     test_efficient_nn_index()
+class GraphDecoder(AbstractModule):
+    def __init__(self, output_property_size, name=None):
+        super(GraphDecoder, self).__init__(name=name)
+        self.output_property_size = output_property_size
+
+
+    def _build(self, encoded_graph, positions, **kwargs):
+        mean_position = tf.reduce_mean(positions, axis=0)
+        centroid_index = tf.argmin(tf.reduce_sum(tf.math.square(positions - mean_position), axis=1))
+
+class MultiHeadLinear(AbstractModule):
+    """Linear module, optionally including bias."""
+
+    def __init__(self,
+                 output_size: int,
+                 num_heads: int = 1,
+                 with_bias: bool = True,
+                 w_init=None,
+                 b_init=None,
+                 name=None):
+        """Constructs a `Linear` module.
+
+        Args:
+          output_size: Output dimensionality.
+          with_bias: Whether to include bias parameters. Default `True`.
+          w_init: Optional initializer for the weights. By default the weights are
+            initialized truncated random normal values with a standard deviation of
+            `1 / sqrt(input_feature_size)`, which is commonly used when the inputs
+            are zero centered (see https://arxiv.org/abs/1502.03167v3).
+          b_init: Optional initializer for the bias. By default the bias is
+            initialized to zero.
+          name: Name of the module.
+        """
+        super(MultiHeadLinear, self).__init__(name=name)
+        self.output_size = output_size
+        self.with_bias = with_bias
+        self.w_init = w_init
+        self.num_heads = num_heads
+        if with_bias:
+            self.b_init = b_init if b_init is not None else snt.initializers.Zeros()
+        elif b_init is not None:
+            raise ValueError("When not using a bias the b_init must be None.")
+
+    @once.once
+    def _initialize(self, inputs: tf.Tensor):
+        """Constructs parameters used by this module."""
+        utils.assert_minimum_rank(inputs, 2)
+
+        input_size = inputs.shape[-1]
+        if input_size is None:  # Can happen inside an @tf.function.
+            raise ValueError("Input size must be specified at module build time.")
+
+        self.input_size = input_size
+
+        if self.w_init is None:
+            # See https://arxiv.org/abs/1502.03167v3.
+            stddev = 1 / tf.math.sqrt(self.input_size * 1.0)
+            self.w_init = snt.initializers.TruncatedNormal(stddev=stddev)
+
+        self.w = tf.Variable(
+            self.w_init([self.num_heads, self.input_size, self.output_size], inputs.dtype),
+            name="w")
+
+        if self.with_bias:
+            self.b = tf.Variable(
+                self.b_init([self.num_heads, self.output_size], inputs.dtype), name="b")
+
+    def _build(self, inputs: tf.Tensor) -> tf.Tensor:
+        """
+        Parallel computation of multi-head linear.
+
+        Args:
+            inputs: [n_nodes, node_size]
+
+        Returns:
+            [n_nodes, num_heads, output_size]
+        """
+        self._initialize(inputs)
+
+        # [num_nodes, node_size].[num_heads, node_size, output_size] -> [num_nodes, num_heads, output_size]
+        outputs = tf.einsum('ns,hso->nho', inputs, self.w, optimize='optimal')
+        if self.with_bias:
+            outputs = tf.add(outputs, self.b)
+        return outputs
+
+
+class CoreNetwork(AbstractModule):
+    """
+    Core network which can be used in the EncodeProcessDecode network. Consists of a (full) graph network block
+    and a self attention block.
+    """
+
+    def __init__(self,
+                 num_heads,
+                 multi_head_output_size,
+                 input_node_size,
+                 name=None):
+        super(CoreNetwork, self).__init__(name=name)
+        self.num_heads = num_heads
+        self.multi_head_output_size = multi_head_output_size
+
+        self.output_linear = snt.Linear(output_size=input_node_size)
+        self.FFN = snt.nets.MLP([32, input_node_size], activate_final=False)  # Feed forward network
+        self.normalization = lambda x: (x - tf.reduce_mean(x)) / tf.math.reduce_std(x)
+        self.ln1 = snt.LayerNorm(axis=1, eps=1e-6, create_scale=True, create_offset=True)
+        self.ln2 = snt.LayerNorm(axis=1, eps=1e-6, create_scale=True, create_offset=True)
+
+        self.v_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # values
+        self.k_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # keys
+        self.q_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # queries
+        self.self_attention = SelfAttention()
+
+    def _build(self, latent, positions=None):
+        node_values = self.v_linear(latent.nodes)
+        node_keys = self.k_linear(latent.nodes)
+        node_queries = self.q_linear(latent.nodes)
+        attended_latent = self.self_attention(node_values=node_values,
+                                              node_keys=node_keys,
+                                              node_queries=node_queries,
+                                              attention_graph=latent)
+        output_nodes = tf.reshape(attended_latent.nodes, (-1, self.num_heads * self.multi_head_output_size))
+        output_nodes = self.ln1(self.output_linear(output_nodes) + latent.nodes)
+        output_nodes = self.ln2(self.FFN(output_nodes))
+        output_graph = latent.replace(nodes=output_nodes)
+        if positions is not None:
+            prepend_nodes = tf.concat([positions, output_graph.nodes[:, 3:]], axis=1)
+            output_graph = output_graph.replace(nodes=prepend_nodes)
+        return output_graph
