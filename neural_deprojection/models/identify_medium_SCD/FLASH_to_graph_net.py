@@ -158,8 +158,8 @@ def generate_example_random_choice(positions, properties, number_of_virtual_node
 
     mean_sum_enc = [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1]
 
-    property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
-                           np.log10, np.log10, np.log10, np.log10]
+    property_transforms = [lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x, lambda x: x,
+                           np.log10, np.log10, np.log10, np.log10, np.log10]
 
     for p, enc, transform in zip(np.arange(len(properties[0])), mean_sum_enc, property_transforms):
         virtual_properties[:, p] = transform(mean_sum[enc](properties[:, p]))
@@ -284,7 +284,10 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
 
     _values = []
     for name, unit in zip(property_names, unit_names):
-        _values.append(ad[name].in_units(unit).to_value())
+        if name == 'gravitational_potential':
+            _values.append(-ad[name].in_units(unit).to_value())
+        else:
+            _values.append(ad[name].in_units(unit).to_value())
 
     # property_values = np.array(property_values)  # n f
     property_values = np.array(_values).T  # n f
