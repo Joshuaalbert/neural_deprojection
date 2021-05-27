@@ -28,6 +28,8 @@ from multiprocessing import get_context, Pool, Lock, set_start_method
 
 yt.funcs.mylog.setLevel(40)  # Suppresses YT status output.
 
+from dask.multiprocessing import get
+
 
 def _random_ortho_matrix(n):
     """
@@ -418,17 +420,38 @@ def main():
                    number_of_neighbours,
                    plotting) for snapsh in snapshot_list]
 
-        with get_context("spawn").Pool(processes=16) as pool:
-        # with get_context("spawn").Pool(processes=1) as pool:
-            # pool = Pool(15)
-            pool.starmap(snapshot_to_tfrec, params)
-            pool.close()
+        def map_func(params):
+            return snapshot_to_tfrec(*params)
+
+        dsk = {"{:08d}".format(idx): (map_func, params[idx]) for idx in range(len(params))}
+
+        keys = list(sorted(dsk.keys()))
+
+        results = get(dsk, keys, num_workers=num_workers)
+
+        # with get_context("spawn").Pool(processes=16) as pool:
+        # # with get_context("spawn").Pool(processes=1) as pool:
+        #     # pool = Pool(15)
+        #     pool.starmap(snapshot_to_tfrec, params)
+        #     pool.close()
 
     # for param in params:
     #     file, save_dir, number_of_projections, number_of_virtual_nodes, number_of_neighbours, plotting = param
     #     snapshot_to_tfrec(file, save_dir, number_of_projections, number_of_virtual_nodes, number_of_neighbours, plotting)
 
 
+def debug():
+    def f(x):
+        print('sleeping')
+        sleep(2)
+        return x
+
+    dsk = {"a": (f, 1),
+           "b": (f, 2)}
+
+    results = get(dsk,["a", "b"], num_workers=2)
+    print("done...")
+    print(results)
 
 if __name__ == '__main__':
     # debug()
