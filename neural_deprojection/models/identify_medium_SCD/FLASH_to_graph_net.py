@@ -1,4 +1,4 @@
-# TEST TEST TEST
+# TEST
 from time import sleep
 
 import yt
@@ -113,7 +113,7 @@ def save_examples(generator, snapshot, save_dir=None,
                 except StopIteration:
                     data_left = False
                     break
-                graph = get_graph(graph, 0)
+                # graph = get_graph(graph, 0)
                 features = dict(
                     idx=tf.train.Feature(
                         bytes_list=tf.train.BytesList(
@@ -226,9 +226,9 @@ def generate_data(positions, properties, proj_images, extra_info, number_of_virt
             proj_image = proj_images[idx].reshape(image_shape)
             snapshot = extra_info[idx][0]
             projection = extra_info[idx][1]
-            (idx, virtual_properties) = generate_example_random_choice(_positions, _properties, number_of_virtual_nodes, plotting,
+            (ckd_idx, virtual_properties) = generate_example_random_choice(_positions, _properties, number_of_virtual_nodes, plotting,
                                                    number_of_neighbours)
-            yield (idx, virtual_properties, proj_image, snapshot, projection, extra_info[idx])
+            yield (ckd_idx, virtual_properties, proj_image, snapshot, projection, np.array(extra_info)[idx])
 
     train_tfrecords = save_examples(data_generator(),
                                     snapshot,
@@ -312,7 +312,7 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
         _extra_info = [snapshot, projections,
                        viewing_vec[0], viewing_vec[1], viewing_vec[2],
                        north_vector[0], north_vector[1], north_vector[2],
-                       resolution, width, field]
+                       resolution, width] #, field]
         proj_image = yt.off_axis_projection(ds, center=[0, 0, 0], normal_vector=viewing_vec, north_vector=north_vector,
                                             item=field, width=width, resolution=resolution)
 
@@ -384,6 +384,7 @@ def main():
     for n in name_list:
         folder_path = '/disks/extern_collab_data/{}/'.format(n)
         save_dir = '/disks/extern_collab_data/new_tfrecs/{}/'.format(n)
+        # save_dir = './new_tfrecs/{}/'.format(n)
 
         if n == 'lewis/run1':
             snapshot_list = []
@@ -405,7 +406,7 @@ def main():
         number_of_neighbours = 6
         plotting = False
 
-        num_workers = 1
+        num_workers = 16
 
         params = [(snapsh,
                    save_dir,
