@@ -415,16 +415,12 @@ def decode_examples(record_bytes, node_shape=None, image_shape=None, k=None):
     extra_info.set_shape([None])
 
     receivers = idx[:, 1:]  # N,k
-    senders = tf.range(tf.shape(graph_nodes)[0:1][0]) # N
+    senders = tf.cast(tf.range(tf.shape(graph_nodes)[0:1][0]), idx.dtype) # N
     senders = tf.tile(senders[:, None], tf.constant([1, k], tf.int32))  # N, k
 
-    print('receivers:', receivers)
-    print('senders:', senders)
     receivers = tf.reshape(receivers, shape=[-1])
     senders = tf.reshape(senders, shape=[-1])
 
-    print('receivers_after:', receivers)
-    print('senders_after:', senders)
 
     receivers_both_directions = tf.concat([receivers, senders], axis=0)
     senders_both_directions = tf.concat([senders, receivers], axis=0)
