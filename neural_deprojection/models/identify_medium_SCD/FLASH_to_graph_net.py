@@ -12,7 +12,7 @@ from itertools import product
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_np import graphs_tuple_to_networkxs, networkxs_to_graphs_tuple, get_graph
 import numpy as np
-# import networkx as nx
+# import networkx as nx221
 from networkx.drawing import draw
 from tqdm import tqdm
 from scipy.optimize import bisect
@@ -109,22 +109,31 @@ def save_examples(generator, snapshot, save_dir=None,
             for i in range(examples_per_file + 1):  # + 1 otherwise it makes a second tf rec file that is empty
                 try:
                     print('try data...')
-                    (graph, image, snapshot, projection) = next(data_iterable)
+                    (idx, virtual_properties, proj_image, snapshot, projection, extra_info) = next(data_iterable)
                 except StopIteration:
                     data_left = False
                     break
                 graph = get_graph(graph, 0)
                 features = dict(
+                    idx=tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[tf.io.serialize_tensor(tf.cast(idx, tf.int32)).numpy()])),
+                    virtual_properties=tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[tf.io.serialize_tensor(tf.cast(virtual_properties, tf.float32)).numpy()])),
                     image=tf.train.Feature(
                         bytes_list=tf.train.BytesList(
-                            value=[tf.io.serialize_tensor(tf.cast(image, tf.float32)).numpy()])),
+                            value=[tf.io.serialize_tensor(tf.cast(proj_image, tf.float32)).numpy()])),
                     snapshot=tf.train.Feature(
                         bytes_list=tf.train.BytesList(
                             value=[tf.io.serialize_tensor(tf.cast(snapshot, tf.int32)).numpy()])),
                     projection=tf.train.Feature(
                         bytes_list=tf.train.BytesList(
                             value=[tf.io.serialize_tensor(tf.cast(projection, tf.int32)).numpy()])),
-                    **graph_tuple_to_feature(graph, name='graph')
+                    extra_info=tf.train.Feature(
+                        bytes_list=tf.train.BytesList(
+                            value=[tf.io.serialize_tensor(tf.cast(extra_info, tf.float32)).numpy()])),
+                    # **graph_tuple_to_feature(graph, name='graph')
                 )
                 features = tf.train.Features(feature=features)
                 example = tf.train.Example(features=features)
@@ -154,40 +163,14 @@ def generate_example_random_choice(positions, properties, number_of_virtual_node
 
     for p, enc, transform in zip(np.arange(len(properties[0])), mean_sum_enc, property_transforms):
         virtual_properties[:, p] = transform(mean_sum[enc](properties[:, p]))
-        virtual_positions = virtual_properties[:, :3]
+
+    virtual_positions = virtual_properties[:, :3]
 
     # graph = nx.OrderedMultiDiGraph()
     kdtree = cKDTree(virtual_positions)
     dist, idx = kdtree.query(virtual_positions, k=k + 1)
 
-    receivers = idx[:, 1:]  # N,k
-    senders = np.arange(virtual_positions.shape[0])  # N
-    senders = np.tile(senders[:, None], [1, k])  # N,k
-
-    receivers = receivers.flatten()
-    senders = senders.flatten()
-
-    receivers_bi_directional = np.concatenate((receivers, senders))
-    senders_bi_directional = np.concatenate((senders, receivers))
-
-    graph_nodes = tf.convert_to_tensor(virtual_positions, tf.float32)
-    graph_nodes.set_shape([None, 3])
-    receivers = tf.convert_to_tensor(receivers_bi_directional, tf.int32)
-    receivers.set_shape([None])
-    senders = tf.convert_to_tensor(senders_bi_directional, tf.int32)
-    senders.set_shape([None])
-    n_node = tf.shape(graph_nodes)[0:1]
-    n_edge = tf.shape(senders)[0:1]
-
-    graph_data_dict = dict(nodes=graph_nodes,
-                           edges=tf.zeros((n_edge[0], 1)),
-                           globals=tf.zeros([1]),
-                           receivers=receivers,
-                           senders=senders,
-                           n_node=n_node,
-                           n_edge=n_edge)
-
-    return GraphsTuple(**graph_data_dict)
+    return (idx, virtual_properties)
 
     # receivers = idx[:, 1:]  # N,k
     # senders = np.arange(virtual_positions.shape[0])  # N
@@ -196,37 +179,27 @@ def generate_example_random_choice(positions, properties, number_of_virtual_node
     # receivers = receivers.flatten()
     # senders = senders.flatten()
     #
-    # n_nodes = virtual_positions.shape[0]
+    # receivers_bi_directional = np.concatenate((receivers, senders))
+    # senders_bi_directional = np.concatenate((senders, receivers))
     #
-    # pos = dict()  # for plotting node positions.
-    # edgelist = []
-    # for node, feature, position in zip(np.arange(n_nodes), virtual_properties, virtual_positions):
-    #     graph.add_node(node, features=feature)
-    #     pos[node] = position[:2]
+    # graph_nodes = tf.convert_to_tensor(virtual_properties, tf.float32)
+    # graph_nodes.set_shape([None, len(virtual_properties)])
+    # receivers = tf.convert_to_tensor(receivers_bi_directional, tf.int32)
+    # receivers.set_shape([None])
+    # senders = tf.convert_to_tensor(senders_bi_directional, tf.int32)
+    # senders.set_shape([None])
+    # n_node = tf.shape(graph_nodes)[0:1]
+    # n_edge = tf.shape(senders)[0:1]
     #
-    # # edges = np.stack([senders, receivers], axis=-1) + sibling_node_offset
-    # for u, v in zip(senders, receivers):
-    #     graph.add_edge(u, v, features=np.array([1., 0.]))
-    #     graph.add_edge(v, u, features=np.array([1., 0.]))
-    #     edgelist.append((u, v))
-    #     edgelist.append((v, u))
+    # graph_data_dict = dict(nodes=graph_nodes,
+    #                        edges=tf.zeros((n_edge[0], 1)),
+    #                        globals=tf.zeros([1]),
+    #                        receivers=receivers,
+    #                        senders=senders,
+    #                        n_node=n_node,
+    #                        n_edge=n_edge)
     #
-    # graph.graph["features"] = np.array([0.])
-    # # plotting
-    #
-    # print('len(pos) = {}\nlen(edgelist) = {}'.format(len(pos), len(edgelist)))
-    # if plot:
-    #     fig, ax = plt.subplots(1, 1, figsize=(20, 20))
-    #     draw(graph, ax=ax, pos=pos, node_color='blue', edge_color='red', node_size=10, width=0.1)
-    #
-    #     image_dir = '/data2/hendrix/images/'
-    #     graph_image_idx = len(glob.glob(os.path.join(image_dir, 'graph_image_*')))
-    #     plt.savefig(os.path.join(image_dir, 'graph_image_{}'.format(graph_image_idx)))
-    #
-    # return networkxs_to_graphs_tuple([graph],
-    #                                  node_shape_hint=[virtual_positions.shape[1] + virtual_properties.shape[1]],
-    #                                  edge_shape_hint=[2])
-
+    # return GraphsTuple(**graph_data_dict)
 
 
 def generate_data(positions, properties, proj_images, extra_info, number_of_virtual_nodes, plotting,
@@ -253,11 +226,9 @@ def generate_data(positions, properties, proj_images, extra_info, number_of_virt
             proj_image = proj_images[idx].reshape(image_shape)
             snapshot = extra_info[idx][0]
             projection = extra_info[idx][1]
-            graph = generate_example_random_choice(_positions, _properties, number_of_virtual_nodes, plotting,
+            (idx, virtual_properties) = generate_example_random_choice(_positions, _properties, number_of_virtual_nodes, plotting,
                                                    number_of_neighbours)
-            print('\ngenerator output:\n', len(graph.edges), len(graph.nodes),
-                  '\n', proj_image.shape, '\n', snapshot, '\n', projection)
-            yield (graph, proj_image, snapshot, projection)
+            yield (idx, virtual_properties, proj_image, snapshot, projection, extra_info[idx])
 
     train_tfrecords = save_examples(data_generator(),
                                     snapshot,
@@ -313,13 +284,6 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
 
     _values = []
     for name, unit in zip(property_names, unit_names):
-        # print('\nproperty name: ', name)
-        # print('in unit:')
-        # print('    max: ', np.max(ad[name].in_units(unit).to_value()))
-        # print('    min: ', np.min(ad[name].in_units(unit).to_value()))
-        # print('transform: ')
-        # print('    max: ', np.max(transform(ad[name].in_units(unit).to_value())))
-        # print('    min: ', np.min(transform(ad[name].in_units(unit).to_value())))
         _values.append(ad[name].in_units(unit).to_value())
 
     # property_values = np.array(property_values)  # n f
@@ -345,7 +309,10 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
         north_vector = Vprime[:, 1]
         viewing_vec = Vprime[:, 2]
 
-        _extra_info = [snapshot, projections, viewing_vec, resolution, width, field]
+        _extra_info = [snapshot, projections,
+                       viewing_vec[0], viewing_vec[1], viewing_vec[2],
+                       north_vector[0], north_vector[1], north_vector[2],
+                       resolution, width, field]
         proj_image = yt.off_axis_projection(ds, center=[0, 0, 0], normal_vector=viewing_vec, north_vector=north_vector,
                                             item=field, width=width, resolution=resolution)
 
@@ -378,56 +345,67 @@ def snapshot_to_tfrec(snapshot_file, save_dir, num_of_projections, number_of_vir
 
 
 def main():
-    claude_name_list = ['M4r5b',
-                        'M4r5b-3',
-                        'M4r5b-5',
-                        'M4r5s-2',
-                        'M4r5s-4',
-                        'M4r6b',
-                        'M4r6b-3',
-                        'M4r6s',
-                        'M4r5b-2',
-                        'M4r5b-4',
-                        'M4r5s',
-                        'M4r5s-3',
-                        'M4r5s-5',
-                        'M4r6b-2',
-                        'M4r6b-4']
+    # claude_name_list = ['M4r5b',
+    #                     'M4r5b-3',
+    #                     'M4r5b-5',
+    #                     'M4r5s-2',
+    #                     'M4r5s-4',
+    #                     'M4r6b',
+    #                     'M4r6b-3',
+    #                     'M4r6s',
+    #                     'M4r5b-2',
+    #                     'M4r5b-4',
+    #                     'M4r5s',
+    #                     'M4r5s-3',
+    #                     'M4r5s-5',
+    #                     'M4r6b-2',
+    #                     'M4r6b-4']
 
-    for n in claude_name_list:
-        folder_path = '/disks/extern_collab_data/cournoyer/{}/'.format(n)
-        save_dir = '/net/para33/data2/hendrix/ClaudeData/{}/'.format(n)
+    name_list = ['cournoyer/M4r5b',
+                'cournoyer/M4r5b-3',
+                'cournoyer/M4r5b-5',
+                'cournoyer/M4r5s-2',
+                'cournoyer/M4r5s-4',
+                'cournoyer/M4r6b',
+                'cournoyer/M4r6b-3',
+                'cournoyer/M4r6s',
+                'cournoyer/M4r5b-2',
+                'cournoyer/M4r5b-4',
+                'cournoyer/M4r5s',
+                'cournoyer/M4r5s-3',
+                'cournoyer/M4r5s-5',
+                'cournoyer/M4r6b-2',
+                'cournoyer/M4r6b-4',
+                'lewis/run1',
+                'lewis/run2',
+                'lewis/run3',
+                'lewis/run4']
 
-    # sean_name_list = ['M3', 'M3f', 'M3f2', 'M4']
-    #
-    # for i in range(4):
-    #     if i == 1:
-    #         continue
-    #     folder_path = f'/disks/extern_collab_data/lewis/run{i+1}/'  # run1=M3, run2=M3f, run3=M3f2, run4=M4
-    #     save_dir = f'/net/para33/data2/hendrix/SeanData/{sean_name_list[i]}/'
+    for n in name_list:
+        folder_path = '/disks/extern_collab_data/{}/'.format(n)
+        save_dir = '/disks/extern_collab_data/new_tfrecs/{}/'.format(n)
 
-        # snapshot_list = []
-        # for snap in all_snapshots:
-        #     file = os.path.join(folder_path,'turbsph_hdf5_plt_cnt_{:04d}'.format(snap))
-        #     snapshot_list.append(file)
-        #
-        # if i == 1:
-        #     snapshot_list = np.array(snapshot_list)
-        #     snapshot_list = snapshot_list[[int(s[-4:]) % 3 == 0 for s in snapshot_list]]       # only keep every third snapshot
+        if n == 'lewis/run1':
+            snapshot_list = []
+            for snap in range(2118):
+                file = os.path.join(folder_path,'turbsph_hdf5_plt_cnt_{:04d}'.format(snap))
+                snapshot_list.append(file)
+
+            snapshot_list = np.array(snapshot_list)
+            snapshot_list = snapshot_list[[int(s[-4:]) % 3 == 0 for s in snapshot_list]]       # only keep every third snapshot
+        else:
+            snapshot_list = glob.glob(os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_*'))
 
 
-        snapshot_list = glob.glob(os.path.join(folder_path, 'turbsph_hdf5_plt_cnt_*'))
         print('len(snapshot_list): ', len(snapshot_list))
-
-        # print('len(snapshot_list): ', len(snapshot_list))
-        # print(snapshot_list)
+        print(snapshot_list)
 
         number_of_projections = 26
         number_of_virtual_nodes = 50000
         number_of_neighbours = 6
         plotting = False
 
-        num_workers = 16
+        num_workers = 1
 
         params = [(snapsh,
                    save_dir,
@@ -449,7 +427,6 @@ def main():
 
 
 if __name__ == '__main__':
-
     # debug()
     main()
 
