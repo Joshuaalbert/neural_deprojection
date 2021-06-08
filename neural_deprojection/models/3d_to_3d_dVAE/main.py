@@ -76,6 +76,7 @@ class DiscreteGraphVAE(AbstractModule):
         # node = [num_embeddings] -> log(p_i) = logits
         # -> [S, n_node, embedding_dim]
         logits = encoded_graph.nodes  # [n_node, num_embeddings]
+        log_norm = tf.math.reduce_logsumexp(logits, axis=1)  # [n_node]
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
         token_samples_onehot = token_distribution.sample((self.num_token_samples,),
                                                          name='token_samples')  # [S, n_node, num_embeddings]
@@ -103,16 +104,23 @@ class DiscreteGraphVAE(AbstractModule):
             _, log_likelihood = gaussian_loss_function(gaussian_tokens, graph)
             # [n_node, num_embeddings].[n_node, num_embeddings]
             sum_selected_logits = tf.math.reduce_sum(token_sample_onehot * logits, axis=1)  # [n_node]
-            log_norm = tf.math.reduce_logsumexp(logits, axis=1)  # [n_node]
             kl_term = sum_selected_logits - self.num_embedding * log_norm + self.num_embedding * tf.math.log(
                 self.num_embedding)  # [n_node]
             kl_term = beta * tf.reduce_mean(kl_term)
             return log_likelihood, kl_term
 
         log_likelihood_samples, kl_term_samples = tf.vectorized_map(_single_decode, token_samples_onehot)  # [S],[S]
+
+        # good metric = average entropy of embedding usage! The more precisely embeddings are selected the lower the entropy.
+
+        log_prob_tokens = logits - log_norm[:, None]#num_tokens, num_embeddings
+        entropy = -tf.reduce_sum(log_prob_tokens * tf.math.exp(log_prob_tokens), axis=1)#num_tokens
+        perplexity = 2.**(entropy/tf.math.log(2.))
+        mean_perplexity = tf.reduce_mean(perplexity)
         return dict(loss=tf.reduce_mean(log_likelihood_samples - kl_term_samples),
                     var_exp=tf.reduce_mean(log_likelihood_samples),
-                    kl_term=tf.reduce_mean(kl_term_samples))
+                    kl_term=tf.reduce_mean(kl_term_samples),
+                    mean_perplexity=mean_perplexity)
 
 
 class Encoder(AbstractModule):
