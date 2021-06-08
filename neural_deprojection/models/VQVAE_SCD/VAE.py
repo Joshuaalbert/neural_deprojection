@@ -150,8 +150,10 @@ class VectorQuantizerVariationalAutoEncoder(AbstractModule):
                  kernel_size=4,
                  name=None):
         super(VectorQuantizerVariationalAutoEncoder, self).__init__(name=name)
-        self.residual_enc = ResidualStack(num_hiddens=64, num_residual_layers=2, num_residual_hiddens=32)
-        self.residual_dec = ResidualStack(num_hiddens=64, num_residual_layers=2, num_residual_hiddens=32)
+        # self.residual_enc = ResidualStack(num_hiddens=64, num_residual_layers=2, num_residual_hiddens=32)
+        # self.residual_dec = ResidualStack(num_hiddens=64, num_residual_layers=2, num_residual_hiddens=32)
+        self.residual_enc = ResidualStack(num_hiddens=32, num_residual_layers=2, num_residual_hiddens=32)
+        self.residual_dec = ResidualStack(num_hiddens=32, num_residual_layers=2, num_residual_hiddens=32)
 
         self.embedding_dim = embedding_dim
         self.num_embeddings = num_embeddings
@@ -160,8 +162,9 @@ class VectorQuantizerVariationalAutoEncoder(AbstractModule):
                                        snt.Conv2D(8, kernel_size, stride=2, padding='SAME', name='conv8'), tf.nn.leaky_relu,    # [b, 64, 64, 8]
                                        snt.Conv2D(16, kernel_size, stride=2, padding='SAME', name='conv16'), tf.nn.leaky_relu,   # [b, 32, 32, 16]
                                        snt.Conv2D(32, kernel_size, stride=2, padding='SAME', name='conv32'), tf.nn.leaky_relu,   # [b, 16, 16, 32]
-                                       snt.Conv2D(64, kernel_size, stride=2, padding='SAME', name='conv64'), tf.nn.leaky_relu,   # [b, 8, 8, 64]
-                                       snt.Conv2D(64, kernel_shape=3, stride=1, padding='SAME', name='conv_enc_1'), tf.nn.leaky_relu,   # [b, 8, 8, 64]
+                                       # snt.Conv2D(64, kernel_size, stride=2, padding='SAME', name='conv64'), tf.nn.leaky_relu,   # [b, 8, 8, 64]
+                                       # snt.Conv2D(64, kernel_shape=3, stride=1, padding='SAME', name='conv_enc_1'), tf.nn.leaky_relu,   # [b, 8, 8, 64]
+                                       snt.Conv2D(32, kernel_shape=3, stride=1, padding='SAME', name='conv_enc_1'), tf.nn.leaky_relu,   # [b, 16, 16, 32]
                                        self.residual_enc])
 
         self.VQVAE = snt.nets.VectorQuantizerEMA(embedding_dim=embedding_dim,
@@ -170,9 +173,11 @@ class VectorQuantizerVariationalAutoEncoder(AbstractModule):
                                                  decay=0.994413,
                                                  name='VQ')
 
-        self.decoder = snt.Sequential([snt.Conv2D(64, kernel_shape=3, stride=1, padding='SAME', name='conv_dec_1'), tf.nn.leaky_relu,    # [b, 8, 8, 64]
+        # self.decoder = snt.Sequential([snt.Conv2D(64, kernel_shape=3, stride=1, padding='SAME', name='conv_dec_1'), tf.nn.leaky_relu,    # [b, 8, 8, 64]
+        #                                self.residual_dec,
+        self.decoder = snt.Sequential([snt.Conv2D(32, kernel_shape=3, stride=1, padding='SAME', name='conv_dec_1'), tf.nn.leaky_relu,    # [b, 16, 16, 32]
                                        self.residual_dec,
-                                       snt.Conv2DTranspose(32, kernel_size, stride=2, padding='SAME', name='convt32'), tf.nn.leaky_relu,    # [b, 16, 16, 32]
+                                       # snt.Conv2DTranspose(32, kernel_size, stride=2, padding='SAME', name='convt32'), tf.nn.leaky_relu,    # [b, 16, 16, 32]
                                        snt.Conv2DTranspose(16, kernel_size, stride=2, padding='SAME', name='convt16'), tf.nn.leaky_relu,    # [b, 32, 32, 16]
                                        snt.Conv2DTranspose(8, kernel_size, stride=2, padding='SAME', name='convt8'), tf.nn.leaky_relu,    # [b, 64, 64, 8]
                                        snt.Conv2DTranspose(4, kernel_size, stride=2, padding='SAME', name='convt4'), tf.nn.leaky_relu,     # [b, 128, 128, 4]
@@ -245,8 +250,8 @@ def train_VQVAE(data_dir):
     test_dataset = test_dataset.map(lambda graph, img, c: (img,)).batch(batch_size=32)
 
     # with strategy.scope():
-    model = VectorQuantizerVariationalAutoEncoder(embedding_dim=64,
-                                                  num_embeddings=64,
+    model = VectorQuantizerVariationalAutoEncoder(embedding_dim=32,
+                                                  num_embeddings=1024,
                                                   kernel_size=4)
 
     learning_rate = 1e-4
@@ -268,9 +273,9 @@ def train_VQVAE(data_dir):
 
     train_one_epoch = TrainOneEpoch(model, loss, opt, strategy=None)
 
-    log_dir = 'VQVAE_log_dir_leaky_relu'
-    checkpoint_dir = 'VQVAE_checkpointing_leaky_relu'
-    model_dir = 'trained_VAE_models'
+    log_dir = 'VQVAE_log_dir_16_1024'
+    checkpoint_dir = 'VQVAE_checkpointing_16_1024'
+    model_dir = 'trained_VAE_model_16_1024'
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,

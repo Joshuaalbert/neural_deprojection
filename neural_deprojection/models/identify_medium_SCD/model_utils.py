@@ -2,7 +2,7 @@ import sys
 
 sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
 
-from neural_deprojection.models.identify_medium_SCD.generate_data import generate_data, decode_examples
+from neural_deprojection.models.identify_medium_SCD.generate_data import generate_data, decode_examples_old
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, \
     get_distribution_strategy, build_log_dir, build_checkpoint_dir, batch_dataset_set_graph_tuples
 import glob, os
@@ -514,7 +514,7 @@ def build_dataset(data_dir):
     Returns: Dataset obj.
     """
     tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
-    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
+    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples_old,
                                                              node_shape=(11,),
                                                              image_shape=(256, 256, 1)))  # (graph, image, spsh, proj)
     _graphs = dataset.map(lambda graph_data_dict, img, spsh, proj: (graph_data_dict, spsh, proj)).shuffle(buffer_size=50)
