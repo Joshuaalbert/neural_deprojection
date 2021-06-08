@@ -13,7 +13,6 @@ import abc
 import contextlib
 import os
 from collections import namedtuple
-
 # from neural_deprojection.tests import test_efficient_nn_index
 
 def reconstruct_fields_from_gaussians(tokens, positions):
@@ -83,27 +82,24 @@ def reconstruct_fields_from_gaussians(tokens, positions):
 
     return tf.vectorized_map(_single_batch_evaluation, positions, tokens)
 
-def gaussian_loss_function(model_outputs, batch):
+def gaussian_loss_function(gaussian_tokens, graph):
     """
-
     Args:
-        batch: (graph, img)
+        gaussian tokens: [N, C]
+
+        graph:
             graph.nodes: [n_nodes, num_positions + num_properties]
-        model_outputs: (tokens,)
 
     Returns:
-
+        scalar
     """
-    (graph, img) = batch
-    (tokens, ) = model_outputs
-
     positions = graph.nodes[:,:3]
     input_properties = graph.nodes[:,3:]
-    field_properties = reconstruct_fields_from_gaussians(tokens, positions)#N,P
+    field_properties = reconstruct_fields_from_gaussians(gaussian_tokens, positions)#N,P
 
     diff_properties = (input_properties - field_properties)
 
-    return tf.reduce_mean(tf.reduce_sum(tf.math.square(diff_properties),axis=1),axis=0)
+    return field_properties, tf.reduce_mean(tf.reduce_sum(tf.math.square(diff_properties),axis=1),axis=0)
 
 
 
