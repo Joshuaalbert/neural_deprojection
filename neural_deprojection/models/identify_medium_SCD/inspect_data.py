@@ -4,7 +4,8 @@ import tensorflow as tf
 
 import sys
 
-sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
+# sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
+sys.path.insert(1, '/data2/hendrix/git/neural_deprojection/')
 
 from neural_deprojection.models.identify_medium_SCD.generate_data import generate_data, decode_examples
 
@@ -254,31 +255,38 @@ if __name__ == '__main__':
     # test_train_dir = '/data2/hendrix/ClaudeData/M4r5b/'
     # image_dir = '/data2/hendrix/ClaudeData/M4r5b/images/'
     #
-    test_train_dir = '/home/s1825216/data/train_data/ClaudeData/train/'
+    # test_train_dir = '/home/s1825216/data/train_data/ClaudeData/train/'
+    test_train_dir = '/disks/extern_collab_data/new_tfrecs/cournoyer/M4r5b/'
 
     tfrecords = glob.glob(os.path.join(test_train_dir, '*.tfrecords'))  # list containing tfrecord files
     print(tfrecords)
+    print(len(tfrecords))
 
-    tfrecords = tfrecords[::-1]
+    # tfrecords = tfrecords[::-1]
 
     print('making dataset...')
     # Extract the dataset (graph tuple, image, example_idx) from the tfrecords files
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
                                                              node_shape=(11,),
-                                                             image_shape=(256, 256, 1)))  # (graph, image, idx)
+                                                             image_shape=(256, 256, 1),
+                                                             k=6))  # (graph, image, projection, extra_info)
 
-    # dataset = dataset.map(lambda graph_data_dict, img, s, p: (GraphsTuple(globals=None, edges=None, **graph_data_dict),
-    #                                                           img, s, p))
+    dataset = dataset.map(lambda graph_data_dict, img, s, p, e: (GraphsTuple(**graph_data_dict),
+                                                              img, s, p, e))
 
     for ds_item in iter(dataset):
         # print(ds_item)
         # plot_from_big_ds_item(ds_item)
 
-        (graph_data_dict, image, snapshot, projection) = ds_item
-        nodes = graph_data_dict['nodes']
-        for i in range(11): # [6,9,10]:
-            print(f'\nmax_{i}', tf.reduce_max(nodes[:, i]))
-            print(f'min_{i}', tf.reduce_min(nodes[:, i]))
-        break
+        # (graph_data_dict, image, snapshot, projection, extra_info) = ds_item
+        (graph, image, snapshot, projection, extra_info) = ds_item
+        print(graph.nodes[0])
+        # plt.figure()
+        # plt.axis('off')
+        # plt.imshow(image.numpy()[:, :, 0].T, origin='lower')
+        # plt.savefig(f'/home/s1825216/data/train_data/ClaudeData/train/images/proj_{snapshot}_{projection}')
+        # plt.close()
+
+
 
 
