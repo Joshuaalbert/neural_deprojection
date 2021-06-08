@@ -22,7 +22,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from multiprocessing import get_context, Pool, Lock, set_start_method
+# from multiprocessing import get_context, Pool, Lock, set_start_method
 
 # mp_lock = Lock()
 
