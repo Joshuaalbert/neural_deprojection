@@ -43,7 +43,7 @@ def reconstruct_fields_from_gaussians(tokens, positions):
         [batch, n_nodes_per_graph, num_properties]
 
     """
-    def _single_gaussian_property(positions, weight, mu, L):
+    def _single_gaussian_property(arg):
         """
 
         Args:
@@ -55,12 +55,13 @@ def reconstruct_fields_from_gaussians(tokens, positions):
         Returns: [N]
 
         """
+        positions, weight, mu, L = arg
         dx = (positions - mu[:, None, :])#C, N, 3
         dx = tf.einsum("cij,cnj->cni", L, dx )#C, N, 3
         maha = tf.einsum("cni,cni->cn",dx,dx)#C,N
         return tf.reduce_sum(weight[:, None] * tf.math.exp(-0.5 * maha), axis=0)#N
 
-    def _single_batch_evaluation(positions, tokens):
+    def _single_batch_evaluation(arg):
         """
         Evaluation Gaussian for single graph
         Args:
@@ -70,18 +71,19 @@ def reconstruct_fields_from_gaussians(tokens, positions):
         Returns:
             [N,P]
         """
+        # vectorized_map only takes single inputs
+        positions, tokens = arg
         P = tokens.shape[1]//10
         weights = tf.transpose(tokens[:, 0:P], (1, 0))#P, C
         mu = tf.transpose(tf.reshape(tokens[:, P:P*3+P], (-1, P, 3)), (1, 0, 2))#P,C,3
         L_flat = tf.transpose(tf.reshape(tokens[:, P*3+P:], (-1, P, 6)), (1,0,2))#P,C,6
         L = tfp.math.fill_triangular(L_flat)#P,C,3,3
-        properties = tf.vectorized_map(lambda weights, mu, L: _single_gaussian_property(positions, weights, mu, L), weights, mu, L)#P,N
-        properties = tf.transpose(properties, (1,0))
+        # tf.stack(P*[positions]) = P, N, 3
+        properties = tf.vectorized_map(_single_gaussian_property, (tf.stack(P*[positions]), weights, mu, L))#P,N
+        properties = tf.transpose(properties, (1,0)) #N, P
         return properties
 
-
-    return tf.vectorized_map(_single_batch_evaluation, positions, tokens)
-
+    return tf.vectorized_map(_single_batch_evaluation, (positions, tokens))  # [batch, N, P]
 def gaussian_loss_function(gaussian_tokens, graph):
     """
     Args:
