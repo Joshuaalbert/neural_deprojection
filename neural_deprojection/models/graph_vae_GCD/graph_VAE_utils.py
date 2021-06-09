@@ -269,7 +269,7 @@ class CoreNetwork(AbstractModule):
                                               attention_graph=latent)
         output_nodes = tf.reshape(attended_latent.nodes, (-1, self.num_heads * self.multi_head_output_size))
         output_nodes = self.ln1(self.output_linear(output_nodes) + latent.nodes)
-        output_nodes = self.ln2(self.FFN(output_nodes))
+        output_nodes = self.ln2(self.FFN(output_nodes)+output_nodes)
         output_graph = latent.replace(nodes=output_nodes)
         if positions is not None:
             prepend_nodes = tf.concat([positions, output_graph.nodes[:, 3:]], axis=1)

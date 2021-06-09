@@ -181,7 +181,9 @@ class TrainOneEpoch(Module):
             loss
         """
         with tf.GradientTape() as tape:
-            model_output = self.model(batch)
+            model_output = self.model(
+
+            )
             loss = self.loss(model_output, batch)
         params = self.model.trainable_variables
         grads = tape.gradient(loss, params)
