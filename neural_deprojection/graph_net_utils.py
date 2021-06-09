@@ -84,7 +84,6 @@ def reconstruct_fields_from_gaussians(tokens, positions):
         return properties
 
     return tf.vectorized_map(_single_batch_evaluation, (positions, tokens))  # [batch, N, P]
-
 def gaussian_loss_function(gaussian_tokens, graph):
     """
     Args:
@@ -184,7 +183,9 @@ class TrainOneEpoch(Module):
             loss
         """
         with tf.GradientTape() as tape:
-            model_output = self.model(batch)
+            model_output = self.model(
+
+            )
             loss = self.loss(model_output, batch)
         params = self.model.trainable_variables
         grads = tape.gradient(loss, params)

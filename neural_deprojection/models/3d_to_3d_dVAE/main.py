@@ -73,7 +73,8 @@ class DiscreteGraphVAE(AbstractModule):
         reconstructed_fields = reconstruct_fields_from_gaussians(gaussian_tokens, positions)
         return reconstructed_fields
 
-    def _build(self, graph, temperature, beta, **kwargs) -> dict:
+    def _build(self, batch, **kwargs) -> dict:
+        graph, temperature, beta = batch
         encoded_graph = self.encoder(graph)
         n_node = encoded_graph.n_node
         # nodes = [n_node, num_embeddings]
@@ -119,160 +120,16 @@ class DiscreteGraphVAE(AbstractModule):
 
         log_prob_tokens = logits - log_norm[:, None]#num_tokens, num_embeddings
         entropy = -tf.reduce_sum(log_prob_tokens * tf.math.exp(log_prob_tokens), axis=1)#num_tokens
-        perplexity = 2.**(entropy/tf.math.log(2.))
+        perplexity = 2.**(-entropy/tf.math.log(2.))
         mean_perplexity = tf.reduce_mean(perplexity)
+
         return dict(loss=tf.reduce_mean(log_likelihood_samples - kl_term_samples),
                     var_exp=tf.reduce_mean(log_likelihood_samples),
                     kl_term=tf.reduce_mean(kl_term_samples),
                     mean_perplexity=mean_perplexity)
 
 
-class Encoder(AbstractModule):
-    def __init__(self, hidden_size, num_embeddings, name=None):
-        super(Encoder, self).__init__(name=name)
-        num_groups = 4
-        num_blk_per_group = 1
-        num_layers = num_groups * num_blk_per_group
-        post_gain = 1. / num_layers ** 2
-        self.blocks = snt.Sequential([snt.Conv2D(hidden_size, 7, name='input'),
-                                      snt.Sequential([ResBlock(hidden_size, post_gain),
-                                                      lambda x: tf.nn.max_pool2d(x, 2)], name='group_1'),
-                                      snt.Sequential([ResBlock(hidden_size * 2, post_gain),
-                                                      lambda x: tf.nn.max_pool2d(x, 2)], name='group_2'),
-                                      snt.Sequential([ResBlock(hidden_size * 4, post_gain),
-                                                      lambda x: tf.nn.max_pool2d(x, 2)], name='group_3'),
-                                      snt.Sequential([ResBlock(hidden_size * 8, post_gain),
-                                                      lambda x: tf.nn.max_pool2d(x, 2)], name='group_4'),
-                                      snt.Sequential([tf.nn.relu,
-                                                      snt.Conv2D(num_embeddings, 1, name='output')], name='group_5'),
-                                      ], name='blocks')
-
-    def _build(self, img, **kwargs):
-        return self.blocks(img)
-
-
-def upsample(x):
-    # shape = x.shape[1:3]
-    # return tf.image.resize(x,[shape[0]*2, shape[1]*2], method = 'nearest')
-    return tf.repeat(tf.repeat(x, 2, axis=1), 2, axis=2)
-
-
-class Decoder(AbstractModule):
-    def __init__(self, hidden_size, num_channels=1, name=None):
-        super(Decoder, self).__init__(name=name)
-        num_groups = 4
-        num_blk_per_group = 1
-        num_layers = num_groups * num_blk_per_group
-        post_gain = 1. / num_layers ** 2
-        self.blocks = snt.Sequential([snt.Conv2D(hidden_size // 2, 1, name='input'),
-                                      snt.Sequential([ResBlock(hidden_size * 8, post_gain),
-                                                      upsample], name='group_1'),
-                                      snt.Sequential([ResBlock(hidden_size * 4, post_gain),
-                                                      upsample], name='group_2'),
-                                      snt.Sequential([ResBlock(hidden_size * 2, post_gain),
-                                                      upsample], name='group_3'),
-                                      snt.Sequential([ResBlock(hidden_size, hidden_size, post_gain),
-                                                      upsample], name='group_4'),
-                                      snt.Sequential([tf.nn.relu,
-                                                      snt.Conv2D(num_channels, 1, name='output')], name='group_5'),
-                                      ], name='blocks')
-
-    def _build(self, img, **kwargs):
-        return self.blocks(img)
-
-
-class dVAE(AbstractModule):
-    def __init__(self, num_embeddings, embedding_size, num_samples=1, name=None):
-        super(dVAE, self).__init__(name=name)
-        self.num_embeddings = num_embeddings
-        self.embedding_size = embedding_size
-        self.num_samples = num_samples
-        self.embeddings = tf.Variable(
-            initial_value=tf.random.normal(shape=(num_embeddings, embedding_size), dtype=tf.float32), name="embeddings")
-        self.decoder = Decoder(hidden_size=64, num_channels=1, name='decoder')
-        self.encoder = Encoder(hidden_size=64, num_embeddings=num_embeddings, name='encoder')
-
-    @tf.function(input_signature=[tf.TensorSpec([None, None, None, 1], tf.float32)])
-    def encode(self, img):
-        return self.encoder(img)
-
-    @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], tf.float32)])
-    def decode(self, latent):
-        return self.decoder(latent)
-
-    def log_likelihood(self, img, mu, logb):
-        """
-        Log-Laplace distribution.
-
-        Args:
-            img: [b,h,w,1]
-            mu: [b,h,w,1]
-            logb: [b,h,w,1]
-
-        Returns:
-            log_prob scalar
-        """
-        log_prob = - tf.math.abs(tf.math.log(img) - mu) / tf.math.exp(logb) \
-                   - tf.math.log(2.) - tf.math.log(img) - logb
-        return tf.reduce_sum(log_prob)
-
-    def log_token_prior(self, token_onehot):
-        """
-        Uniform categorical gives each token a 1/num_tokens probability of being drawn.
-
-        Args:
-            tokens: [b,h,w,num_embeddings]
-
-        Returns:
-            [b,h,w]
-        """
-        return tf.fill(tf.shape(token_onehot)[:-1], -tf.math.log(self.num_embeddings))
-
-    def _build(self, img, temperature, beta, **kwargs):
-        """
-        log P(img, tokens) > E_{tokens ~ P(tokens | img)}[log P(img | tokens) - beta * (log P(tokens | img) - log P(tokens))]
-
-        P(tokens | img) == encoder(img) -> tokens
-        P(img | tokens) == decoder(tokens) -> img
-
-        Args:
-            img: [b, h, w, 1]
-            **kwargs:
-
-        Returns:
-
-        """
-        logits = self.encoder(img)  # [b,h,w,num_embeddings]
-        shape = tf.shape(logits)
-        flat_logits = tf.reshape(logits, (-1, self.num_embeddings))  # [b*h*w,num_embeddings]
-
-        def _sample_elbo(i):
-            # sample tokens
-            gumbel_sample = tf.math.log(-tf.math.log(tf.random.uniform(shape=flat_logits.shape,
-                                                                       dtype=tf.float32, name='gumbel')))
-            token_onehot = tf.nn.softmax((gumbel_sample + flat_logits) / temperature, axis=-1)  # [b*h*w,num_embeddings]
-
-            token_embeddings = tf.matmul(token_onehot, self.embeddings)  # [b*h*w,embedding_size]
-            # reshape to img shape
-            token_embeddings = tf.reshape(token_embeddings, tf.concat([shape[0:-1], [self.embedding_size]], 0))
-            token_embeddings.set_shape([None, None, None, self.embedding_size])
-            # decode the tokens into likelihood params
-            decoded_img = self.decoder(token_embeddings)
-            mu = decoded_img[..., 0:1]
-            logb = decoded_img[..., 1:2]
-
-            var_exp = self.log_likelihood(img, mu, logb)
-            kl = tf.reduce_sum(tf.reduce_sum(token_onehot * logits, axis=-1) - self.log_token_prior(token_onehot))
-
-            elbo = var_exp - beta * kl
-            return elbo, tf.math.exp(mu)
-
-        elbos, decoded_imgs = tf.vectorized_map(_sample_elbo, tf.range(self.num_samples))
-
-        return tf.reduce_mean(elbos), tf.resuce_mean(decoded_imgs, axis=0)
-
-
-MODEL_MAP = dict(model1=dVAE)
+MODEL_MAP = dict(dis_graph_vae=DiscreteGraphVAE)
 
 
 def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters, strategy=None,
@@ -291,8 +148,12 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
 
     def build_loss(**loss_parameters):
         def loss(model_outputs, batch):
-            (elbo, decoded_img) = model_outputs
-            return elbo
+            graph, temperature, beta = batch
+            #model_outputs = dict(loss=tf.reduce_mean(log_likelihood_samples - kl_term_samples),
+                    # var_exp=tf.reduce_mean(log_likelihood_samples),
+                    # kl_term=tf.reduce_mean(kl_term_samples),
+                    # mean_perplexity=mean_perplexity)
+            return model_outputs['loss']
 
         return loss
 
@@ -348,7 +209,7 @@ def main(data_dir, config):
 
 
 if __name__ == '__main__':
-    config = dict(model_type='model1',
+    config = dict(model_type='dis_graph_vae',
                   model_parameters=dict(message_size=8, latent_size=16, input_size=1),
                   optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
                   loss_parameters=dict())
