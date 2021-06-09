@@ -1,19 +1,23 @@
 import sys
 
 sys.path.insert(1, '/data/s2675544/git/neural_deprojection/')
+sys.path.insert(1, '/home/matthijs/git/neural_deprojection/')
 
 from neural_deprojection.graph_net_utils import AbstractModule, \
-    histogramdd
-import tensorflow as tf
-# import tensorflow_addons as tfa
-
+    histogramdd, efficient_nn_index
 from graph_nets import blocks
-import sonnet as snt
 from graph_nets.modules import SelfAttention
 from sonnet.src import utils, once
-from tensorflow_probability.python.math.psd_kernels.internal import util
-from graph_nets.utils_tf import fully_connect_graph_static
+from graph_nets.utils_tf import fully_connect_graph_static, concat
+import numpy as np
 
+import tensorflow as tf
+import sonnet as snt
+from graph_nets.graphs import GraphsTuple
+from graph_nets.utils_tf import fully_connect_graph_dynamic
+from neural_deprojection.graph_net_utils import AbstractModule, gaussian_loss_function, \
+    reconstruct_fields_from_gaussians
+import tensorflow_probability as tfp
 
 class MultiHeadLinear(AbstractModule):
     """Linear module, optionally including bias."""
@@ -436,10 +440,14 @@ class Model(AbstractModule):
                                              minval=tf.reduce_min(positions, axis=0),
                                              maxval=tf.reduce_max(positions, axis=0))
 
-        distance_matrix = util.pairwise_square_distance_matrix(positions, decode_positions, 1)  # [10000, 1000]
+        # distance_matrix = util.pairwise_square_distance_matrix(positions, decode_positions, 1)  # [10000, 1000]
+        # nn_index = tf.argmin(distance_matrix, axis=0)  # [1000]
+        nn_index = efficient_nn_index(query_positions=decode_positions, positions=positions)
         encoded_graph = encoded_graph._replace(nodes=decode_positions)
-        nn_index = tf.argmin(distance_matrix, axis=0)  # [1000]
         encoded_graph = fully_connect_graph_static(encoded_graph)  # TODO: only works if batch_size=1, might need to use dynamic
+        n_edges = encoded_graph.edges.shape[0]
+        p = 2 * np.log(number_of_nodes) / number_of_nodes
+
         encoded_graph = encoded_graph._replace(nodes=None)
         decoded_graph = self.epd_decoder(encoded_graph, self._core_steps, decode_positions)
         for i in range(7):
@@ -450,5 +458,269 @@ class Model(AbstractModule):
             tf.summary.scalar(f"properties{i+3}_std_after", tf.math.reduce_std(decoded_graph.nodes[:,i]), step=self.step)
 
         return decoded_graph, nn_index
+
+
+class DiscreteGraphVAE(AbstractModule):
+    def __init__(self, encoder_fn: AbstractModule, decode_fn: AbstractModule, embedding_dim: int = 64,
+                 num_embedding: int = 1024, num_gaussian_components:int=128,
+                 num_token_samples: int = 1, num_properties: int = 10, encoder_kwargs: dict = None,
+                 decode_kwargs: dict = None, name=None):
+        super(DiscreteGraphVAE, self).__init__(name=name)
+        # (num_embedding, embedding_dim)
+        self.embeddings = tf.Variable(initial_value=tf.random.truncated_normal((num_embedding, embedding_dim)),
+                                      name='embeddings')
+        self.encoder = encoder_fn(num_output=num_embedding, output_size=embedding_dim,
+                                  **encoder_kwargs)
+        self.decoder = decode_fn(num_output=num_gaussian_components, output_size=num_properties*10,
+                                 **decode_kwargs)
+        self.num_token_samples = num_token_samples
+        self.num_properties = num_properties
+        self.num_embedding = num_embedding
+
+    # @tf.function(input_signature=tf.TensorSpec(shape=[None], dtype=tf.float32))  # what is the shape ???
+    # def sample_encoder(self, graph):
+    #     return self.encoder(graph)
+
+    @tf.function(input_signature=[tf.TensorSpec([None,3], dtype=tf.float32),
+                                  tf.TensorSpec([None,None], dtype=tf.float32),
+                                  tf.TensorSpec([], dtype=tf.float32)])
+    def sample_decoder(self, positions, logits, temperature):
+        token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
+        token_samples_onehot = token_distribution.sample((1,),
+                                                         name='token_samples')
+        token_sample_onehot = token_samples_onehot[0]#[n_node, num_embedding]
+        token_sample = tf.matmul(token_sample_onehot, self.embeddings)  # [n_node, embedding_dim]
+        n_node = tf.shape(token_sample)[0]
+        latent_graph = GraphsTuple(nodes=token_sample,
+                                   edges=None,
+                                   globals=tf.constant([0.], dtype=tf.float32),
+                                   senders=None,
+                                   receivers=None,
+                                   n_node=[n_node],
+                                   n_edge=tf.constant([0], dtype=tf.int32))  # [n_node, embedding_dim]
+        latent_graph = fully_connect_graph_dynamic(latent_graph)
+        gaussian_tokens = self.decoder(latent_graph)  # nodes=[num_gaussian_components, component_dim]
+        reconstructed_fields = reconstruct_fields_from_gaussians(gaussian_tokens, positions)
+        return reconstructed_fields
+
+    def _build(self, batch, **kwargs) -> dict:
+        graph, temperature, beta = batch
+        encoded_graph = self.encoder(graph)
+        n_node = encoded_graph.n_node
+        # nodes = [n_node, num_embeddings]
+        # node = [num_embeddings] -> log(p_i) = logits
+        # -> [S, n_node, embedding_dim]
+        logits = encoded_graph.nodes  # [n_node, num_embeddings]
+        log_norm = tf.math.reduce_logsumexp(logits, axis=1)  # [n_node]
+        token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
+        token_samples_onehot = token_distribution.sample((self.num_token_samples,),
+                                                         name='token_samples')  # [S, n_node, num_embeddings]
+
+        def _single_decode(token_sample_onehot):
+            """
+
+            Args:
+                token_sample: [n_node, embedding_dim]
+
+            Returns:
+                log_likelihood: scalar
+                kl_term: scalar
+            """
+            token_sample = tf.matmul(token_sample_onehot, self.embeddings)  # [n_node, embedding_dim]  # = z ~ q(z|x)
+            latent_graph = GraphsTuple(nodes=token_sample,
+                                       edges=None,
+                                       globals=tf.constant([0.], dtype=tf.float32),
+                                       senders=None,
+                                       receivers=None,
+                                       n_node=n_node,
+                                       n_edge=tf.constant([0], dtype=tf.int32))  # [n_node, embedding_dim]
+            latent_graph = fully_connect_graph_dynamic(latent_graph)
+            gaussian_tokens = self.decoder(latent_graph)  # nodes=[num_gaussian_components, component_dim]
+            print(graph)
+            _, log_likelihood = gaussian_loss_function(gaussian_tokens.nodes, graph)
+            # [n_node, num_embeddings].[n_node, num_embeddings]
+            sum_selected_logits = tf.math.reduce_sum(token_sample_onehot * logits, axis=1)  # [n_node]
+            kl_term = sum_selected_logits - tf.cast(self.num_embedding, tf.float32) * tf.cast(log_norm, tf.float32) + \
+                      tf.cast(self.num_embedding, tf.float32) * tf.math.log(tf.cast(self.num_embedding, tf.float32))  # [n_node]
+            kl_term = beta * tf.reduce_mean(kl_term)
+            return log_likelihood, kl_term
+
+        log_likelihood_samples, kl_term_samples = tf.vectorized_map(_single_decode, token_samples_onehot)  # [S],[S]
+
+        # good metric = average entropy of embedding usage! The more precisely embeddings are selected the lower the entropy.
+
+        log_prob_tokens = logits - log_norm[:, None]#num_tokens, num_embeddings
+        entropy = -tf.reduce_sum(log_prob_tokens * tf.math.exp(log_prob_tokens), axis=1)#num_tokens
+        perplexity = 2.**(-entropy/tf.math.log(2.))
+        mean_perplexity = tf.reduce_mean(perplexity)
+
+        return dict(loss=tf.reduce_mean(log_likelihood_samples - kl_term_samples),
+                    var_exp=tf.reduce_mean(log_likelihood_samples),
+                    kl_term=tf.reduce_mean(kl_term_samples),
+                    mean_perplexity=mean_perplexity)
+
+
+class GraphMappingNetwork(AbstractModule):
+    """
+    Encoder network that updates the graph to viable input for the DiscreteGraphVAE network.
+    """
+
+    def __init__(self,
+                 num_output: int,
+                 output_size: int,
+                 node_size: int = 4,
+                 edge_size: int = 4,
+                 starting_global_size: int = 10,
+                 inter_graph_connect_prob: float = 0.01,
+                 crossing_steps: int = 4,
+                 reducer=tf.math.unsorted_segment_mean,
+                 properties_size=10,
+                 name=None):
+        super(GraphMappingNetwork, self).__init__(name=name)
+        self.num_output = num_output
+        self.output_size = output_size
+        self.crossing_steps=crossing_steps
+        self.empty_node_variable = tf.Variable(initial_value=tf.random.truncated_normal((node_size,)),
+                                               name='empty_token_node')
+
+        # values for different kinds of edges in the graph, which will be learned
+        self.intra_graph_edge_variable = tf.Variable(initial_value=tf.random.truncated_normal((edge_size,)),
+                                                     name='intra_graph_edge_var')
+        self.intra_token_graph_edge_variable = tf.Variable(initial_value=tf.random.truncated_normal((edge_size,)),
+                                                           name='intra_token_graph_edge_var')
+        self.inter_graph_edge_variable = tf.Variable(initial_value=tf.random.truncated_normal((edge_size,)),
+                                                     name='inter_graph_edge_var')
+        self.starting_global_variable = tf.Variable(initial_value=tf.random.truncated_normal((starting_global_size,)),
+                                                    name='starting_global_var')
+
+        self.inter_graph_connect_prob = inter_graph_connect_prob
+
+        self.projection_node_block = blocks.NodeBlock(lambda: snt.Linear(node_size, name='project'),
+                                                      use_received_edges=False,
+                                                      use_sent_edges=False,
+                                                      use_nodes=True,
+                                                      use_globals=False)
+
+        node_model_fn = lambda: snt.nets.MLP([node_size, node_size], activate_final=True, activation=tf.nn.leaky_relu)
+        edge_model_fn = lambda: snt.nets.MLP([edge_size, edge_size], activate_final=True, activation=tf.nn.leaky_relu)
+        global_model_fn = lambda: snt.nets.MLP([starting_global_size, starting_global_size], activate_final=True,
+                                               activation=tf.nn.leaky_relu)
+
+        self.edge_block = blocks.EdgeBlock(edge_model_fn,
+                                           use_edges=True,
+                                           use_receiver_nodes=True,
+                                           use_sender_nodes=True,
+                                           use_globals=True)
+
+        self.node_block = blocks.NodeBlock(node_model_fn,
+                                           use_received_edges=True,
+                                           use_sent_edges=True,
+                                           use_nodes=True,
+                                           use_globals=True)
+
+        self.global_block = blocks.GlobalBlock(global_model_fn,
+                                               use_edges=True,
+                                               use_nodes=True,
+                                               use_globals=True,
+                                               edges_reducer=reducer)
+
+        self.output_projection_node_block = blocks.NodeBlock(lambda: snt.Linear(self.output_size, name='project'),
+                                                             use_received_edges=False,
+                                                             use_sent_edges=False,
+                                                             use_nodes=True,
+                                                             use_globals=False)
+
+    def _build(self, graph):
+        n_edge = graph.n_edge[0]
+        graph = graph.replace(edges=tf.tile(self.intra_graph_edge_variable[None, :], [n_edge, 1]))
+        graph = self.projection_node_block(graph)  # [n_nodes, node_size]
+        n_node = tf.shape(graph.nodes)[0]
+        # create fully connected output token nodes
+        token_start_nodes = tf.tile(self.empty_node_variable[None, :], [self.num_output, 1])
+        graph.replace(n_node=tf.constant([10000], dtype=tf.float32))
+        token_graph = GraphsTuple(nodes=token_start_nodes,
+                                  edges=None,
+                                  globals=tf.constant([0.], dtype=tf.float32),
+                                  senders=None,
+                                  receivers=None,
+                                  n_node=tf.constant([self.num_output], dtype=tf.int32),
+                                  n_edge=tf.constant([0], dtype=tf.int32))
+        token_graph = fully_connect_graph_static(token_graph)
+        n_edge = token_graph.n_edge[0]
+        token_graph = token_graph.replace(edges=tf.tile(self.intra_token_graph_edge_variable[None, :], [n_edge, 1]))
+        concat_graph = concat([graph, token_graph], axis=0)  # n_node = [n_nodes, n_tokes]
+        concat_graph = concat_graph.replace(
+            n_node=tf.reduce_sum(concat_graph.n_node, keepdims=True))  # n_node=[n_nodes+n_tokens]
+        # add random edges between
+        # choose random unique set of nodes in graph, choose random set of nodes in token_graph
+        gumbel = -tf.math.log(-tf.math.log(tf.random.uniform((n_node,))))
+        n_connect_edges = tf.cast(tf.multiply(tf.constant([self.inter_graph_connect_prob]), tf.cast(n_node, tf.float32)), tf.int32)
+        _, graph_senders = tf.nn.top_k(gumbel, n_connect_edges[0])
+        token_graph_receivers = n_node + tf.random.uniform(shape=n_connect_edges, minval=0, maxval=self.num_output,
+                                                           dtype=tf.int32)
+        senders = tf.concat([concat_graph.senders, graph_senders, token_graph_receivers],
+                            axis=0)  # add bi-directional senders + receivers
+        receivers = tf.concat([concat_graph.receivers, token_graph_receivers, graph_senders], axis=0)
+
+        # print(tf.concat([tf.constant(2 * n_connect_edges, dtype=tf.int32), tf.constant([1], dtype=tf.int32)], axis=0))
+        inter_edges = tf.tile(self.inter_graph_edge_variable[None, :], tf.constant([200, 1], dtype=tf.int32))  # 200 = 10000(n_nodes) * 0.01 * 2
+        edges = tf.concat([concat_graph.edges, inter_edges], axis=0)
+        concat_graph = concat_graph.replace(senders=senders, receivers=receivers, edges=edges,
+                                            n_edge=concat_graph.n_edge[0] + 2 * n_connect_edges[0], #concat_graph.n_edge[0] + 2 * n_connect_edges
+                                            globals=self.starting_global_variable[None, :])
+
+        latent_graph = concat_graph
+        for _ in range(
+                self.crossing_steps):  # this would be that theoretical crossing time for information through the graph
+            input_nodes = latent_graph.nodes
+            latent_graph = self.edge_block(latent_graph)
+            latent_graph = self.node_block(latent_graph)
+            latent_graph = self.global_block(latent_graph)
+            latent_graph = latent_graph.replace(nodes=latent_graph.nodes + input_nodes)  # residual connections
+
+        output_graph = self.output_projection_node_block(latent_graph)
+
+        return output_graph
+
+
+class EncoderNetwork3D(GraphMappingNetwork):
+    def __init__(self, num_output: int,
+                 output_size: int,
+                 inter_graph_connect_prob: float = 0.01,
+                 reducer=tf.math.unsorted_segment_mean,
+                 starting_global_size=4,
+                 node_size=64,
+                 edge_size=4,
+                 crossing_steps=4,
+                 name=None):
+        super(EncoderNetwork3D, self).__init__(num_output=num_output,
+                                               output_size=output_size,
+                                               inter_graph_connect_prob=inter_graph_connect_prob,
+                                               reducer=reducer,
+                                               starting_global_size=starting_global_size,
+                                               node_size=node_size,
+                                               edge_size=edge_size,
+                                               crossing_steps=crossing_steps,
+                                               name=name)
+
+class DecoderNetwork3D(GraphMappingNetwork):
+    def __init__(self, num_output: int,
+                 output_size: int,
+                 inter_graph_connect_prob: float = 0.01,
+                 reducer=tf.math.unsorted_segment_mean,
+                 starting_global_size=4,
+                 node_size=64,
+                 edge_size=4,
+                 crossing_steps=4,
+                 name=None):
+        super(DecoderNetwork3D, self).__init__(num_output=num_output,
+                                               output_size=output_size,
+                                               inter_graph_connect_prob=inter_graph_connect_prob,
+                                               reducer=reducer,
+                                               starting_global_size=starting_global_size,
+                                               node_size=node_size,
+                                               edge_size=edge_size,
+                                               crossing_steps=crossing_steps,
+                                               name=name)
 
 
