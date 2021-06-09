@@ -47,6 +47,10 @@ class DiscreteGraphVAE(AbstractModule):
         self.num_properties = num_properties
         self.num_embedding = num_embedding
 
+    @tf.function(input_signature=tf.TensorSpec(shape=[None], dtype=tf.float32))  # what is the shape ???
+    def sample_encoder(self, graph):
+        return self.encoder(graph)
+
     @tf.function(input_signature=[tf.TensorSpec([None,3], dtype=tf.float32),
                                   tf.TensorSpec([None,None], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32)])
