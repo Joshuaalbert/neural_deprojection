@@ -37,7 +37,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
                 return tf.reduce_mean((tf.gather(graph.nodes[:, 3:], nn_index) - decoded_graph.nodes) ** 2 * tf.constant([0,0,0,1,0,0,0],dtype=graph.nodes.dtype))
         else:
             def loss(model_outputs, batch):
-                graph, temperature, beta = batch
+                graph = batch
                 # model_outputs = dict(loss=tf.reduce_mean(log_likelihood_samples - kl_term_samples),
                 # var_exp=tf.reduce_mean(log_likelihood_samples),
                 # kl_term=tf.reduce_mean(kl_term_samples),
@@ -68,7 +68,7 @@ def build_dataset(tfrecords, temperature, beta, batch_size):
 
     dataset = dataset.map(lambda graph_data_dict, img, cluster_idx, projection_idx, vprime:
                           graph_data_dict).shuffle(buffer_size=50)
-    dataset = dataset.map(lambda graph_data_dict: (GraphsTuple(**graph_data_dict), temperature, beta))
+    dataset = dataset.map(lambda graph_data_dict: GraphsTuple(**graph_data_dict))
 
     # dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=batch_size)
 
@@ -145,25 +145,28 @@ def train_disc_graph_vae(data_dir, config):
     train_one_epoch = build_training(model_type='discvae',
                                      model_parameters=dict(encoder_fn=EncoderNetwork3D,
                                                            decode_fn=DecoderNetwork3D,
-                                                           embedding_dim=5, # 64
-                                                           num_embedding=5, # 64
-                                                           num_gaussian_components=5, # 128
+                                                           embedding_dim=64, # 64
+                                                           num_embedding=64, # 64
+                                                           num_gaussian_components=128, # 128
+                                                           num_encoded_components=128,
                                                            num_token_samples=1,
                                                            num_properties=7,
                                                            encoder_kwargs=dict(inter_graph_connect_prob=0.01,
                                                                                reducer=tf.math.unsorted_segment_mean,
-                                                                               starting_global_size=3,
-                                                                               node_size=5, #64
-                                                                               edge_size=7,
+                                                                               starting_global_size=16,
+                                                                               node_size=64, #64
+                                                                               edge_size=8,
                                                                                crossing_steps=1,
                                                                                name=None),
                                                            decode_kwargs=dict(inter_graph_connect_prob=0.01,
                                                                               reducer=tf.math.unsorted_segment_mean,
-                                                                              starting_global_size=2,
-                                                                              node_size=5, # 64
-                                                                              edge_size=9,
+                                                                              starting_global_size=16,
+                                                                              node_size=64, # 64
+                                                                              edge_size=8,
                                                                               crossing_steps=1,
                                                                               name=None),
+                                                           temperature=50.,
+                                                           beta=1.,
                                                            name=None),
                                      **config)
 
