@@ -83,7 +83,9 @@ def reconstruct_fields_from_gaussians(tokens, positions):
         properties = tf.transpose(properties, (1,0)) #N, P
         return properties
 
-    return tf.vectorized_map(_single_batch_evaluation, (positions, tokens))  # [batch, N, P]
+    return _single_batch_evaluation((positions, tokens)) #[N, P]
+    # return tf.vectorized_map(_single_batch_evaluation, (positions, tokens))  # [batch, N, P]
+
 def gaussian_loss_function(gaussian_tokens, graph):
     """
     Args:
@@ -172,6 +174,13 @@ class TrainOneEpoch(Module):
     def loss(self, model_output, batch):
         return self._loss(model_output, batch)
 
+    # def summarize(self, model_output, batch):
+    #     summaries = model_output['summaries']
+    #     for key in summaries:
+    #         summary_func = summaries[key][0]
+    #         summary_input = summaries[key][1]
+
+
     def train_step(self, batch):
         """
         Trains on a single batch.
@@ -183,10 +192,11 @@ class TrainOneEpoch(Module):
             loss
         """
         with tf.GradientTape() as tape:
-            model_output = self.model(
-
-            )
+            if not isinstance(batch, (list, tuple)):
+                batch = (batch,)
+            model_output = self.model(*batch)
             loss = self.loss(model_output, batch)
+            # summaries = self.summarize(model_output, batch)
         params = self.model.trainable_variables
         grads = tape.gradient(loss, params)
 
@@ -236,7 +246,7 @@ class TrainOneEpoch(Module):
                 _loss = self.strategy.run(self.loss, args=(model_output, test_batch))
                 loss += self.strategy.reduce("sum", _loss, axis=0)
             else:
-                model_output = self.model(test_batch)
+                model_output = self.model(*test_batch)
                 loss += self.loss(model_output, test_batch)
             num_batches += 1.
         tf.summary.scalar('loss', loss / num_batches, step=self.epoch)
