@@ -145,23 +145,23 @@ def train_disc_graph_vae(data_dir, config):
     train_one_epoch = build_training(model_type='discvae',
                                      model_parameters=dict(encoder_fn=EncoderNetwork3D,
                                                            decode_fn=DecoderNetwork3D,
-                                                           embedding_dim=4, # 64
-                                                           num_embedding=4, # 64
-                                                           num_gaussian_components=4, # 128
+                                                           embedding_dim=5, # 64
+                                                           num_embedding=5, # 64
+                                                           num_gaussian_components=5, # 128
                                                            num_token_samples=1,
                                                            num_properties=7,
                                                            encoder_kwargs=dict(inter_graph_connect_prob=0.01,
                                                                                reducer=tf.math.unsorted_segment_mean,
-                                                                               starting_global_size=4,
-                                                                               node_size=4, #64
-                                                                               edge_size=4,
+                                                                               starting_global_size=3,
+                                                                               node_size=5, #64
+                                                                               edge_size=7,
                                                                                crossing_steps=1,
                                                                                name=None),
                                                            decode_kwargs=dict(inter_graph_connect_prob=0.01,
                                                                               reducer=tf.math.unsorted_segment_mean,
-                                                                              starting_global_size=4,
-                                                                              node_size=4, # 64
-                                                                              edge_size=4,
+                                                                              starting_global_size=2,
+                                                                              node_size=5, # 64
+                                                                              edge_size=9,
                                                                               crossing_steps=1,
                                                                               name=None),
                                                            name=None),

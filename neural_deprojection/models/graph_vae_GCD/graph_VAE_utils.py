@@ -506,14 +506,21 @@ class DiscreteGraphVAE(AbstractModule):
     def _build(self, batch, **kwargs) -> dict:
         graph, temperature, beta = batch
         encoded_graph = self.encoder(graph)
-        print('encoded_graph', encoded_graph)
-        print(dir(encoded_graph.nodes))
-        encoded_graph.replace(nodes=encoded_graph.nodes[10000:])
+        # print('\n encoded_graph', encoded_graph, '\n')
+        # encoded_graph = encoded_graph.replace(nodes=encoded_graph.nodes[10000:],
+        #                                       edges=None,
+        #                                       receivers=None,
+        #                                       senders=None,
+        #                                       n_node=tf.constant([self.num_embedding], dtype=tf.int32),
+        #                                       n_edge=tf.constant(0, dtype=tf.int32))
+        # print('\n encoded_graph 2', encoded_graph, '\n')
         n_node = encoded_graph.n_node
+        # print('n_node', n_node)
         # nodes = [n_node, num_embeddings]
         # node = [num_embeddings] -> log(p_i) = logits
         # -> [S, n_node, embedding_dim]
         logits = encoded_graph.nodes  # [n_node, num_embeddings]
+        # print('\n logits', logits, '\n')
         log_norm = tf.math.reduce_logsumexp(logits, axis=1)  # [n_node]
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
         token_samples_onehot = token_distribution.sample((self.num_token_samples,),
@@ -537,9 +544,10 @@ class DiscreteGraphVAE(AbstractModule):
                                        receivers=None,
                                        n_node=n_node,
                                        n_edge=tf.constant([0], dtype=tf.int32))  # [n_node, embedding_dim]
-            print('latent_graph', latent_graph)
             latent_graph = fully_connect_graph_dynamic(latent_graph)
+            # print('\n latent_graph', latent_graph, '\n')
             gaussian_tokens = self.decoder(latent_graph)  # nodes=[num_gaussian_components, component_dim]
+            # print('\n gaussian_tokens_nodes', gaussian_tokens.nodes, '\n')
             _, log_likelihood = gaussian_loss_function(gaussian_tokens.nodes, graph)
             # [n_node, num_embeddings].[n_node, num_embeddings]
             sum_selected_logits = tf.math.reduce_sum(token_sample_onehot * logits, axis=1)  # [n_node]
@@ -548,7 +556,7 @@ class DiscreteGraphVAE(AbstractModule):
             kl_term = beta * tf.reduce_mean(kl_term)
             return log_likelihood, kl_term
 
-        print('token_samples_onehot',token_samples_onehot)
+        # print(token_samples_onehot[0])
 
         log_likelihood_samples, kl_term_samples = _single_decode(token_samples_onehot[0])  # tf.vectorized_map(_single_decode, token_samples_onehot)  # [S],[S]
 
@@ -558,6 +566,8 @@ class DiscreteGraphVAE(AbstractModule):
         entropy = -tf.reduce_sum(log_prob_tokens * tf.math.exp(log_prob_tokens), axis=1)#num_tokens
         perplexity = 2.**(-entropy/tf.math.log(2.))
         mean_perplexity = tf.reduce_mean(perplexity)
+
+        print(tf.reduce_mean(log_likelihood_samples - kl_term_samples))
 
         return dict(loss=tf.reduce_mean(log_likelihood_samples - kl_term_samples),
                     var_exp=tf.reduce_mean(log_likelihood_samples),
@@ -650,7 +660,8 @@ class GraphMappingNetwork(AbstractModule):
                                   receivers=None,
                                   n_node=tf.constant([self.num_output], dtype=tf.int32),
                                   n_edge=tf.constant([0], dtype=tf.int32))
-        token_graph = fully_connect_graph_static(token_graph)
+        token_graph = fully_connect_graph_dynamic(token_graph)
+        # print('\n token graph', token_graph, '\n')
         n_edge = token_graph.n_edge[0]
         token_graph = token_graph.replace(edges=tf.tile(self.intra_token_graph_edge_variable[None, :], [n_edge, 1]))
         concat_graph = concat([graph, token_graph], axis=0)  # n_node = [n_nodes, n_tokes]
@@ -674,7 +685,7 @@ class GraphMappingNetwork(AbstractModule):
                                             globals=self.starting_global_variable[None, :])
 
         latent_graph = concat_graph
-        print('concat_graph', concat_graph)
+        # print('concat_graph', concat_graph)
         for _ in range(
                 self.crossing_steps):  # this would be that theoretical crossing time for information through the graph
             input_nodes = latent_graph.nodes
@@ -683,7 +694,12 @@ class GraphMappingNetwork(AbstractModule):
             latent_graph = self.global_block(latent_graph)
             latent_graph = latent_graph.replace(nodes=latent_graph.nodes + input_nodes)  # residual connections
 
-
+        latent_graph = latent_graph.replace(nodes=latent_graph.nodes[n_node:],
+                                              edges=None,
+                                              receivers=None,
+                                              senders=None,
+                                              n_node=tf.constant([self.num_output], dtype=tf.int32),
+                                              n_edge=tf.constant(0, dtype=tf.int32))
         output_graph = self.output_projection_node_block(latent_graph)
 
 
