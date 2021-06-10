@@ -666,7 +666,7 @@ class GraphMappingNetwork(AbstractModule):
         inter_edges = tf.tile(self.inter_graph_edge_variable[None, :], tf.constant([200, 1], dtype=tf.int32))  # 200 = 10000(n_nodes) * 0.01 * 2
         edges = tf.concat([concat_graph.edges, inter_edges], axis=0)
         concat_graph = concat_graph.replace(senders=senders, receivers=receivers, edges=edges,
-                                            n_edge=concat_graph.n_edge[0] + 2 * n_connect_edges[0], #concat_graph.n_edge[0] + 2 * n_connect_edges
+                                            n_edge=concat_graph.n_edge[0] + 2 * n_connect_edges[0], # concat_graph.n_edge[0] + 2 * n_connect_edges
                                             globals=self.starting_global_variable[None, :])
 
         latent_graph = concat_graph

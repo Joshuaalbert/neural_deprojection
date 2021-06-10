@@ -8,7 +8,6 @@ from neural_deprojection.models.graph_vae_GCD.graph_VAE_utils import Model, Disc
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, build_log_dir, \
     build_checkpoint_dir, batch_dataset_set_graph_tuples, get_distribution_strategy
 import glob, os
-import numpy as np
 import tensorflow as tf
 import json
 import sonnet as snt
