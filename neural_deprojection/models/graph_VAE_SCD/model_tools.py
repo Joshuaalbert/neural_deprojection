@@ -1,3 +1,5 @@
+import sys
+
 sys.path.insert(1, '/data/s1825216/git/neural_deprojection/')
 
 from neural_deprojection.graph_net_utils import AbstractModule
@@ -8,6 +10,7 @@ from graph_nets import blocks
 import sonnet as snt
 import numpy as np
 from graph_nets.graphs import GraphsTuple
+from graph_nets.utils_tf import fully_connect_graph_static, concat
 
 
 class GraphMappingNetwork(AbstractModule):
@@ -18,6 +21,9 @@ class GraphMappingNetwork(AbstractModule):
     def __init__(self,
                  num_output: int,
                  output_size: int,
+                 node_size: int,
+                 edge_size: int,
+                 starting_global_size: int,
                  inter_graph_connect_prob: float = 0.01,
                  reducer=tf.math.unsorted_segment_mean,
                  properties_size=11,
