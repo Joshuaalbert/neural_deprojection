@@ -70,7 +70,7 @@ def build_dataset(tfrecords, temperature, beta, batch_size):
                           graph_data_dict).shuffle(buffer_size=50)
     dataset = dataset.map(lambda graph_data_dict: (GraphsTuple(**graph_data_dict), temperature, beta))
 
-    dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=batch_size)
+    # dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=batch_size)
 
     return dataset
 
@@ -129,7 +129,7 @@ def train_ae_3d(data_dir, config):
                           debug=False)
 
 def train_disc_graph_vae(data_dir, config):
-    strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1)
+    # strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1)
 
     train_tfrecords = glob.glob(os.path.join(data_dir, 'train', '*.tfrecords'))
     test_tfrecords = glob.glob(os.path.join(data_dir, 'test', '*.tfrecords'))
@@ -141,31 +141,31 @@ def train_disc_graph_vae(data_dir, config):
     train_dataset = build_dataset(train_tfrecords, temperature=50., beta=1., batch_size=1)
     test_dataset = build_dataset(test_tfrecords, temperature=50., beta=1., batch_size=1)
 
-    with strategy.scope():
-        train_one_epoch = build_training(model_type='discvae',
-                                         model_parameters=dict(encoder_fn=EncoderNetwork3D,
-                                                               decode_fn=DecoderNetwork3D,
-                                                               embedding_dim=4, # 64
-                                                               num_embedding=4, # 64
-                                                               num_gaussian_components=4, # 128
-                                                               num_token_samples=1,
-                                                               num_properties=7,
-                                                               encoder_kwargs=dict(inter_graph_connect_prob=0.01,
-                                                                                   reducer=tf.math.unsorted_segment_mean,
-                                                                                   starting_global_size=4,
-                                                                                   node_size=4, #64
-                                                                                   edge_size=4,
-                                                                                   crossing_steps=1,
-                                                                                   name=None),
-                                                               decode_kwargs=dict(inter_graph_connect_prob=0.01,
-                                                                                  reducer=tf.math.unsorted_segment_mean,
-                                                                                  starting_global_size=4,
-                                                                                  node_size=4, # 64
-                                                                                  edge_size=4,
-                                                                                  crossing_steps=1,
-                                                                                  name=None),
-                                                               name=None),
-                                         **config)
+    # with strategy.scope():
+    train_one_epoch = build_training(model_type='discvae',
+                                     model_parameters=dict(encoder_fn=EncoderNetwork3D,
+                                                           decode_fn=DecoderNetwork3D,
+                                                           embedding_dim=4, # 64
+                                                           num_embedding=4, # 64
+                                                           num_gaussian_components=4, # 128
+                                                           num_token_samples=1,
+                                                           num_properties=7,
+                                                           encoder_kwargs=dict(inter_graph_connect_prob=0.01,
+                                                                               reducer=tf.math.unsorted_segment_mean,
+                                                                               starting_global_size=4,
+                                                                               node_size=4, #64
+                                                                               edge_size=4,
+                                                                               crossing_steps=1,
+                                                                               name=None),
+                                                           decode_kwargs=dict(inter_graph_connect_prob=0.01,
+                                                                              reducer=tf.math.unsorted_segment_mean,
+                                                                              starting_global_size=4,
+                                                                              node_size=4, # 64
+                                                                              edge_size=4,
+                                                                              crossing_steps=1,
+                                                                              name=None),
+                                                           name=None),
+                                     **config)
 
     # log_dir = build_log_dir('test_log_dir', config)
     # checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
