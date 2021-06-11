@@ -11,7 +11,7 @@ import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_tf import fully_connect_graph_dynamic
 from neural_deprojection.graph_net_utils import AbstractModule, gaussian_loss_function, \
-    reconstruct_fields_from_gaussians
+    reconstruct_fields_from_gaussians, histogramdd
 import tensorflow_probability as tfp
 
 
@@ -69,17 +69,21 @@ class DiscreteGraphVAE(AbstractModule):
 
     def _build(self, graph, **kwargs) -> dict:
         encoded_graph = self.encoder(graph)
-        # print('\n encoded_graph', encoded_graph, '\n')
+        # print('\n encoded_graph.nodes', encoded_graph.nodes, '\n')
         # nodes = [n_node, num_embeddings]
         # node = [num_embeddings] -> log(p_i) = logits
         # -> [S, n_node, embedding_dim]
         logits = encoded_graph.nodes  # [n_node, num_embeddings]
-        # print('\n logits', logits, '\n')
+        print('\n logits', logits, '\n')
         log_norm = tf.math.reduce_logsumexp(logits, axis=1)  # [n_node]
         # print('log_norm', log_norm)
+        self.set_temperature(40 * tf.math.exp(-0.01 * tf.cast(self.step, tf.float32)))
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=logits)
         token_samples_onehot = token_distribution.sample((self.num_token_samples,),
                                                          name='token_samples')  # [S, n_node, num_embeddings]
+        print('temperature', self.temperature)
+        print('token_samples_onehot', token_samples_onehot[0])
+        print('max index', tf.argmax(token_samples_onehot[0], axis=1))
 
         def _single_decode(token_sample_onehot):
             """
@@ -91,7 +95,7 @@ class DiscreteGraphVAE(AbstractModule):
                 log_likelihood: scalar
                 kl_term: scalar
             """
-            token_sample = tf.matmul(token_sample_onehot, self.embeddings)  # [n_node, embedding_dim]  # = z ~ q(z|x)
+            token_sample = tf.matmul(token_sample_onehot, self.embeddings) # / self.num_embedding  # [n_node, embedding_dim]  # = z ~ q(z|x)
             latent_graph = GraphsTuple(nodes=token_sample,
                                        edges=None,
                                        globals=tf.constant([0.], dtype=tf.float32),
@@ -100,26 +104,24 @@ class DiscreteGraphVAE(AbstractModule):
                                        n_node=encoded_graph.n_node,
                                        n_edge=tf.constant([0], dtype=tf.int32))  # [n_node, embedding_dim]
             latent_graph = fully_connect_graph_dynamic(latent_graph)
-            # print('\n latent_graph', latent_graph, '\n')
+            print('\n latent_graph.nodes', latent_graph.nodes, '\n')
             gaussian_tokens = self.decoder(latent_graph)  # nodes=[num_gaussian_components, component_dim]
-            # print('\n gaussian_tokens_nodes', gaussian_tokens.nodes, '\n')
-            _, log_likelihood = gaussian_loss_function(gaussian_tokens.nodes, graph)
+            print('\n gaussian_tokens_nodes', gaussian_tokens.nodes, '\n')
+            field_properties, log_likelihood = gaussian_loss_function(gaussian_tokens.nodes, graph)
             # [n_node, num_embeddings].[n_node, num_embeddings]
             sum_selected_logits = tf.math.reduce_sum(token_sample_onehot * logits, axis=1)  # [n_node]
-            # print('sum', sum_selected_logits)
-            # print('norm', log_norm)
-            # print('num_embed', tf.cast(self.num_embedding, tf.float32))
-            # print('embed', tf.math.log(tf.cast(self.num_embedding, tf.float32)))
+            print('sum', sum_selected_logits)
+            print('norm', log_norm)
+            print('num_embed', tf.cast(self.num_embedding, tf.float32))
+            print('embed', tf.math.log(tf.cast(self.num_embedding, tf.float32)))
             kl_term = sum_selected_logits - self.num_embedding * log_norm + \
                       self.num_embedding * tf.math.log(tf.cast(self.num_embedding, tf.float32))
-            # print('kl_term 0', kl_term)
-            # print('kl_term', tf.reduce_mean(kl_term))
+            print('kl_term 0', kl_term)
+            print('kl_term', tf.reduce_mean(kl_term))
             kl_term = self.beta * tf.reduce_mean(kl_term)
-            return log_likelihood, kl_term
+            return log_likelihood, kl_term, field_properties
 
-        # print(token_samples_onehot[0])
-
-        log_likelihood_samples, kl_term_samples = _single_decode(
+        log_likelihood_samples, kl_term_samples, properties = _single_decode(
             token_samples_onehot[0])  # tf.vectorized_map(_single_decode, token_samples_onehot)  # [S],[S]
 
         # good metric = average entropy of embedding usage! The more precisely embeddings are selected the lower the entropy.
@@ -136,14 +138,32 @@ class DiscreteGraphVAE(AbstractModule):
         elbo = tf.reduce_mean(elbo_samples)
         loss = - elbo  # maximize ELBO so minimize -ELBO
 
-        tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
-        tf.summary.scalar('var_exp', var_exp, step=self.step)
-        tf.summary.scalar('kl_term', kl_term, step=self.step)
+        print('properties', properties)
+
+        if self.step % 100 == 0:
+            for i in range(7):
+                image_before, _ = histogramdd(graph.nodes[:, :2], bins=50, weights=graph.nodes[:, 3+i])
+                image_before -= tf.reduce_min(image_before)
+                image_before /= tf.reduce_max(image_before)
+                tf.summary.image(f"{3+i}_xy_image_before", image_before[None, :, :, None], step=self.step)
+                tf.summary.scalar(f"properties{3+i}_std_before", tf.math.reduce_std(graph.nodes[:, 3+i]), step=self.step)
+
+                image_after, _ = histogramdd(graph.nodes[:, :2], bins=50, weights=properties[:, i])
+                image_after -= tf.reduce_min(image_after)
+                image_after /= tf.reduce_max(image_after)
+                tf.summary.image(f"{3+i}_xy_image_after", image_after[None, :, :, None], step=self.step)
+                tf.summary.scalar(f"properties{3+i}_std_after", tf.math.reduce_std(properties[:, i]), step=self.step)
+
+        if self.step % 10 == 0:
+            tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
+            tf.summary.scalar('var_exp', var_exp, step=self.step)
+            tf.summary.scalar('kl_term', kl_term, step=self.step)
 
         return dict(loss=loss,
                     metrics=dict(var_exp=var_exp,
                                  kl_term=kl_term,
                                  mean_perplexity=mean_perplexity))
+
 
 class GraphMappingNetwork(AbstractModule):
     """
@@ -201,13 +221,16 @@ class GraphMappingNetwork(AbstractModule):
                                            use_received_edges=True,
                                            use_sent_edges=True,
                                            use_nodes=True,
-                                           use_globals=True)
+                                           use_globals=True,
+                                           received_edges_reducer=reducer,
+                                           sent_edges_reducer=reducer)
 
         self.global_block = blocks.GlobalBlock(global_model_fn,
                                                use_edges=True,
                                                use_nodes=True,
                                                use_globals=True,
-                                               edges_reducer=reducer)
+                                               edges_reducer=reducer,
+                                               nodes_reducer=reducer)
 
         self.output_projection_node_block = blocks.NodeBlock(lambda: snt.Linear(self.output_size, name='project'),
                                                              use_received_edges=False,
@@ -235,7 +258,6 @@ class GraphMappingNetwork(AbstractModule):
         # print('\n token graph', token_graph, '\n')
         token_graph = token_graph.replace(
             edges=tf.tile(self.intra_token_graph_edge_variable[None, :], [token_graph.n_edge[0], 1]))
-        print(graph, token_graph)
         concat_graph = concat([graph, token_graph], axis=0)  # n_node = [n_nodes, n_tokes]
         concat_graph = concat_graph.replace(n_node=tf.reduce_sum(concat_graph.n_node, keepdims=True),
                                             n_edge=tf.reduce_sum(concat_graph.n_edge,
@@ -246,7 +268,6 @@ class GraphMappingNetwork(AbstractModule):
         gumbel = -tf.math.log(-tf.math.log(tf.random.uniform((n_node,))))
         n_connect_edges = tf.cast(
             tf.multiply(tf.constant([self.inter_graph_connect_prob]), tf.cast(n_node, tf.float32)), tf.int32)
-        print('connect_edges', n_connect_edges)
         _, graph_senders = tf.nn.top_k(gumbel, n_connect_edges[0])
         # print('graph_senders', graph_senders)
         token_graph_receivers = n_node + tf.random.uniform(shape=n_connect_edges, minval=0, maxval=self.num_output,
@@ -265,14 +286,18 @@ class GraphMappingNetwork(AbstractModule):
                                             globals=self.starting_global_variable[None, :])
         # print('starting global', self.starting_global_variable[None, :])
         latent_graph = concat_graph
-        # print('concat_graph', concat_graph)
-        for _ in range(
-                self.crossing_steps):  # this would be that theoretical crossing time for information through the graph
+
+        print('concat_graph_nodes', self.name, concat_graph.nodes)
+        for step in range(self.crossing_steps):  # this would be that theoretical crossing time for information through the graph
             input_nodes = latent_graph.nodes
             latent_graph = self.edge_block(latent_graph)
             latent_graph = self.node_block(latent_graph)
             latent_graph = self.global_block(latent_graph)
             latent_graph = latent_graph.replace(nodes=latent_graph.nodes + input_nodes)  # residual connections
+            if step % 3 == 0:
+                print('latent_graph_nodes', self.name, latent_graph.nodes)
+                print('latent_graph_edges', self.name, latent_graph.edges)
+                print('latent_graph_globals', self.name, latent_graph.globals)
 
         latent_graph = latent_graph.replace(nodes=latent_graph.nodes[n_node:],
                                             edges=None,
@@ -282,6 +307,7 @@ class GraphMappingNetwork(AbstractModule):
                                             n_node=tf.constant([self.num_output], dtype=tf.int32),
                                             n_edge=tf.constant(0, dtype=tf.int32))
         output_graph = self.output_projection_node_block(latent_graph)
+        print('output_graph_nodes', self.name, output_graph.nodes)
 
         return output_graph
 
@@ -326,3 +352,4 @@ class DecoderNetwork3D(GraphMappingNetwork):
                                                edge_size=edge_size,
                                                crossing_steps=crossing_steps,
                                                name=name)
+

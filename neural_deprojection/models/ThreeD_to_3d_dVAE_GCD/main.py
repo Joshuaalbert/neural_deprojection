@@ -99,32 +99,34 @@ def train_disc_graph_vae(data_dir, config, kwargs):
                           early_stop_patience=10,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
-                          debug=True)
+                          debug=False)
 
 
 def main(data_dir):
     config = dict(model_type='discvae',
                   model_parameters=dict(embedding_dim=64,
                                         num_embedding=1024,
-                                        num_gaussian_components=128,
-                                        num_latent_tokens=64),
+                                        num_latent_tokens=64,
+                                        num_gaussian_components=16),
                   optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict(
         num_token_samples=1,
-        num_properties=1,
+        num_properties=7,
         encoder_kwargs=dict(inter_graph_connect_prob=0.01,
                             reducer=tf.math.unsorted_segment_mean,
-                            starting_global_size=4,
+                            starting_global_size=16,
                             node_size=64,
-                            edge_size=4,
-                            crossing_steps=4, ),
-        decode_kwargs=dict(inter_graph_connect_prob=0.01,
+                            edge_size=8,
+                            crossing_steps=12,
+                            name='encoder'),
+        decode_kwargs=dict(inter_graph_connect_prob=0.1,
                            reducer=tf.math.unsorted_segment_mean,
-                           starting_global_size=4,
+                           starting_global_size=16,
                            node_size=64,
                            edge_size=4,
-                           crossing_steps=4), )
+                           crossing_steps=4,
+                           name='decoder'), )
     train_disc_graph_vae(data_dir, config, kwargs)
 
 
