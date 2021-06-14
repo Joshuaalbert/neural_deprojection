@@ -33,7 +33,7 @@ class DiscreteGraphVAE(AbstractModule):
     # @tf.function(input_signature=tf.TensorSpec(shape=[None], dtype=tf.float32))  # what is the shape ???
     # def sample_encoder(self, graph):
     #     return self.encoder(graph)
-    
+
     def set_beta(self, beta):
         self.beta.assign(beta)
 
