@@ -13,10 +13,73 @@ import abc
 import contextlib
 import os
 from collections import namedtuple
-# from neural_deprojection.tests import test_efficient_nn_index
+
+def sort_graph(graphs:GraphsTuple, node_ids, edge_ids)->GraphsTuple:
+    """
+    Sorts the nodes and edges of a batch of graphs such that they are ordered in blocks.
+
+    Args:
+        graphs: GraphsTuple
+        node_ids: int32 1D array giving graph index of each node
+        edge_ids: int32 1D array giving graph index of each edge
+
+    Returns:
+        GraphsTuple
+    """
+    #sort the nodes into blocks
+    node_sort = tf.argsort(node_ids)
+    nodes = graphs.nodes[node_sort]
+    senders = node_sort[graphs.senders]
+    receivers = node_sort[graphs.receivers]
+    #sort edges into blocks
+    edge_sort = tf.argsort(edge_ids)
+    senders = senders[edge_sort]
+    receivers = receivers[edge_sort]
+    edges = graphs.edges[edge_sort]
+    return graphs.replace(nodes=nodes,
+                          edges=edges,
+                          senders=senders,
+                          receivers=receivers)
+
+def replicate_graph(graph, num_repeats):
+    if isinstance(num_repeats, int):
+        return utils_tf.concat([graph]*num_repeats, axis=0)
+    def _repeat(tensor):
+        if tensor is None:
+            return None
+        shape = get_shape(tensor)
+        return tf.tile(tensor,[num_repeats]+[1]*(len(shape) - 1))
+    graph = graph.map(_repeat, ('nodes', 'edges', 'senders', 'receivers', 'globals', 'n_node', 'n_edge'))
+    offsets = utils_tf._compute_stacked_offsets(graph.n_node, graph.n_edge)
+    if graph.senders is not None:
+        graph = graph.replace(senders = graph.senders + offsets)
+    if graph.receivers is not None:
+        graph = graph.replace(receivers = graph.receivers + offsets)
+    return graph
+
+def get_shape(tensor):
+  """Returns the tensor's shape.
+
+   Each shape element is either:
+   - an `int`, when static shape values are available, or
+   - a `tf.Tensor`, when the shape is dynamic.
+
+  Args:
+    tensor: A `tf.Tensor` to get the shape of.
+
+  Returns:
+    The `list` which contains the tensor's shape.
+  """
+
+  shape_list = tensor.shape.as_list()
+  if all(s is not None for s in shape_list):
+    return shape_list
+  shape_tensor = tf.shape(tensor)
+  return [shape_tensor[i] if s is None else s for i, s in enumerate(shape_list)]
 
 def reconstruct_fields_from_gaussians(tokens, positions):
     """
+    Computes the reconstruction of fields as a sum of spatial Gaussian basis functions.
 
         rho(x) = sum_i w_i * e^{-0.5 * (x - mu_i)^T @ R_i^T @ W_i^{-1} @ R_i (x - mu_i)}
 
@@ -36,12 +99,11 @@ def reconstruct_fields_from_gaussians(tokens, positions):
 
 
     Args:
-        tokens: [batch, num_components, num_properties * 10]
+        tokens: [batch, num_gaussian_components, num_properties * 10]
         positions: [batch, n_nodes_per_graph, 3]
 
     Returns:
         [batch, n_nodes_per_graph, num_properties]
-
     """
     def _single_gaussian_property(arg):
         """
@@ -83,23 +145,80 @@ def reconstruct_fields_from_gaussians(tokens, positions):
         properties = tf.transpose(properties, (1,0)) #N, P
         return properties
 
-    return _single_batch_evaluation((positions, tokens)) #[N, P]
-    # return tf.vectorized_map(_single_batch_evaluation, (positions, tokens))  # [batch, N, P]
+    return tf.vectorized_map(_single_batch_evaluation, (positions, tokens))  # [batch, N, P]
 
-def gaussian_loss_function(gaussian_tokens, graph):
+def graph_batch_reshape(graphs:GraphsTuple)->GraphsTuple:
+    """
+    If each graph is exactly the same size, i.e. has the same number of nodes and edges,
+    then you can reshape into batch form.
+
+    Args:
+        graph: GraphsTuple
+
+    Returns:
+        GraphsTuple with
+            nodes: [n_graphs, n_node[0]//n_graphs,...]
+            edges: [n_graphs, n_edge[0]//n_graphs,...]
+            senders: [n_graphs, n_edge[0]//n_graphs]
+            receivers: [n_graphs, n_edge[0]//n_graphs]
+    """
+    n_graphs = utils_tf.get_num_graphs(graphs)
+
+    def _to_batched(tensor):
+        if tensor is None:
+            return tensor
+        in_shape = get_shape(tensor)
+        to_shape = [n_graphs, in_shape[0]//n_graphs] + in_shape[1:]
+        new_tensor = tf.reshape(tensor, to_shape)
+        return new_tensor
+
+    return graphs.map(_to_batched,fields=('nodes','edges','senders','receivers'))
+
+
+def graph_unbatch_reshape(graphs: GraphsTuple)->GraphsTuple:
+    """
+    Undoes `graph_batch_reshape`.
+
+    Args:
+        graph: GraphsTuple with
+            nodes: [n_graphs, n_node[0]//n_graphs,...]
+            edges: [n_graphs, n_edge[0]//n_graphs,...]
+            senders: [n_graphs, n_edge[0]//n_graphs]
+            receivers: [n_graphs, n_edge[0]//n_graphs]
+
+    Returns:
+        GraphsTuple with normal shaping of elements.
+    """
+    n_graphs = utils_tf.get_num_graphs(graphs)
+    def _to_unbatched(tensor):
+        if tensor is None:
+            return tensor
+        from_shape = get_shape(tensor)
+        to_shape = [from_shape[1] * n_graphs] + from_shape[2:]
+        new_tensor = tf.reshape(tensor, to_shape)
+        return new_tensor
+
+    return graphs.map(_to_unbatched, fields=('nodes', 'edges', 'senders', 'receivers'))
+
+
+def gaussian_loss_function(gaussian_tokens, graphs:GraphsTuple):
     """
     Args:
-        gaussian tokens: [N, C]
+        gaussian tokens: [batch, n_tokens, num_properties*10]
 
-        graph:
-            graph.nodes: [n_nodes, num_positions + num_properties]
+        graph: GraphsTuple
+            graph.nodes: [n_node, num_positions + num_properties]
 
     Returns:
         scalar
     """
-    positions = graph.nodes[:,:3]
-    input_properties = graph.nodes[:,3:]
-    field_properties = reconstruct_fields_from_gaussians(gaussian_tokens, positions)#N,P
+
+    graphs = graph_batch_reshape(graphs)
+    positions = graphs.nodes[:,:,:3]#batch,n_node, 3
+    input_properties = graphs.nodes[:,:,3:]#batch, n_node, n_prop
+
+    with tf.GradientTape() as tape:
+        field_properties = reconstruct_fields_from_gaussians(gaussian_tokens, positions)#N,P
 
     diff_properties = (input_properties - field_properties)
 
