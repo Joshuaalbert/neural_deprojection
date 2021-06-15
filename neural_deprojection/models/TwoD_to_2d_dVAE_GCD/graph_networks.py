@@ -14,6 +14,7 @@ from neural_deprojection.graph_net_utils import AbstractModule, histogramdd, get
 import tensorflow_probability as tfp
 from tensorflow_addons.image import gaussian_filter2d
 
+
 class ResidualStack(AbstractModule):
     def __init__(self,
                  num_hiddens,
