@@ -168,14 +168,6 @@ class GraphMappingNetwork(AbstractModule):
                                                              use_nodes=True,
                                                              use_globals=False)
 
-    def autoregressive_connect_graph_dynamic(self, token_graphs:GraphsTuple):
-
-        n_node_per_graph = token_graphs.n_node[0]
-        (senders, receivers) = tf.where(tf.range(n_node_per_graph)[:, None] <= tf.range(n_node_per_graph))
-
-
-
-
     def _build(self, graphs):
         """
         Adds another set of nodes to each graph. Autoregressively links all nodes in a graph.
