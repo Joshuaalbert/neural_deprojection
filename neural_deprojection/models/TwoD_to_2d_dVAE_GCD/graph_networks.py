@@ -126,90 +126,53 @@ class DiscreteImageVAE(AbstractModule):
         return decoded_img
 
     def _build(self, img, **kwargs) -> dict:
-        img = gaussian_filter2d(img, filter_shape=[6, 6])[None, :]
-        encoded_img = self.encoder(img)
-        print(encoded_img.shape)
-        # print('\n encoded_graph.nodes', encoded_graph.nodes, '\n')
-        # nodes = [n_node, num_embeddings]
-        # node = [num_embeddings] -> log(p_i) = logits
-        # -> [S, n_node, embedding_dim]
-        logits = tf.reshape(encoded_img, [1024, self.num_embedding])  # [n_node, num_embeddings]
-        print('\n logits', logits, '\n')
-        log_norm = tf.math.reduce_logsumexp(logits, axis=1)  # [n_node]
-        print('norm', log_norm)
-        if self.step < 1560*20:
-            self.set_temperature(1 - 0.95 * tf.cast(self.step, tf.float32) * 3e-5)
-        token_distribution = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=logits)
-        token_samples_onehot = token_distribution.sample((self.num_token_samples,),
-                                                         name='token_samples')  # [S, n_node, num_embeddings]
-        print('temperature', self.temperature)
-        print('token_samples_onehot', token_samples_onehot)
+        """
 
-        token_sample = tf.matmul(token_samples_onehot[0], self.embeddings) # / self.num_embedding  # [n_node, embedding_dim]  # = z ~ q(z|x)
-        print('token_sample', token_sample)
-        latent_img = tf.reshape(token_sample, [32, 32, self.embedding_dim])
-        print('latent_img', latent_img)
-        decoded_img = self.decoder(latent_img[None, :])  # nodes=[num_gaussian_components, component_dim]
-        print('decoded_img', decoded_img)
-        log_likelihood = tf.reduce_mean((gaussian_filter2d(img, filter_shape=[6, 6]) - decoded_img) ** 2) # [n_node, num_embeddings].[n_node, num_embeddings]
-        # log_likelihood = tf.constant([0.])
-        sum_selected_logits = tf.math.reduce_sum(token_samples_onehot[0] * logits, axis=1)  # [n_node]
-        print('sum_selected_logits', sum_selected_logits)
-        print('log_norm_term', self.num_embedding * log_norm)
-        print('embed', self.num_embedding * tf.math.log(tf.cast(self.num_embedding, tf.float32)))
-        kl_term = sum_selected_logits - self.num_embedding * log_norm + \
-                  self.num_embedding * tf.math.log(tf.cast(self.num_embedding, tf.float32))
-        print('kl_term 0', kl_term)
-        print('beta', self.beta)
-        kl_term = self.beta * tf.reduce_mean(kl_term, axis=0)
-        print('log_likelihood', log_likelihood)
-        print('kl_term', kl_term)
+        Args:
+            img: [batch, H', W', num_channel]
+            **kwargs:
 
-        # print('vectorized_map',[_single_decode(sample) for sample in token_samples_onehot])
-        # log_likelihood_samples, kl_term_samples, decoded_img = tf.vectorized_map(_single_decode, token_samples_onehot)  # [S],[S]
-        print('log_likelihood_samples',log_likelihood)
-        print('kl_term_samples', kl_term)
-        print('Vectorized map works!!')
-        # good metric = average entropy of embedding usage! The more precisely embeddings are selected the lower the entropy.
+        Returns:
 
-        log_prob_tokens = logits - log_norm[:, None]  # num_tokens, num_embeddings
-        entropy = -tf.reduce_sum(log_prob_tokens * tf.math.exp(log_prob_tokens), axis=1)  # num_tokens
-        perplexity = 2. ** (-entropy / tf.math.log(2.))
-        mean_perplexity = tf.reduce_mean(perplexity)
-        print('decoded_img 2', decoded_img)
+        """
+        encoded_img_logits = self.encoder(img)  # [batch, H, W, num_embedding]
+        [batch, H, W, _] = get_shape(encoded_img_logits)
 
-        var_exp = log_likelihood
-        kl_term = kl_term
-        # decoded_img = tf.reduce_mean(decoded_img, axis=0)
-        # print('decoded_img 3', decoded_img)
+        logits = tf.reshape(encoded_img_logits, [batch*H*W, self.num_embedding])  # [batch*H*W, num_embeddings]
+        logits -= tf.math.reduce_logsumexp(logits, axis=2)  # [batch*H*W, num_embeddings]
 
-        # elbo_samples = log_likelihood_samples - kl_term_samples
-        # elbo = tf.reduce_mean(elbo_samples)
-        # loss = - elbo  # maximize ELBO so minimize -ELBO
-        loss = var_exp
+        temperature = tf.maximum(0.1, 1. - 0.1/(self.step/1000))
+        token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
+        token_samples_onehot = token_distribution.sample((self.num_token_samples,), name='token_samples')  # [S, batch*H*W, num_embeddings]
 
-        if self.step % 100 == 0:
-            img_before_autoencoder = (img - tf.reduce_min(img)) / (
-                    tf.reduce_max(img) - tf.reduce_min(img))
+        def _single_decode(token_sample_onehot):
+            #[batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
+            token_sample = tf.matmul(token_sample_onehot, self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
+            latent_img = tf.reshape(token_sample, [batch, H, W, self.embedding_dim])  # [batch, H, W, embedding_dim]
+            decoded_img = self.decoder(latent_img)  # [batch, H', W', C*2]
+            img_mu = decoded_img[..., :self.num_channels] #[batch, H', W', C]
+            img_logb = decoded_img[..., self.num_channels:]
+            log_likelihood = self.log_likelihood(img, img_mu, img_logb)#[batch, H', W', C]
+            log_likelihood = tf.reduce_sum(log_likelihood, axis=[-3,-2,-1])  # [batch]
+            sum_selected_logits = tf.math.reduce_sum(token_samples_onehot * logits, axis=-1)  # [batch*H*W]
+            sum_selected_logits = tf.reshape(sum_selected_logits, [batch, H, W])
+            kl_term = tf.reduce_sum(sum_selected_logits, axis=[-2,-1])#[batch]
+            return log_likelihood, kl_term
 
-            img_after_autoencoder = (decoded_img - tf.reduce_min(decoded_img)) / (
-                    tf.reduce_max(decoded_img) - tf.reduce_min(decoded_img))
+        #num_samples, batch
+        log_likelihood_samples, kl_term_samples = tf.vectorized_map(_single_decode, token_samples_onehot)  # [S, batch], [S, batch]
 
-            tf.summary.image(f'img_before_autoencoder', img_before_autoencoder, step=self.step)
-            tf.summary.image('img_after_autoencoder', img_after_autoencoder, step=self.step)
+        var_exp = tf.reduce_mean(log_likelihood_samples, axis=0)  # [batch]
+        kl_div = tf.reduce_mean(kl_term_samples, axis=0)  # [batch]
+        elbo = var_exp - kl_div #batch
+        loss = - tf.reduce_mean(elbo)#scalar
 
-        if self.step % 10 == 0:
-            logits = tf.nn.softmax(logits, axis=-1)
-            logits -= tf.reduce_min(logits)
-            logits /= tf.reduce_max(logits)
-            # tf.repeat(tf.repeat(logits, 16*[4], axis=0), 512*[4], axis=1)
-            tf.summary.image('logits', logits[None,:,:,None], step=self.step)
-            tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
-            tf.summary.scalar('var_exp', var_exp, step=self.step)
-            tf.summary.scalar('kl_term', kl_term, step=self.step)
+        entropy = -tf.reduce_sum(logits * tf.math.exp(logits), axis=-1)  # [batch*H*W]
+        perplexity = 2. ** (-entropy / tf.math.log(2.))  # [batch*H*W]
+        mean_perplexity = tf.reduce_mean(perplexity)  # scalar
+
 
         return dict(loss=loss,
                     metrics=dict(var_exp=var_exp,
                                  kl_term=kl_term,
                                  mean_perplexity=mean_perplexity))
-
