@@ -25,10 +25,10 @@ def _create_autogressive_edges_from_nodes_dynamic(n_node, exclude_self_edges):
     rng = tf.range(n_node)
 
     if exclude_self_edges:
-        ind = rng[:, None] < rng
+        ind = rng[:, None] > rng
         n_edge = n_node * (n_node - 1) // 2
     else:
-        ind = rng[:, None] <= rng
+        ind = rng[:, None] >= rng
         n_edge = n_node * (n_node - 1) // 2 + n_node
 
     receivers, senders = tf.where(ind)
