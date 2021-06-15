@@ -3,7 +3,7 @@ import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, \
     get_distribution_strategy, build_log_dir, build_checkpoint_dir
-from neural_deprojection.models.Simple_complete_model.graph_networks import DiscreteGraphVAE
+from neural_deprojection.models.Simple_complete_model_SCD.graph_networks import DiscreteGraphVAE
 from neural_deprojection.models.identify_medium.generate_data import decode_examples
 import glob, os, json
 

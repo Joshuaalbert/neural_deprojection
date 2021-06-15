@@ -3,7 +3,6 @@ import tensorflow_probability as tfp
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, AbstractModule, get_distribution_strategy, build_log_dir, build_checkpoint_dir, histogramdd, get_shape
-from neural_deprojection.models.identify_medium.generate_data import decode_examples
 import glob, os, json
 
 
@@ -12,17 +11,18 @@ class EncoderResBlock(AbstractModule):
     def __init__(self, out_size, post_gain, name=None):
         super(EncoderResBlock, self).__init__(name=name)
         assert out_size % 4 == 0
+        self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv2D(self.out_size, 1, name='id_path')
         self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 3, name='conv_1'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, name='conv_2'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, name='conv_3'),
                                           tf.nn.relu, snt.Conv2D(out_size, 1, name='conv_4')])
-        self.out_size = out_size
+
         self.post_gain = post_gain
 
     def _build(self, img, **kwargs):
-        self.initialise(img)
+        # self.initialise(img)
         return self.id_path(img) + self.post_gain * self.conv_block(img)
 
 
@@ -37,7 +37,7 @@ class Encoder(AbstractModule):
             blk_hidden_size = 2**group_idx * hidden_size
             res_blocks = [EncoderResBlock(blk_hidden_size, post_gain, name=f'blk_{res_blk}')
                           for res_blk in range(num_blk_per_group)]
-            res_blocks.append(lambda x: tf.nn.max_pool2d(x, 2))
+            res_blocks.append(lambda x: tf.nn.max_pool2d(x, 2, strides=2, padding='SAME'))
             return snt.Sequential(res_blocks, name=f'group_{group_idx}')
 
         groups = [snt.Conv2D(hidden_size, 7, name='input_group')]
@@ -54,17 +54,18 @@ class DecoderResBlock(AbstractModule):
     def __init__(self, out_size, post_gain, name=None):
         super(DecoderResBlock, self).__init__(name=name)
         assert out_size % 4 == 0
+        self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv2D(self.out_size, 1, name='id_path')
         self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 1, name='conv_1'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, name='conv_2'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, name='conv_3'),
                                           tf.nn.relu, snt.Conv2D(out_size, 3, name='conv_4')])
-        self.out_size = out_size
+
         self.post_gain = post_gain
 
     def _build(self, img, **kwargs):
-        self.initialise(img)
+        # self.initialise(img)
         return self.id_path(img) + self.post_gain * self.conv_block(img)
 
 def upsample(x):
