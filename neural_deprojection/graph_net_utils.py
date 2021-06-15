@@ -272,6 +272,7 @@ class TrainOneEpoch(Module):
         self.epoch = tf.Variable(0, dtype=tf.int64)
         self.minibatch = tf.Variable(0, dtype=tf.int64)
         self._model = model
+        self._model.epoch = self.epoch
         self._model.step = self.minibatch
         self._opt = opt
         self._loss = loss
