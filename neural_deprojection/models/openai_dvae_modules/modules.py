@@ -37,7 +37,8 @@ class Encoder(AbstractModule):
             blk_hidden_size = 2**group_idx * hidden_size
             res_blocks = [EncoderResBlock(blk_hidden_size, post_gain, name=f'blk_{res_blk}')
                           for res_blk in range(num_blk_per_group)]
-            res_blocks.append(lambda x: tf.nn.max_pool2d(x, 2, strides=2, padding='SAME'))
+            if group_idx < num_groups - 1:
+                res_blocks.append(lambda x: tf.nn.max_pool2d(x, 2, strides=2, padding='SAME'))
             return snt.Sequential(res_blocks, name=f'group_{group_idx}')
 
         groups = [snt.Conv2D(hidden_size, 7, name='input_group')]
@@ -95,7 +96,8 @@ class Decoder(AbstractModule):
             blk_hidden_size = 2**(num_groups - group_idx-1) * hidden_size
             res_blocks = [DecoderResBlock(blk_hidden_size, post_gain, name=f'blk_{res_blk}')
                           for res_blk in range(num_blk_per_group)]
-            res_blocks.append(upsample)
+            if group_idx < num_groups - 1:
+                res_blocks.append(upsample)
             return snt.Sequential(res_blocks, name=f'group_{group_idx}')
 
         groups = [snt.Conv2D(hidden_size//2, 1, name='input_group')]
