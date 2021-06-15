@@ -10,7 +10,7 @@ import tensorflow as tf
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_tf import fully_connect_graph_dynamic, fully_connect_graph_static
-from neural_deprojection.graph_net_utils import AbstractModule, histogramdd
+from neural_deprojection.graph_net_utils import AbstractModule, histogramdd, get_shape
 import tensorflow_probability as tfp
 from tensorflow_addons.image import gaussian_filter2d
 
@@ -56,9 +56,11 @@ class DiscreteImageVAE(AbstractModule):
                  kernel_size: int = 4,
                  num_token_samples: int = 1,
                  num_properties: int = 10,
+                 num_channels=1,
                  name=None):
         super(DiscreteImageVAE, self).__init__(name=name)
         # (num_embedding, embedding_dim)
+        self.num_channels=num_channels
         self.embeddings = tf.Variable(initial_value=tf.random.truncated_normal((num_embedding, embedding_dim)),
                                       name='embeddings')
         self.num_token_samples = num_token_samples
@@ -125,6 +127,24 @@ class DiscreteImageVAE(AbstractModule):
         decoded_img = self.decoder(latent_img)  # nodes=[num_gaussian_components, component_dim]
         return decoded_img
 
+
+    def log_likelihood(self, img, mu, logb):
+        """
+        Log-Laplace distribution.
+
+        Args:
+            img: [...,c] assumes of the form log(maximum(1e-5, img))
+            mu: [...,c]
+            logb: [...,c]
+
+        Returns:
+            log_prob [...]
+        """
+        log_prob = - tf.math.abs(img - mu) / tf.math.exp(logb) \
+                   - tf.math.log(2.) - img - logb
+        return tf.reduce_sum(log_prob, axis=-1)
+
+
     def _build(self, img, **kwargs) -> dict:
         """
 
@@ -174,5 +194,5 @@ class DiscreteImageVAE(AbstractModule):
 
         return dict(loss=loss,
                     metrics=dict(var_exp=var_exp,
-                                 kl_term=kl_term,
+                                 kl_div=kl_div,
                                  mean_perplexity=mean_perplexity))
