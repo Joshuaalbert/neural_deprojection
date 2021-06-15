@@ -5,8 +5,7 @@ import tensorflow as tf
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from graph_nets.utils_tf import fully_connect_graph_dynamic
-from neural_deprojection.graph_net_utils import AbstractModule, gaussian_loss_function, \
-    reconstruct_fields_from_gaussians
+from neural_deprojection.graph_net_utils import AbstractModule, gaussian_loss_function, get_shape
 import tensorflow_probability as tfp
 
 
@@ -30,9 +29,6 @@ class DiscreteGraphVAE(AbstractModule):
         self.temperature = tf.Variable(initial_value=tf.constant(1.), name='temperature', trainable=False)
         self.beta = tf.Variable(initial_value=tf.constant(6.6), name='beta', trainable=False)
 
-    # @tf.function(input_signature=tf.TensorSpec(shape=[None], dtype=tf.float32))  # what is the shape ???
-    # def sample_encoder(self, graph):
-    #     return self.encoder(graph)
     
     def set_beta(self, beta):
         self.beta.assign(beta)

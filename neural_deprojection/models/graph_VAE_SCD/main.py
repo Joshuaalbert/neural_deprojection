@@ -120,6 +120,31 @@ def train_ae_3d(data_dir, config):
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
 
+    checkpoint = tf.train.Checkpoint(module=train_one_epoch)
+    manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3,
+                                         checkpoint_name=train_one_epoch.model.__class__.__name__)
+    if manager.latest_checkpoint is not None:
+        checkpoint.restore(manager.latest_checkpoint)
+        print(f"Restored from {manager.latest_checkpoint}")
+
+    # output_dir = './output_evaluations'
+    # os.makedirs(output_dir, exist_ok=True)
+    # names = ['vx', 'vy', 'vz', 'grav_potential', 'rho', 'temperature', 'cell_mass', 'cell_volume']
+    # for i, test_graph in enumerate(iter(test_dataset)):
+    #     positions = test_graph.nodes[:, :3].numpy()
+    #     input_properties = test_graph.nodes[:, 3:].numpy()
+    #
+    #     decoded_graph = train_one_epoch.model(test_graph)
+    #     decoded_properties = decoded_graph.nodes.numpy()
+    #     save_dict = dict(positions=positions)
+    #     for j in range(len(names)):
+    #         save_dict[f"prop_{names[j]}_input"] = input_properties[:,j]
+    #         save_dict[f"prop_{names[j]}_decoded"] = decoded_properties[:,j]
+    #     np.savez(os.path.join(output_dir, 'test_evaluation_{:04d}.npz'.format(i)), **save_dict)
+    #
+    #     if i == 20:
+    #         break
+
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
