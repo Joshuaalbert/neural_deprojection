@@ -1,12 +1,13 @@
 import numpy as np
 import tensorflow as tf
+from graph_nets import utils_tf
 from graph_nets.graphs import GraphsTuple
 
 from neural_deprojection.data.geometric_graph import find_screen_length, generate_example
 from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, \
     save_graph_examples, \
     decode_graph_examples, save_graph_and_image_examples, decode_graph_and_image_examples, histogramdd, \
-    efficient_nn_index
+    efficient_nn_index, graph_batch_reshape, graph_unbatch_reshape
 
 
 class TestClass(object):
@@ -127,3 +128,27 @@ def test_efficient_nn_index():
     positions = tf.range(20)[::-1,None]
 
     assert (efficient_nn_index(query_positions, positions).numpy() == tf.range(10,20)[::-1].numpy()).all()
+
+
+def test_batch_reshape():
+    data = dict(
+        nodes=tf.reshape(tf.range(3*2),(3,2)),
+        edges=tf.reshape(tf.range(40*5),(40,5)),
+        senders=tf.random.uniform((40,),minval=0, maxval=3, dtype=tf.int32),
+        receivers=tf.random.uniform((40,),minval=0, maxval=3, dtype=tf.int32),
+        n_node=tf.constant([3]),
+        n_edge=tf.constant([40]),
+        globals=None)
+    graph = GraphsTuple(**data)
+    graphs = utils_tf.concat([graph]*4,axis=0)
+    batched_graphs = graph_batch_reshape(graphs)
+    assert tf.reduce_all(batched_graphs.nodes[0]==batched_graphs.nodes[1]).numpy()
+    assert tf.reduce_all(batched_graphs.edges[0]==batched_graphs.edges[1]).numpy()
+    assert tf.reduce_all(batched_graphs.senders[0]+graphs.n_node[0]==batched_graphs.senders[1]).numpy()
+    assert tf.reduce_all(batched_graphs.receivers[0]+graphs.n_node[0]==batched_graphs.receivers[1]).numpy()
+
+    # print(batched_graphs)
+    unbatched_graphs = graph_unbatch_reshape(batched_graphs)
+    for (t1, t2) in zip(graphs, unbatched_graphs):
+        if t1 is not None:
+            assert tf.reduce_all(t1==t2).numpy()
