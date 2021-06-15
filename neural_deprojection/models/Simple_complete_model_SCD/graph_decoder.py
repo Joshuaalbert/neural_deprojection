@@ -69,7 +69,7 @@ def autoregressive_connect_graph_dynamic(graph,
         def body(i, senders, receivers, n_edge):
             edges = _create_autogressive_edges_from_nodes_dynamic(graph.n_node[i],
                                                             exclude_self_edges)
-            return (i + 1, senders.write(i, edges['edges']),
+            return (i + 1, senders.write(i, edges['senders']),
                   receivers.write(i, edges['receivers']),
                   n_edge.write(i, edges['n_edge']))
 
