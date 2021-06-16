@@ -5,7 +5,7 @@ from graph_nets.utils_tf import fully_connect_graph_dynamic, fully_connect_graph
 from neural_deprojection.graph_net_utils import AbstractModule, histogramdd, get_shape
 import tensorflow_probability as tfp
 from tensorflow_addons.image import gaussian_filter2d
-from neural_deprojection.models.openai_dvae_modules.main import Encoder, Decoder
+from neural_deprojection.models.openai_dvae_modules.modules import Encoder, Decoder
 
 
 class DiscreteImageVAE(AbstractModule):
@@ -42,25 +42,48 @@ class DiscreteImageVAE(AbstractModule):
     def sample_encoder(self, img):
         return self.encoder(img)
 
-    @tf.function(input_signature=[tf.TensorSpec([None, 3], dtype=tf.float32),
-                                  tf.TensorSpec([None, None], dtype=tf.float32),
+    @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32),
+                                  tf.TensorSpec([], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32)])
-    def sample_decoder(self, logits, temperature):
-        [batch, H, W, _] = get_shape(logits)
+    def sample_decoder(self, img_logits, temperature, num_samples):
+        [batch, H, W, _] = get_shape(img_logits)
 
-        logits = tf.reshape(logits, [batch * H * W, self.num_embedding])  # [batch*H*W, num_embeddings]
-        logits -= tf.math.reduce_logsumexp(logits, axis=-1)  # [batch*H*W, num_embeddings]
-
+        logits = tf.reshape(img_logits, [batch * H * W, self.num_embedding])  # [batch*H*W, num_embeddings]
+        reduce_logsumexp = tf.math.reduce_logsumexp(logits, axis=-1)  # [batch*H*W]
+        reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding])  # [batch*H*W, num_embedding]
+        logits -= reduce_logsumexp  # [batch*H*W, num_embeddings]
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
-        token_samples_onehot = token_distribution.sample((1,),
+        token_samples_onehot = token_distribution.sample((num_samples,),
                                                          name='token_samples')  # [S, batch*H*W, num_embeddings]
-        # [batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
-        token_sample = tf.matmul(token_samples_onehot[0], self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
-        latent_img = tf.reshape(token_sample, [batch, H, W, self.embedding_dim])  # [batch, H, W, embedding_dim]
-        decoded_img = self.decoder(latent_img)  # [batch, H', W', C*2]
-        img_mu = decoded_img[..., :self.num_channels]  # [batch, H', W', C]
-        img_logb = decoded_img[..., self.num_channels:]
-        return img_mu, img_logb
+
+        def _single_decode(token_sample_onehot):
+            # [batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
+            token_sample = tf.matmul(token_sample_onehot,
+                                     self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
+            latent_img = tf.reshape(token_sample, [batch, H, W, self.embedding_dim])  # [batch, H, W, embedding_dim]
+            decoded_img = self.decoder(latent_img)  # [batch, H', W', C*2]
+            return decoded_img
+
+        decoded_ims = tf.vectorized_map(_single_decode, token_samples_onehot)  # [S, batch, H', W', C*2]
+        decoded_im = tf.reduce_mean(decoded_ims, axis=0)  # [batch, H', W', C*2]
+        return decoded_im
+
+    @tf.function(input_signature=[tf.TensorSpec([None, None], dtype=tf.float32),
+                                  tf.TensorSpec([], dtype=tf.float32),
+                                  tf.TensorSpec([], dtype=tf.float32)])
+    def sample_latent_2d(self, latent_logits, temperature, num_token_samples):
+        token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=latent_logits)
+        token_samples_onehot = token_distribution.sample((num_token_samples,),
+                                                         name='token_samples')  # [S, batch*H*W, num_embeddings]
+
+        def _single_decode(token_sample_onehot):
+            # [batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
+            token_sample = tf.matmul(token_sample_onehot,
+                                     self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
+            return token_sample
+
+        token_samples = tf.vectorized_map(_single_decode, token_samples_onehot)  # [S, batch*H*W, embedding_dim]
+        return token_samples_onehot, token_samples
 
 
     def log_likelihood(self, img, mu, logb):

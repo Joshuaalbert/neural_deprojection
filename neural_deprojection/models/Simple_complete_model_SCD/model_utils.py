@@ -87,10 +87,33 @@ class SimpleCompleteModel(AbstractModule):
     def _build(self, graph, img, **kwargs) -> dict:
 
         latent_logits = self.encoder_2d(img) #batch, H, W, num_embeddings
-        latent_logits -= tf.reduce_logsumexp(latent_logits, axis=-1, keepdims=True)
-        token_samples_onehot, token_samples = self.sample_latent_2d(latent_logits)  # [num_token_samples, batch, H*W, embedding_dim]
+        # latent_logits -= tf.reduce_logsumexp(latent_logits, axis=-1, keepdims=True)
+
+        [batch, H, W, _] = get_shape(latent_logits)
+
+        latent_logits = tf.reshape(latent_logits, [batch*H*W, self.num_embedding])  # [batch*H*W, num_embeddings]
+        reduce_logsumexp = tf.math.reduce_logsumexp(latent_logits, axis=-1)  # [batch*H*W]
+        latent_logits = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding]) # [batch*H*W, num_embedding]
+        latent_logits -= reduce_logsumexp  # [batch*H*W, num_embeddings]
+
+        token_samples_onehot, token_samples = self.sample_latent_2d(latent_logits, temperature, num_token_samples)  # [num_token_samples, batch*H*W, num_embedding / embedding_dim]
+
+        token_samples = tf.reshape(token_samples, [num_token_samples*batch, H*W, self.embedding_dim])  # [num_token_samples*batch, H*W, embedding_dim]
+
+        token_graphs = GraphsTuple(nodes=token_samples,
+                                   edges=None,
+                                   globals=tf.constant([0.], dtype=tf.float32),
+                                   senders=None,
+                                   receivers=None,
+                                   n_node=tf.constant([tf.shape(token_samples)[0] * tf.shape(token_samples)[1]], dtype=tf.int32),
+                                   n_edge=tf.constant([0], dtype=tf.int32))  # [n_node, embedding_dim]
+
+        # [num_t_samples, batch, H*W, embedding_dim]
+
         # todo: reshape [num_token_samples, batch, H*W, embedding_dim] -> [num_token_samples*batch, H*W, embedding_dim]
-        likelihood_params = self.decoder(token_samples) # [num_token_samples*batch, num_reconstruction_components, reconstruction_comp_dim]
+        likelihood_params = self.decoder(token_graphs) # [num_token_samples*batch, num_reconstruction_components, reconstruction_comp_dim]
+        likelihood_params = tf.reshape(likelihood_params, [num_token_samples, batch, tf.shape(likelihood_params)[1], tf.shape(likelihood_params)[2]])
+
         #todo: unshape
         log_likelihood = self.log_likelihood(likelihood_params) #[num_token_samples, batch]
         kl_term = self.kl_term(latent_logits, token_samples_onehot) #[num_token_samples, batch]

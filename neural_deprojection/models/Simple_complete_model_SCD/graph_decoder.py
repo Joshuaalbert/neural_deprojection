@@ -188,17 +188,36 @@ class GraphMappingNetwork(AbstractModule):
         concat_graphs = graph_unbatch_reshape(batched_graphs) #[n_node+num_output, node_size]
 
         #nodes, senders, recievers, globals
-        concat_graphs = self.autoregressive_connect_graph_dynamic(concat_graphs)
+        concat_graphs = self.autoregressive_connect_graph_dynamic(concat_graphs)    # exclude self edges because 3d tokens orginally placeholder?
 
         latent_graphs = concat_graphs
+        node_idx = -self.num_output
+
         def _core(latent_graphs):
             input_nodes = latent_graphs.nodes
             latent_graphs = self.edge_block(latent_graphs)
             latent_graphs = self.node_block(latent_graphs)
             latent_graphs = self.global_block(latent_graphs)
+            masked_nodes = tf.concat([latent_graphs.nodes[:-self.num_output + node_idx], tf.tile(self.masked_node[None, :], [n_graphs, self.num_output - node_idx, 1])], axis=0)
+            latent_graphs = latent_graphs.replace(masked_nodes)
             #todo: mask
-            latent_graphs = latent_graphs.replace(nodes=latent_graphs.nodes + input_nodes)  # residual connections
+            latent_graphs = latent_graphs.replace(nodes=latent_graphs.nodes + input_nodes)  # residual connections   # why residual when 3d tokens are placeholder orginally?
+
+            node_idx += 1
+
             return latent_graphs
+
+        node_idx = 0
+        def _alt_core(latent_graphs, node_idx):
+            input_nodes = latent_graphs.nodes
+            latent_graphs = self.node_block(latent_graphs)    # node block uses only sender nodes
+
+            new_nodes = latent_graphs.nodes
+            new_nodes[-self.num_output:-self.num_output+node_idx] = input_nodes[-self.num_output:-self.num_output+node_idx]
+            latent_graphs.replace(nodes=new_nodes)
+            node_idx += 1
+
+            return latent_graphs, node_idx
 
         _, latent_graphs = tf.while_loop(cond=lambda const, state: const < self.num_output,
                                         body=lambda const, state: (const + 1, _core(state)),
