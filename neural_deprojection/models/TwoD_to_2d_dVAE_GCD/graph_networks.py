@@ -61,7 +61,7 @@ class DiscreteImageVAE(AbstractModule):
                                                          name='token_samples')  # [S, batch*H*W, num_embeddings]
         def _single_decode(token_sample_onehot):
             # [batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
-            token_sample = tf.matmul(token_samples_onehot[0], self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
+            token_sample = tf.matmul(token_sample_onehot, self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
             latent_img = tf.reshape(token_sample, [batch, H, W, self.embedding_dim])  # [batch, H, W, embedding_dim]
             decoded_img = self.decoder(latent_img)  # [batch, H', W', C*2]
             return decoded_img
