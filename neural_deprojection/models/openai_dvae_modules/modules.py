@@ -6,7 +6,7 @@ from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneE
 import glob, os, json
 
 def same_padding(filter_size):
-    return (filter_size - 1)//2
+    return tuple([(filter_size - 1)//2]*2)
 
 class EncoderResBlock(AbstractModule):
     def __init__(self, out_size, post_gain, name=None):
@@ -15,10 +15,10 @@ class EncoderResBlock(AbstractModule):
         self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv2D(self.out_size, 1, name='id_path')
-        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 3, padding=same_padding(3),name='conv_1'),
-                                          tf.nn.relu, snt.Conv2D(hidden_size, 3,  padding=same_padding(3),name='conv_2'),
-                                          tf.nn.relu, snt.Conv2D(hidden_size, 3, padding=same_padding(3), name='conv_3'),
-                                          tf.nn.relu, snt.Conv2D(out_size, 1,  padding=same_padding(1),name='conv_4')])
+        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 3, padding=same_padding,name='conv_1'),
+                                          tf.nn.relu, snt.Conv2D(hidden_size, 3,  padding=same_padding,name='conv_2'),
+                                          tf.nn.relu, snt.Conv2D(hidden_size, 3, padding=same_padding, name='conv_3'),
+                                          tf.nn.relu, snt.Conv2D(out_size, 1,  padding=same_padding,name='conv_4')])
 
         self.post_gain = post_gain
 
@@ -42,10 +42,10 @@ class Encoder(AbstractModule):
                 res_blocks.append(lambda x: tf.nn.max_pool2d(x, 2, strides=2, padding='SAME'))
             return snt.Sequential(res_blocks, name=f'group_{group_idx}')
 
-        groups = [snt.Conv2D(hidden_size, 7,  padding=same_padding(7), name='input_group')]
+        groups = [snt.Conv2D(hidden_size, 7,  padding=same_padding, name='input_group')]
         for groud_idx in range(num_groups):
             groups.append(_single_group(groud_idx))
-        groups.append(snt.Sequential([tf.nn.relu, snt.Conv2D(num_embeddings, 1,  padding=same_padding(1),name='logits_conv')], name='output_group'))
+        groups.append(snt.Sequential([tf.nn.relu, snt.Conv2D(num_embeddings, 1,  padding=same_padding,name='logits_conv')], name='output_group'))
 
         self.blocks = snt.Sequential(groups, name='groups')
 
@@ -59,10 +59,10 @@ class DecoderResBlock(AbstractModule):
         self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv2D(self.out_size, 1, name='id_path')
-        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 1,  padding=same_padding(1),name='conv_1'),
-                                          tf.nn.relu, snt.Conv2D(hidden_size, 3,  padding=same_padding(3),name='conv_2'),
-                                          tf.nn.relu, snt.Conv2D(hidden_size, 3,  padding=same_padding(3),name='conv_3'),
-                                          tf.nn.relu, snt.Conv2D(out_size, 3, padding=same_padding(3), name='conv_4')])
+        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 1,  padding=same_padding,name='conv_1'),
+                                          tf.nn.relu, snt.Conv2D(hidden_size, 3,  padding=same_padding,name='conv_2'),
+                                          tf.nn.relu, snt.Conv2D(hidden_size, 3,  padding=same_padding,name='conv_3'),
+                                          tf.nn.relu, snt.Conv2D(out_size, 3, padding=same_padding, name='conv_4')])
 
         self.post_gain = post_gain
 
@@ -101,11 +101,11 @@ class Decoder(AbstractModule):
                 res_blocks.append(upsample)
             return snt.Sequential(res_blocks, name=f'group_{group_idx}')
 
-        groups = [snt.Conv2D(hidden_size//2, 1,  padding=same_padding(1),name='input_group')]
+        groups = [snt.Conv2D(hidden_size//2, 1,  padding=same_padding,name='input_group')]
         for groud_idx in range(num_groups):
             groups.append(_single_group(groud_idx))
         groups.append(
-            snt.Sequential([tf.nn.relu, snt.Conv2D(num_channels*2, 1,  padding=same_padding(1),name='likelihood_params_conv')], name='output_group'))
+            snt.Sequential([tf.nn.relu, snt.Conv2D(num_channels*2, 1,  padding=same_padding,name='likelihood_params_conv')], name='output_group'))
 
         self.blocks = snt.Sequential(groups, name='groups')
 
