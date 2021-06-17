@@ -366,7 +366,7 @@ class TrainOneEpoch(Module):
                 _loss = self.strategy.run(self.loss, args=(model_output, test_batch))
                 loss += self.strategy.reduce("sum", _loss, axis=0)
             else:
-                model_output = self.model(*test_batch)
+                model_output = self.model(test_batch)
                 loss += self.loss(model_output, test_batch)
             num_batches += 1.
         tf.summary.scalar('loss', loss / num_batches, step=self.epoch)
