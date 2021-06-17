@@ -176,7 +176,6 @@ class DiscreteImageVAE(AbstractModule):
             kl_term = tf.reduce_sum(sum_selected_logits, axis=[-2,-1])#[batch]
             return log_likelihood, kl_term, decoded_img
 
-        # [S, batch], [S, batch], [S, batch, H', W', C*2]
         latent_imgs = tf.vectorized_map(_single_decode_part_1, token_samples_onehot)  # [S, batch, H, W, embedding_dim]
 
         # decoder outside the vectorized map, first merge batch and sample dimension
@@ -193,11 +192,11 @@ class DiscreteImageVAE(AbstractModule):
         elbo = var_exp - kl_div  # batch
         loss = - tf.reduce_mean(elbo)  # scalar
 
-        entropy = -tf.reduce_sum(logits * tf.math.exp(logits), axis=-1)  # [batch*H*W]
+        entropy = -tf.reduce_sum(logits * token_samples_onehot, axis=-1)  # [S, batch*H*W]
         perplexity = 2. ** (-entropy / tf.math.log(2.))  # [batch*H*W]
         mean_perplexity = tf.reduce_mean(perplexity)  # scalar
 
-        if self.step % 50 == 0:
+        if self.step % 10 == 0:
             for i in range(self.num_channels):
                 img_mu_0 = tf.reduce_mean(decoded_ims, axis=0)[..., i][..., None]
                 img_mu_0 -= tf.reduce_min(img_mu_0)
@@ -209,11 +208,22 @@ class DiscreteImageVAE(AbstractModule):
                         tf.reduce_max(img_i) - tf.reduce_min(img_i))
                 tf.summary.image(f'img_before_autoencoder_{i}', img_i, step=self.step)
 
-            logits = tf.nn.softmax(logits, axis=-1)  # [batch*H*W, num_embedding]
+            # logits = tf.nn.softmax(logits, axis=-1)  # [batch*H*W, num_embedding]
             logits -= tf.reduce_min(logits)
             logits /= tf.reduce_max(logits)
-            logits = tf.reshape(logits, [batch, H*W, self.num_embedding])[0]  # [H*W, num_embedding]
-            tf.summary.image('logits', logits[None, :, :, None], step=self.step)
+            logits = tf.reshape(logits, [batch, H*W, self.num_embedding])  # [batch, H*W, num_embedding]
+            tf.summary.image('logits', logits[:, :, :, None], step=self.step)
+
+            token_sample_onehot = token_samples_onehot[0, ...]
+            token_sample_onehot -= tf.reduce_min(token_sample_onehot)  # [batch*H*W, num_embeddings]
+            token_sample_onehot /= tf.reduce_max(token_sample_onehot)
+            token_sample_onehot = tf.reshape(token_sample_onehot, [batch, H*W, self.num_embedding])  # [batch, H*W, num_embedding]
+            tf.summary.image('token_sample_onehot', token_sample_onehot[:, :, :, None], step=self.step)
+
+            latent_img = latent_imgs[:, : , :, 0]
+            latent_img -= tf.reduce_min(latent_img)
+            latent_img /= tf.reduce_max(latent_img)
+            tf.summary.image('latent_im', latent_img[..., None], step=self.step)
 
         if self.step % 10 == 0:
             tf.summary.scalar('perplexity', mean_perplexity, step=self.step)

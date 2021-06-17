@@ -2,13 +2,13 @@ import tensorflow as tf
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from neural_deprojection.graph_net_utils import AbstractModule, get_shape, graph_batch_reshape, graph_unbatch_reshape, histogramdd
+from neural_deprojection.models.Simple_complete_model.graph_decoder import GraphMappingNetwork
 
 
 class SimpleCompleteModel(AbstractModule):
     def __init__(self,
                  num_properties: int,
                  discrete_image_vae,
-                 graph_decoder,
                  num_token_samples: int,
                  name=None):
         super(SimpleCompleteModel, self).__init__(name=name)

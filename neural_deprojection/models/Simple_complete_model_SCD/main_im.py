@@ -8,9 +8,9 @@ import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, \
     get_distribution_strategy, build_log_dir, build_checkpoint_dir
-from neural_deprojection.models.Simple_complete_model_SCD.autoencoder_2d import DiscreteImageVAE
+from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
 from neural_deprojection.models.identify_medium_SCD.generate_data import decode_examples, decode_examples_old
-from neural_deprojection.models.openai_dvae_modules.main import Encoder, Decoder
+
 import glob, os, json
 
 MODEL_MAP = dict(dis_im_vae=DiscreteImageVAE)
@@ -19,8 +19,7 @@ MODEL_MAP = dict(dis_im_vae=DiscreteImageVAE)
 def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters, strategy=None,
                    **kwargs) -> TrainOneEpoch:
     model_cls = MODEL_MAP[model_type]
-    model = model_cls(**model_parameters, **kwargs, EncoderIm=Encoder,
-                      DecoderIm=Decoder)
+    model = model_cls(**model_parameters, **kwargs)
 
     def build_opt(**kwargs):
         opt_type = kwargs.get('opt_type')
@@ -33,7 +32,7 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
 
     def build_loss(**loss_parameters):
         def loss(model_outputs, batch):
-            (graph,) = batch
+            img = batch
             # model_outputs = dict(loss=tf.reduce_mean(log_likelihood_samples - kl_term_samples),
             # var_exp=tf.reduce_mean(log_likelihood_samples),
             # kl_term=tf.reduce_mean(kl_term_samples),
@@ -84,11 +83,11 @@ def main(data_dir, config, kwargs):
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
                           num_epochs=1000,
-                          early_stop_patience=10,
+                          early_stop_patience=100,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           save_model_dir=save_model_dir,
-                          debug=True)
+                          debug=False)
 
 
 if __name__ == '__main__':
@@ -100,9 +99,9 @@ if __name__ == '__main__':
                                         num_embedding=1024,
                                         num_channels=1,
                                         name='discreteImageVAE'),
-                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
+                  optimizer_parameters=dict(learning_rate=1e-4, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict(
-        num_token_samples=16,
+        num_token_samples=4,
     )
     main(data_dir, config, kwargs)
