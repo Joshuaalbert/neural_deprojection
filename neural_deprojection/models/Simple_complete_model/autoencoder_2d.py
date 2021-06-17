@@ -2,6 +2,42 @@ import tensorflow as tf
 from neural_deprojection.graph_net_utils import AbstractModule, histogramdd, get_shape
 import tensorflow_probability as tfp
 from neural_deprojection.models.openai_dvae_modules.modules import Encoder, Decoder
+import sonnet as snt
+
+
+class ResidualStack(AbstractModule):
+    def __init__(self,
+                 num_hiddens,
+                 num_residual_layers,
+                 num_residual_hiddens,
+                 residual_name='',
+                 name=None):
+        super(ResidualStack, self).__init__(name=name)
+        self._num_hiddens = num_hiddens
+        self._num_residual_layers = num_residual_layers
+        self._num_residual_hiddens = num_residual_hiddens
+
+        self._layers = []
+        for i in range(num_residual_layers):
+            conv3 = snt.Conv2D(
+                output_channels=num_residual_hiddens,
+                kernel_shape=(3, 3),
+                stride=(1, 1),
+                name=f"res3x3_{residual_name}_{i}")
+            conv1 = snt.Conv2D(
+                output_channels=num_hiddens,
+                kernel_shape=(1, 1),
+                stride=(1, 1),
+                name=f"res1x1_{residual_name}_{i}")
+            self._layers.append((conv3, conv1))
+
+    def _build(self, inputs):
+        h = inputs
+        for conv3, conv1 in self._layers:
+            conv3_out = conv3(tf.nn.relu(h))
+            conv1_out = conv1(tf.nn.relu(conv3_out))
+            h += conv1_out
+        return tf.nn.relu(h)  # Resnet V1 style
 
 
 class DiscreteImageVAE(AbstractModule):
@@ -49,16 +85,19 @@ class DiscreteImageVAE(AbstractModule):
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
         token_samples_onehot = token_distribution.sample((num_samples,),
                                                          name='token_samples')  # [S, batch*H*W, num_embeddings]
-        def _single_decode(token_sample_onehot):
+        def _single_latent_img(token_sample_onehot):
             # [batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
             token_sample = tf.matmul(token_sample_onehot, self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
             latent_img = tf.reshape(token_sample, [batch, H, W, self.embedding_dim])  # [batch, H, W, embedding_dim]
-            decoded_img = self.decoder(latent_img)  # [batch, H', W', C*2]
-            return decoded_img
+            return latent_img
 
-        decoded_ims = tf.vectorized_map(_single_decode, token_samples_onehot)  # [S, batch, H', W', C*2]
-        decoded_im = tf.reduce_mean(decoded_ims, axis=0)  # [batch, H', W', C*2]
-        return decoded_im
+        latent_imgs = tf.vectorized_map(_single_latent_img, token_samples_onehot)  # [S, batch, H, W, embedding_dim]
+        latent_imgs = tf.reshape(latent_imgs, [self.num_token_samples * batch, H, W, self.embedding_dim])  # [S * batch, H, W, embedding_dim]
+        decoded_imgs = self.decoder(latent_imgs)  # [S * batch, H', W', C*2]
+        [_, H_2, W_2, _] = get_shape(decoded_imgs)
+        decoded_imgs = tf.reshape(decoded_imgs, [self.num_token_samples, batch, H_2, W_2, 2 * self.num_channels])  # [S, batch, H, W, embedding_dim]
+        decoded_img = tf.reduce_mean(decoded_imgs, axis=0)  # [batch, H', W', C*2]
+        return decoded_img
 
     @tf.function(input_signature=[tf.TensorSpec([None, None], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32),
@@ -120,16 +159,16 @@ class DiscreteImageVAE(AbstractModule):
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
         token_samples_onehot = token_distribution.sample((self.num_token_samples,), name='token_samples')  # [S, batch*H*W, num_embeddings]
 
-        def _single_decode(token_sample_onehot):
+        def _single_decode_part_1(token_sample_onehot):
             #[batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
             token_sample = tf.matmul(token_sample_onehot, self.embeddings)  # [batch*H*W, embedding_dim]  # = z ~ q(z|x)
             latent_img = tf.reshape(token_sample, [batch, H, W, self.embedding_dim])  # [batch, H, W, embedding_dim]
-            decoded_img = self.decoder(latent_img)  # [batch, H', W', C*2]
-            # print('decod shape', decoded_img)
+            return latent_img
+
+        def _single_decode_part_2(args):
+            decoded_img, token_sample_onehot = args
             img_mu = decoded_img[..., :self.num_channels] #[batch, H', W', C]
-            # print('mu shape', img_mu)
             img_logb = decoded_img[..., self.num_channels:]
-            # print('logb shape', img_logb)
             log_likelihood = self.log_likelihood(img, img_mu, img_logb)#[batch, H', W']
             log_likelihood = tf.reduce_sum(log_likelihood, axis=[-2,-1])  # [batch]
             sum_selected_logits = tf.math.reduce_sum(token_sample_onehot * logits, axis=-1)  # [batch*H*W]
@@ -137,9 +176,17 @@ class DiscreteImageVAE(AbstractModule):
             kl_term = tf.reduce_sum(sum_selected_logits, axis=[-2,-1])#[batch]
             return log_likelihood, kl_term, decoded_img
 
-        #num_samples, batch
         # [S, batch], [S, batch], [S, batch, H', W', C*2]
-        log_likelihood_samples, kl_term_samples, decoded_ims = tf.vectorized_map(_single_decode, token_samples_onehot)
+        latent_imgs = tf.vectorized_map(_single_decode_part_1, token_samples_onehot)  # [S, batch, H, W, embedding_dim]
+
+        # decoder outside the vectorized map, first merge batch and sample dimension
+        latent_imgs = tf.reshape(latent_imgs, [self.num_token_samples * batch, H, W, self.embedding_dim])  # [S * batch, H, W, embedding_dim]
+        decoded_imgs = self.decoder(latent_imgs)  # [S * batch, H', W', C*2]
+
+        # reshape again for input of the second vectorized map
+        [_, H_2, W_2, _] = get_shape(decoded_imgs)
+        decoded_imgs = tf.reshape(decoded_imgs, [self.num_token_samples, batch, H_2, W_2, 2 * self.num_channels])  # [S, batch, H, W, embedding_dim]
+        log_likelihood_samples, kl_term_samples, decoded_ims = tf.vectorized_map(_single_decode_part_2, (decoded_imgs, token_samples_onehot))
 
         var_exp = tf.reduce_mean(log_likelihood_samples, axis=0)  # [batch]
         kl_div = tf.reduce_mean(kl_term_samples, axis=0)  # [batch]
@@ -151,9 +198,8 @@ class DiscreteImageVAE(AbstractModule):
         mean_perplexity = tf.reduce_mean(perplexity)  # scalar
 
         if self.step % 50 == 0:
-            for i in tf.range(self.num_channels):
+            for i in range(self.num_channels):
                 img_mu_0 = tf.reduce_mean(decoded_ims, axis=0)[..., i][..., None]
-                print(img_mu_0)
                 img_mu_0 -= tf.reduce_min(img_mu_0)
                 img_mu_0 /= tf.reduce_max(img_mu_0)
                 tf.summary.image(f'mu_{i}', img_mu_0, step=self.step)
