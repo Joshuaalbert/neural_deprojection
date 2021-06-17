@@ -130,8 +130,8 @@ class DiscreteImageVAE(AbstractModule):
             # print('mu shape', img_mu)
             img_logb = decoded_img[..., self.num_channels:]
             # print('logb shape', img_logb)
-            log_likelihood = self.log_likelihood(img, img_mu, img_logb)#[batch, H', W', C]
-            log_likelihood = tf.reduce_sum(log_likelihood, axis=[-3,-2,-1])  # [batch]
+            log_likelihood = self.log_likelihood(img, img_mu, img_logb)#[batch, H', W']
+            log_likelihood = tf.reduce_sum(log_likelihood, axis=[-2,-1])  # [batch]
             sum_selected_logits = tf.math.reduce_sum(token_sample_onehot * logits, axis=-1)  # [batch*H*W]
             sum_selected_logits = tf.reshape(sum_selected_logits, [batch, H, W])
             kl_term = tf.reduce_sum(sum_selected_logits, axis=[-2,-1])#[batch]
@@ -152,12 +152,13 @@ class DiscreteImageVAE(AbstractModule):
 
         if self.step % 50 == 0:
             for i in tf.range(self.num_channels):
-                img_mu_0 = tf.reduce_mean(decoded_ims, axis=0)[..., i]
+                img_mu_0 = tf.reduce_mean(decoded_ims, axis=0)[..., i][..., None]
+                print(img_mu_0)
                 img_mu_0 -= tf.reduce_min(img_mu_0)
                 img_mu_0 /= tf.reduce_max(img_mu_0)
                 tf.summary.image(f'mu_{i}', img_mu_0, step=self.step)
 
-                img_i = img[..., i]
+                img_i = img[..., i][..., None]
                 img_i = (img_i - tf.reduce_min(img_i)) / (
                         tf.reduce_max(img_i) - tf.reduce_min(img_i))
                 tf.summary.image(f'img_before_autoencoder_{i}', img_i, step=self.step)
