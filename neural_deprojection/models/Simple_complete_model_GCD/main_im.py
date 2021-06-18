@@ -122,7 +122,7 @@ def main(data_dir):
                                         num_embedding=1024,  # 1024
                                         hidden_size=16,  # 64
                                         num_token_samples=4,  # 32
-                                        num_channels=1),
+                                        num_channels=2),
                   optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict()
