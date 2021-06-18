@@ -155,7 +155,7 @@ class DiscreteImageVAE(AbstractModule):
         reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding])  # [batch*H*W, num_embedding]
         logits -= reduce_logsumexp  # [batch*H*W, num_embeddings]
 
-        temperature = tf.maximum(0.1, tf.cast(10. - 0.1/(self.step/1000), tf.float32))
+        temperature = tf.maximum(0.1, tf.cast(10. - 0.1 * (self.step / 1000), tf.float32))
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
         token_samples_onehot = token_distribution.sample((self.num_token_samples,), name='token_samples')  # [S, batch*H*W, num_embeddings]
 
@@ -193,7 +193,7 @@ class DiscreteImageVAE(AbstractModule):
         loss = - tf.reduce_mean(elbo)  # scalar
 
         entropy = -tf.reduce_sum(logits * token_samples_onehot, axis=-1)  # [S, batch*H*W]
-        perplexity = 2. ** (-entropy / tf.math.log(2.))  # [batch*H*W]
+        perplexity = 2. ** (-entropy / tf.math.log(2.))  # [S, batch*H*W]
         mean_perplexity = tf.reduce_mean(perplexity)  # scalar
 
         if self.step % 10 == 0:

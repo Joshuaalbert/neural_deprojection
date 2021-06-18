@@ -170,7 +170,7 @@ class SimpleCompleteModel(AbstractModule):
         reduce_logsumexp = tf.tile(reduce_logsumexp[..., None], [1, 1, num_embedding]) # [batch, H*W, num_embedding]
         latent_logits -= reduce_logsumexp  # [batch, H*W, num_embeddings]
 
-        temperature = tf.maximum(0.1, tf.cast(10. - 0.1 / (self.step / 1000), tf.float32))
+        temperature = tf.maximum(0.1, tf.cast(10. - 0.1 * (self.step / 1000), tf.float32))
 
         token_samples_onehot, token_samples = self.sample_latent_2d(latent_logits,
                                                                     temperature,
