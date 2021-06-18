@@ -107,7 +107,7 @@ def train_disc_img_vae(data_dir, config, kwargs):
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
                           num_epochs=1000,
-                          early_stop_patience=10,
+                          early_stop_patience=100,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           save_model_dir=save_dir,
@@ -116,20 +116,26 @@ def train_disc_img_vae(data_dir, config, kwargs):
 
 def main(data_dir):
     config = dict(model_type='disc_img_vae',
-                  model_parameters=dict(embedding_dim=16,  # 64
+                  model_parameters=dict(embedding_dim=64,  # 64
                                         num_embedding=1024,  # 1024
-                                        hidden_size=16,  # 64
-                                        num_token_samples=4,  # 32
+                                        hidden_size=64,  # 64
+                                        num_token_samples=4,
                                         num_channels=2),
-                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
+                  optimizer_parameters=dict(learning_rate=4e-5, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict()
     train_disc_img_vae(data_dir, config, kwargs)
 
 
 if __name__ == '__main__':
-    # tfrec_base_dir = '/home/s2675544/data/tf_records'
-    tfrec_base_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/tf_records'
+    if os.getcwd().split('/')[2] == 's2675544':
+        tfrec_base_dir = '/home/s2675544/data/tf_records'
+        print('Running on ALICE')
+    else:
+        tfrec_base_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/tf_records'
+        print('Running at home')
+
+
     tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
 
     main(tfrec_dir)

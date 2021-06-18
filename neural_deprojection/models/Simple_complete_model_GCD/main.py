@@ -81,10 +81,6 @@ def build_dataset(tfrecords, batch_size):
                                                      gaussian_filter2d(double_downsample(img),
                                                                        filter_shape=[6, 6])],
                                                     axis=-1))).shuffle(buffer_size=50).batch(batch_size=batch_size)
-    # dataset = dataset.map(lambda graph_data_dict: GraphsTuple(**graph_data_dict))
-
-    # dataset = batch_dataset_set_graph_tuples(all_graphs_same_size=True, dataset=dataset, batch_size=batch_size)
-
     return dataset
 
 
@@ -120,7 +116,7 @@ def main(data_dir, config, kwargs):
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
                           num_epochs=1000,
-                          early_stop_patience=10,
+                          early_stop_patience=100,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           save_model_dir=save_model_dir,
@@ -128,18 +124,22 @@ def main(data_dir, config, kwargs):
 
 
 if __name__ == '__main__':
-    saved_discrete_image_vae_path = 'autoencoder_2d_saved_model'
-    discrete_image_vae = tf.saved_model.load(saved_discrete_image_vae_path)
-    print(dir(discrete_image_vae))
+    if os.getcwd().split('/')[2] == 's2675544':
+        tfrec_base_dir = '/home/s2675544/data/tf_records'
+        checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/Simple_complete_model_GCD/autoencoder_2d_checkpointing'
+        print('Running on ALICE')
+    else:
+        tfrec_base_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/tf_records'
+        checkpoint_dir = '/home/matthijs/git/neural_deprojection/neural_deprojection/models/Simple_complete_model_GCD/autoencoder_2d_checkpointing'
+        print('Running at home')
 
     # Load the autoencoder model from checkpoint
-    discrete_image_vae = DiscreteImageVAE(embedding_dim=16,  # 64
+    discrete_image_vae = DiscreteImageVAE(embedding_dim=64,  # 64
                                           num_embedding=1024,  # 1024
-                                          hidden_size=16,  # 64
-                                          num_token_samples=4,  # 32
+                                          hidden_size=64,  # 64
+                                          num_token_samples=4,  # 4
                                           num_channels=2)
-    checkpoint_dir = '/home/matthijs/git/neural_deprojection/neural_deprojection/models/Simple_complete_model_GCD/autoencoder_2d_checkpointing'
-    # checkpoint_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/identify_medium_GCD/autoencoder_checkpointing'
+
     encoder_cp = tf.train.Checkpoint(encoder=discrete_image_vae.encoder)
     model_cp = tf.train.Checkpoint(_model=encoder_cp)
     checkpoint = tf.train.Checkpoint(module=model_cp)
@@ -149,20 +149,18 @@ if __name__ == '__main__':
 
     config = dict(model_type='simple_complete_model',
                   model_parameters=dict(num_properties=7,
-                                        num_components=64,
-                                        component_size=16,
-                                        num_embedding_3d=1024,
-                                        edge_size=8,
-                                        global_size=16,
-                                        batch=4),
-                  optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
+                                        num_components=64,  # 64
+                                        component_size=16,  # 16
+                                        num_embedding_3d=64,  # 64
+                                        edge_size=16,  # 16
+                                        global_size=16),  # 16
+                  optimizer_parameters=dict(learning_rate=4e-5, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict(discrete_image_vae=discrete_image_vae,
                   num_token_samples=4,
+                  batch=4,
                   name='simple_complete_model')
 
-    # tfrec_base_dir = '/home/s2675544/data/tf_records'
-    tfrec_base_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/tf_records'
     tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
 
     main(tfrec_dir, config, kwargs)
