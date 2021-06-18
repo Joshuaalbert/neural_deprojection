@@ -8,13 +8,22 @@ from neural_deprojection.models.Simple_complete_model.graph_decoder import Graph
 class SimpleCompleteModel(AbstractModule):
     def __init__(self,
                  num_properties: int,
+                 num_components:int,
+                 component_size:int,
+                 num_embedding_3d:int,
+                 edge_size:int,
+                 global_size:int,
                  discrete_image_vae,
                  num_token_samples: int,
                  name=None):
         super(SimpleCompleteModel, self).__init__(name=name)
 
         self.discrete_image_vae = discrete_image_vae
-        self.decoder = graph_decoder
+        self.decoder = GraphMappingNetwork(num_output=num_components,
+                                           num_embedding=num_embedding_3d,
+                                           embedding_size=component_size,
+                                           edge_size = edge_size,
+                                           global_size=global_size)
         self.num_token_samples = num_token_samples
         self.num_properties = num_properties
 
@@ -44,7 +53,7 @@ class SimpleCompleteModel(AbstractModule):
         """
         pos_shape = get_shape(positions)
 
-        def _single_sample(tokens):
+        def _single_sample(field_component_tokens):
             """
             Compute for single batch.
 

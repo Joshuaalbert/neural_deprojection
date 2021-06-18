@@ -165,17 +165,8 @@ class GraphMappingNetwork(AbstractModule):
                                            use_nodes=True,
                                            use_globals=True)
 
-        self.global_block = blocks.GlobalBlock(global_model_fn,
-                                               use_edges=True,
-                                               use_nodes=True,
-                                               use_globals=True,
-                                               edges_reducer=reducer)
 
-        self.output_projection_node_block = blocks.NodeBlock(lambda: snt.Linear(self.output_size, name='project'),
-                                                             use_received_edges=False,
-                                                             use_sent_edges=False,
-                                                             use_nodes=True,
-                                                             use_globals=False)
+
 
     def _build(self, graphs):
         """
