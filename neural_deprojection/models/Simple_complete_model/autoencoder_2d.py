@@ -68,7 +68,7 @@ class DiscreteImageVAE(AbstractModule):
     def set_temperature(self, temperature):
         self.temperature.assign(temperature)
 
-    @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32)])
+    @tf.function(input_signature=[tf.TensorSpec([None, None, None, 2], dtype=tf.float32)])
     def sample_encoder(self, img):
         return self.encoder(img)
 
@@ -99,7 +99,7 @@ class DiscreteImageVAE(AbstractModule):
         decoded_img = tf.reduce_mean(decoded_imgs, axis=0)  # [batch, H', W', C*2]
         return decoded_img
 
-    @tf.function(input_signature=[tf.TensorSpec([None, None], dtype=tf.float32),
+    @tf.function(input_signature=[tf.TensorSpec([None, None, None], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32)])
     def sample_latent_2d(self, latent_logits, temperature, num_token_samples):
@@ -229,6 +229,7 @@ class DiscreteImageVAE(AbstractModule):
             tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
             tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
             tf.summary.scalar('kl_div', tf.reduce_mean(kl_div), step=self.step)
+            tf.summary.scalar('temperature', temperature, step=self.step)
 
 
         return dict(loss=loss,

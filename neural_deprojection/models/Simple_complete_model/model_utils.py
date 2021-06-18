@@ -15,6 +15,7 @@ class SimpleCompleteModel(AbstractModule):
                  global_size:int,
                  discrete_image_vae,
                  num_token_samples: int,
+                 batch: int,
                  name=None):
         super(SimpleCompleteModel, self).__init__(name=name)
 
@@ -22,22 +23,26 @@ class SimpleCompleteModel(AbstractModule):
         self.decoder = GraphMappingNetwork(num_output=num_components,
                                            num_embedding=num_embedding_3d,
                                            embedding_size=component_size,
-                                           edge_size = edge_size,
+                                           edge_size=edge_size,
                                            global_size=global_size)
         self.num_token_samples = num_token_samples
         self.num_properties = num_properties
+        self.num_components= num_components
+        self.component_size = component_size
+        self.num_embedding_3d = num_embedding_3d
+        self.batch = batch
 
         self.field_reconstruction = snt.nets.MLP([num_properties * 10 * 2, num_properties * 10 * 2, num_properties],
                                                  activate_final=False)
 
     def encoder_2d(self, img):
-        latent_logits = self.discrete_image_vae.encoder(img)
+        latent_logits = self.discrete_image_vae.sample_encoder(img)
         return latent_logits
 
     def sample_latent_2d(self, latent_logits, temperature, num_token_samples):
-        token_samples_onehot, token_samples = self.discrete_image_vae._sample_latent_2d(latent_logits,
-                                                                                        temperature,
-                                                                                        num_token_samples)
+        token_samples_onehot, token_samples = self.discrete_image_vae.sample_latent_2d(latent_logits,
+                                                                                       temperature,
+                                                                                       num_token_samples)
         return token_samples_onehot, token_samples
 
     def reconstruct_field(self, field_component_tokens, positions):
@@ -146,12 +151,18 @@ class SimpleCompleteModel(AbstractModule):
 
     def _build(self, graphs, imgs, **kwargs) -> dict:
 
-        latent_logits = self.encoder_2d(imgs) #batch, H, W, num_embeddings
-        [batch, H, W, _] = get_shape(latent_logits)
+        print(dir(self.discrete_image_vae.encoder))
 
-        latent_logits = tf.reshape(latent_logits, [batch, H*W, self.num_embedding])  # [batch, H*W, num_embeddings]
+        latent_logits = self.encoder_2d(imgs) #batch, H, W, num_embeddings
+
+        for variable in self.discrete_image_vae.encoder.trainable_variables:
+            variable._trainable = False
+
+        [_, H, W, num_embedding] = get_shape(latent_logits)
+
+        latent_logits = tf.reshape(latent_logits, [self.batch, H*W, num_embedding])  # [batch, H*W, num_embeddings]
         reduce_logsumexp = tf.math.reduce_logsumexp(latent_logits, axis=-1)  # [batch, H*W]
-        reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, 1, self.num_embedding]) # [batch, H*W, num_embedding]
+        reduce_logsumexp = tf.tile(reduce_logsumexp[..., None], [1, 1, num_embedding]) # [batch, H*W, num_embedding]
         latent_logits -= reduce_logsumexp  # [batch, H*W, num_embeddings]
 
         temperature = tf.maximum(0.1, tf.cast(10. - 0.1 / (self.step / 1000), tf.float32))
@@ -160,13 +171,13 @@ class SimpleCompleteModel(AbstractModule):
                                                                     temperature,
                                                                     self.num_token_samples) # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
 
-        # token_samples = tf.reshape(token_samples, [self.num_token_samples*batch, H * W, self.embedding_dim])  # [num_token_samples*batch, H*W, embedding_dim]
+        # token_samples = tf.reshape(token_samples, [self.num_token_samples*batch, H * W, self.component_size])  # [num_token_samples*batch, H*W, embedding_dim]
         # [n_graphs, n_node_per_graph, _] = get_shape(token_samples)
-        n_graphs = self.num_token_samples * batch
+        n_graphs = self.num_token_samples * self.batch
         n_node_per_graph = H * W
 
-        token_samples = tf.reshape(token_samples, [self.num_token_samples * batch * H * W,
-                                                   self.embedding_dim])  # [num_token_samples * batch * H * W, embedding_dim]
+        token_samples = tf.reshape(token_samples, [self.num_token_samples * self.batch * H * W,
+                                                   self.component_size])  # [num_token_samples * batch * H * W, embedding_dim]
 
         token_graphs = GraphsTuple(nodes=token_samples,
                                    edges=None,
@@ -176,10 +187,10 @@ class SimpleCompleteModel(AbstractModule):
                                    n_node=tf.constant(n_graphs * [n_node_per_graph], dtype=tf.int32),
                                    n_edge=tf.constant(n_graphs * [0], dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
-        tokens_3d = self.decoder(token_graphs) # [n_graphs, num_output, embedding_dim_3d]
+        tokens_3d, kl_div = self.decoder(token_graphs, temperature) # [n_graphs, num_output, embedding_dim_3d]
         [_, num_output, embedding_dim_3d] = tf.shape(tokens_3d)
         tokens_3d = tf.reshape(tokens_3d, [self.num_token_samples,
-                                                           batch,
+                                                           self.batch,
                                                            num_output,
                                                            embedding_dim_3d])   # [num_token_samples, batch, num_output, embedding_dim_3d]
 
@@ -189,11 +200,8 @@ class SimpleCompleteModel(AbstractModule):
         # [num_token_samples, batch, num_output, embedding_dim_3d], [batch_n_node_per_graph, 3+num_properties]
         #  -> [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
 
-        kl_term = self.kl_term(latent_logits, token_samples_onehot)  # [num_token_samples, batch]
-
         field_properties = tf.reduce_mean(field_properties, axis=0)  # [batch, num_output, embedding_dim_3d]
         var_exp = tf.reduce_mean(log_likelihood, axis=0)  # batch
-        kl_div = tf.reduce_mean(kl_term, axis=0)  # batch
         elbo = tf.reduce_mean(var_exp - kl_div)  # scalar
 
         entropy = -tf.reduce_sum(latent_logits * tf.math.exp(latent_logits), axis=-1)  # batch, H, W
@@ -205,7 +213,8 @@ class SimpleCompleteModel(AbstractModule):
         if self.step % 10 == 0:
             tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
             tf.summary.scalar('var_exp', var_exp, step=self.step)
-            tf.summary.scalar('kl_term', kl_term, step=self.step)
+            tf.summary.scalar('kl_div', kl_div, step=self.step)
+            tf.summary.scalar('temperature', temperature, step=self.step)
 
         if self.step % 200 == 0:
             graph = graphs[0]
@@ -231,5 +240,5 @@ class SimpleCompleteModel(AbstractModule):
 
         return dict(loss=loss,
                     metrics=dict(var_exp=var_exp,
-                                 kl_term=kl_term,
+                                 kl_term=kl_div,
                                  mean_perplexity=mean_perplexity))

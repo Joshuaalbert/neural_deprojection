@@ -2,11 +2,9 @@ import sys
 sys.path.insert(1, '/data/s2675544/git/neural_deprojection/')
 
 from functools import partial
-from graph_nets.graphs import GraphsTuple
 from neural_deprojection.models.identify_medium_GCD.model_utils import decode_examples
-from neural_deprojection.models.TwoD_to_2d_dVAE_GCD.graph_networks import DiscreteImageVAE
-from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, build_log_dir, \
-    build_checkpoint_dir, batch_dataset_set_graph_tuples, get_distribution_strategy
+from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
+from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch
 import glob, os
 import tensorflow as tf
 import json
@@ -70,7 +68,7 @@ def build_dataset(tfrecords, batch_size):
                                                              image_shape=(1024, 1024, 1)))  # (graph, image, idx)
 
     dataset = dataset.map(lambda graph_data_dict, img, cluster_idx, projection_idx, vprime:
-                          tf.concat([double_downsample(img), gaussian_filter2d(double_downsample(img), filter_shape=[6, 6])], axis=-1))
+                          (tf.concat([double_downsample(img), gaussian_filter2d(double_downsample(img), filter_shape=[6, 6])], axis=-1),))
 
     dataset = dataset.shuffle(buffer_size=50).batch(batch_size=batch_size)
 
@@ -97,9 +95,9 @@ def train_disc_img_vae(data_dir, config, kwargs):
 
     # log_dir = build_log_dir('test_log_dir', config)
     # checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
-    log_dir = 'test_log_dir'
-    checkpoint_dir = 'test_checkpointing'
-    save_dir = 'saved_model'
+    log_dir = 'autoencoder_2d_log_dir'
+    checkpoint_dir = 'autoencoder_2d_checkpointing'
+    save_dir = 'autoencoder_2d_saved_model'
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
@@ -113,7 +111,7 @@ def train_disc_img_vae(data_dir, config, kwargs):
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           save_model_dir=save_dir,
-                          debug=True)
+                          debug=False)
 
 
 def main(data_dir):
@@ -130,8 +128,8 @@ def main(data_dir):
 
 
 if __name__ == '__main__':
-    tfrec_base_dir = '/home/s2675544/data/tf_records'
-    # tfrec_base_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/tf_records'
+    # tfrec_base_dir = '/home/s2675544/data/tf_records'
+    tfrec_base_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/tf_records'
     tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
 
     main(tfrec_dir)

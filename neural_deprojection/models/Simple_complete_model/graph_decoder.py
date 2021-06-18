@@ -168,7 +168,7 @@ class GraphMappingNetwork(AbstractModule):
 
 
 
-    def _build(self, graphs):
+    def _build(self, graphs, temperature):
         """
         Adds another set of nodes to each graph. Autoregressively links all nodes in a graph.
 
@@ -183,8 +183,9 @@ class GraphMappingNetwork(AbstractModule):
         batched_graphs = graph_batch_reshape(graphs)  # nodes = [n_graphs, n_node_per_graph, dim]
         [n_graphs, n_node_per_graph_before_concat, _] = get_shape(batched_graphs.nodes)
         # n_graphs, n_node+num_output, embedding_size
+
         concat_nodes = tf.concat(
-            [batched_graphs.nodes, tf.tile(self.starting_node_variable[None, :], [n_graphs, 1, 1])], axis=0)
+            [batched_graphs.nodes, tf.tile(self.starting_node_variable[None, :], [n_graphs, 1, 1])], axis=-2) # [n_graphs, n_node_per_graph + num_output, embedding_dim]
         batched_graphs = batched_graphs.replace(nodes=concat_nodes,
                                                 globals=tf.tile(self.starting_global_variable[None, :], [n_graphs, 1]),
                                                 n_node=tf.fill([n_graphs],
@@ -192,15 +193,20 @@ class GraphMappingNetwork(AbstractModule):
         concat_graphs = graph_unbatch_reshape(batched_graphs)  # [n_node+num_output, embedding_size]
 
         # nodes, senders, recievers, globals
-        concat_graphs = self.autoregressive_connect_graph_dynamic(
-            concat_graphs)  # exclude self edges because 3d tokens orginally placeholder?
+        concat_graphs = autoregressive_connect_graph_dynamic(concat_graphs)  # exclude self edges because 3d tokens orginally placeholder?
+
+        # print(concat_graphs)
+        # graph0 = GraphsTuple(nodes=tf.range(20), n_node=tf.constant([12, 8]), n_edge=tf.constant([0, 0]),
+        #                      edges=None, receivers=None, senders=None, globals=None)
+        # print(autoregressive_connect_graph_dynamic(graph0))
 
         latent_graphs = concat_graphs
-
-        temperature = tf.maximum(0.1, tf.cast(10. - 0.1 / (self.step / 1000), tf.float32))
+        latent_graphs.receivers.set_shape(tf.reduce_sum(latent_graphs.n_edge))
+        latent_graphs.senders.set_shape(tf.reduce_sum(latent_graphs.n_edge))
 
         def _core(output_token_idx, latent_graphs, prev_kl_term):
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
+            print(batched_latent_graphs)
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, n_node+num_output, embedding_size]
             latent_graphs = self.edge_block(latent_graphs)
             latent_graphs = self.node_block(latent_graphs)
@@ -233,8 +239,8 @@ class GraphMappingNetwork(AbstractModule):
 
         _, latent_graphs, kl_div = tf.while_loop(
             cond=lambda output_token_idx, state, _: output_token_idx < self.num_output,
-            body=lambda output_token_idx, state, prev_kl_term: _core(output_token_idx + 1, state, prev_kl_term),
-            loop_vars=(tf.constant(0), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32)))
+            body=lambda output_token_idx, state, prev_kl_term: _core(output_token_idx, state, prev_kl_term),
+            loop_vars=(tf.constant([0]), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32)))
 
         latent_graphs = graph_batch_reshape(latent_graphs)
         token_nodes = latent_graphs.nodes[:, -self.num_output:, :]
