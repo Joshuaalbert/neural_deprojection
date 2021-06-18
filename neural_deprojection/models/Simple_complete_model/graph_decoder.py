@@ -133,6 +133,7 @@ class GraphMappingNetwork(AbstractModule):
         self.num_output = num_output
         self.embedding_size = embedding_size
         self.num_embedding = num_embedding
+        self.edge_size = edge_size
 
         self.embeddings = tf.Variable(initial_value=tf.random.truncated_normal((num_embedding, embedding_size)))
 
@@ -173,69 +174,65 @@ class GraphMappingNetwork(AbstractModule):
         Adds another set of nodes to each graph. Autoregressively links all nodes in a graph.
 
         Args:
-            graphs: batched GraphsTuple
+            graphs: batched GraphsTuple, node_shape = [n_graphs * num_input, input_embedding_size]
 
         Returns:
 
         """
         # give graphs edges and new node dimension (linear transformation)
-        graphs = self.projection_node_block(graphs)  # [n_node, embedding_size]
-        batched_graphs = graph_batch_reshape(graphs)  # nodes = [n_graphs, n_node_per_graph, dim]
+        graphs = self.projection_node_block(graphs)  # nodes = [n_graphs * num_input, embedding_size]
+        batched_graphs = graph_batch_reshape(graphs)  # nodes = [n_graphs, num_input, embedding_size]
         [n_graphs, n_node_per_graph_before_concat, _] = get_shape(batched_graphs.nodes)
-        # n_graphs, n_node+num_output, embedding_size
 
-        concat_nodes = tf.concat(
-            [batched_graphs.nodes, tf.tile(self.starting_node_variable[None, :], [n_graphs, 1, 1])], axis=-2) # [n_graphs, n_node_per_graph + num_output, embedding_dim]
+        concat_nodes = tf.concat([batched_graphs.nodes, tf.tile(self.starting_node_variable[None, :], [n_graphs, 1, 1])],
+                                 axis=-2)  # [n_graphs, num_input + num_output, embedding_size]
         batched_graphs = batched_graphs.replace(nodes=concat_nodes,
                                                 globals=tf.tile(self.starting_global_variable[None, :], [n_graphs, 1]),
-                                                n_node=tf.fill([n_graphs],
-                                                               n_node_per_graph_before_concat + self.num_output))
-        concat_graphs = graph_unbatch_reshape(batched_graphs)  # [n_node+num_output, embedding_size]
+                                                n_node=tf.fill([n_graphs], n_node_per_graph_before_concat + self.num_output))
+        concat_graphs = graph_unbatch_reshape(batched_graphs)  # [n_graphs * (num_input + num_output), embedding_size]
 
         # nodes, senders, recievers, globals
         concat_graphs = autoregressive_connect_graph_dynamic(concat_graphs)  # exclude self edges because 3d tokens orginally placeholder?
 
-        # print(concat_graphs)
-        # graph0 = GraphsTuple(nodes=tf.range(20), n_node=tf.constant([12, 8]), n_edge=tf.constant([0, 0]),
-        #                      edges=None, receivers=None, senders=None, globals=None)
-        # print(autoregressive_connect_graph_dynamic(graph0))
+        n_edge = n_graphs * ((n_node_per_graph_before_concat + self.num_output) *
+                             (n_node_per_graph_before_concat + self.num_output - 1) // 2 +
+                             (n_node_per_graph_before_concat + self.num_output))
 
-        latent_graphs = concat_graphs
-        latent_graphs.receivers.set_shape(tf.reduce_sum(latent_graphs.n_edge))
-        latent_graphs.senders.set_shape(tf.reduce_sum(latent_graphs.n_edge))
+        latent_graphs = concat_graphs.replace(edges=tf.tile(tf.constant(self.edge_size * [0.])[None, :], [n_edge, 1]))
 
         def _core(output_token_idx, latent_graphs, prev_kl_term):
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
-            print(batched_latent_graphs)
-            batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, n_node+num_output, embedding_size]
+            batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
             latent_graphs = self.edge_block(latent_graphs)
             latent_graphs = self.node_block(latent_graphs)
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
-            token_3d_logits = batched_latent_graphs.nodes[:, -self.num_output,
-                              :]  # n_graphs, num_output, num_embedding
+            token_3d_logits = batched_latent_graphs.nodes[:, -self.num_output:, :]  # n_graphs, num_output, num_embedding
             token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=token_3d_logits)
             token_3d_samples_onehot = token_distribution.sample((1,),
                                                                 name='token_samples')  # [1, n_graphs, num_output, num_embedding]
             token_3d_samples_onehot = token_3d_samples_onehot[0]  # [n_graphs, num_output, num_embedding]
             token_3d_samples = tf.einsum('goe,ed->god', token_3d_samples_onehot,
-                                         self.embeddings)  # n_graphs,num_ouput, embedding_dim
+                                         self.embeddings)  # [n_graphs, num_ouput, embedding_dim]
             _mask = tf.range(self.num_output) == output_token_idx  # num_output
-            mask = tf.concat([tf.zeros(n_node_per_graph_before_concat, dtype=tf.bool), _mask])  # n_node+num_output
-            mask = tf.tile(mask, [n_graphs])  #
+            mask = tf.concat([tf.zeros(n_node_per_graph_before_concat, dtype=tf.bool), _mask], axis=0)  # num_input + num_output
+            mask = tf.tile(mask[None, :, None], [n_graphs, 1, self.embedding_size])  # [n_graphs, num_input + num_output, embedding_size]
 
             kl_term = tf.reduce_sum(token_3d_samples_onehot * token_3d_logits, axis=-1)  # [n_graphs, num_output]
             kl_term = tf.reduce_sum(tf.cast(_mask, tf.float32) * kl_term, axis=-1)  # [n_graphs]
             kl_term += prev_kl_term
 
             # n_graphs, n_node+num_output, embedding_size
-            output_nodes = tf.where(mask[None, :, None],
+            output_nodes = tf.where(mask,
                                     tf.concat([tf.zeros([n_graphs, n_node_per_graph_before_concat, self.embedding_size]),
                                                token_3d_samples], axis=1),
                                     batched_input_nodes)
             batched_latent_graphs = batched_latent_graphs.replace(nodes=output_nodes)
             latent_graphs = graph_unbatch_reshape(batched_latent_graphs)
 
-            return (output_token_idx + 1, latent_graphs, kl_term)
+            return (output_token_idx + 1, latent_graphs, prev_kl_term)
+
+        latent_graphs.receivers.set_shape([n_edge])
+        latent_graphs.senders.set_shape([n_edge])
 
         _, latent_graphs, kl_div = tf.while_loop(
             cond=lambda output_token_idx, state, _: output_token_idx < self.num_output,
