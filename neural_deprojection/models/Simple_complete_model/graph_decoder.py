@@ -213,7 +213,7 @@ class GraphMappingNetwork(AbstractModule):
             token_3d_samples_onehot = token_3d_samples_onehot[0]  # [n_graphs, num_output, num_embedding]
             token_3d_samples = tf.einsum('goe,ed->god', token_3d_samples_onehot,
                                          self.embeddings)  # [n_graphs, num_ouput, embedding_dim]
-            _mask = tf.range(self.num_output) == output_token_idx  # num_output
+            _mask = tf.range(self.num_output) == output_token_idx  # [num_output]
             mask = tf.concat([tf.zeros(n_node_per_graph_before_concat, dtype=tf.bool), _mask], axis=0)  # num_input + num_output
             mask = tf.tile(mask[None, :, None], [n_graphs, 1, self.embedding_size])  # [n_graphs, num_input + num_output, embedding_size]
 
@@ -229,7 +229,7 @@ class GraphMappingNetwork(AbstractModule):
             batched_latent_graphs = batched_latent_graphs.replace(nodes=output_nodes)
             latent_graphs = graph_unbatch_reshape(batched_latent_graphs)
 
-            return (output_token_idx + 1, latent_graphs, prev_kl_term)
+            return (output_token_idx + 1, latent_graphs, kl_term)
 
         latent_graphs.receivers.set_shape([n_edge])
         latent_graphs.senders.set_shape([n_edge])
