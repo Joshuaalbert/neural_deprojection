@@ -112,44 +112,25 @@ class SimpleCompleteModel(AbstractModule):
     def set_temperature(self, temperature):
         self.temperature.assign(temperature)
         
-    def log_likelihood(self, tokens_3d, graphs):
+    def log_likelihood(self, tokens_3d, properties):
         """
                 Args:
                     tokens_3d: [num_token_samples, batch, n_tokens, embedding_dim_3d]
-
-                    graphs: GraphsTuple
-                        graph.nodes: [batch, n_node_per_graph, 3 + num_properties]
+                    properties: [num_token_samples, batch, n_node_per_graph, 3 + num_properties]
 
                 Returns:
                     scalar
                 """
 
-        positions = graphs.nodes[:, :, :3]  # [batch, n_node_per_graph, 3]
-        positions = tf.tile(positions[None, ...], [self.num_token_samples, 1, 1, 1])
+        positions = properties[:, :, :, :3]  # [num_token_samples, batch, n_node_per_graph, 3]
+        input_properties = properties[:, :, :, 3:]  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
         with tf.GradientTape() as tape:
             field_properties = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        # field_properties = tf.reduce_mean(field_properties, axis=0)   # [batch, n_node_per_graph, num_properties]
-        input_properties = graphs.nodes[:, :, 3:]  # [batch, n_node_per_graph, n_prop]
-        input_properties = tf.tile(input_properties[None, ...], [self.num_token_samples, 1, 1, 1])   # [num_token_samples, batch, n_node_per_graph, num_properties]
-
         diff_properties = (input_properties - field_properties)   # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        return field_properties, tf.reduce_mean(tf.reduce_sum(tf.math.square(diff_properties), axis=-1), axis=-1)   # [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
-
-    # def kl_term(self, latent_logits, token_samples_onehot):
-    #     # latent_logits [batch, n_node_per_graph, num_embeddings]
-    #     # token_samples_onehot  [num_token_samples, batch, n_node_per_graph, num_embedding]
-    #
-    #     def _single_kl_term(token_sample_onehot):
-    #         sum_selected_logits = tf.math.reduce_sum(token_sample_onehot * latent_logits, axis=-1)  # [batch, n_node_per_graph]
-    #         sum_selected_logits = tf.reshape(sum_selected_logits, [batch, H, W])
-    #         kl_term = tf.reduce_sum(sum_selected_logits, axis=[-2, -1])  # [batch]
-    #         return kl_term
-    #
-    #     kl_term = tf.vectorized_map(_single_kl_term, token_samples_onehot)
-    #     return kl_term
+        return field_properties, - tf.reduce_mean(tf.reduce_sum(tf.math.square(diff_properties), axis=-1), axis=-1)   # [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
 
     def _build(self, graphs, imgs, **kwargs) -> dict:
 
@@ -198,9 +179,10 @@ class SimpleCompleteModel(AbstractModule):
         kl_div = tf.reshape(kl_div, [self.num_token_samples,
                                      self.batch])  # [num_token_samples, batch]
 
-        # graphs.nodes: [batch, n_node_per_graph, 3+num_properties]
+        # properties: [num_token_samples, batch, n_node_per_graph, 3+num_properties]
         # tokens_3d: [num_token_samples, batch, num_output, embedding_dim_3d]
-        field_properties, log_likelihood = self.log_likelihood(tokens_3d, graphs)
+        properties = tf.tile(graphs.nodes[None, ...], [self.num_token_samples, 1, 1, 1])
+        field_properties, log_likelihood = self.log_likelihood(tokens_3d, properties)
         # field_properties: [num_token_samples, batch, n_node_per_graph, num_properties]
         # log_likelihood: [num_token_samples, batch]
 
@@ -215,6 +197,8 @@ class SimpleCompleteModel(AbstractModule):
 
         loss = - elbo  # maximize ELBO so minimize -ELBO
 
+        [_, _, _, num_channels] = get_shape(imgs)
+
         if self.step % 10 == 0:
             tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
             tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
@@ -226,9 +210,11 @@ class SimpleCompleteModel(AbstractModule):
             reconstructed_properties = field_properties[0]
             pos = input_properties[:, :2]
 
-            imgs -= tf.reduce_min(imgs)
-            imgs /= tf.reduce_max(imgs)
-            tf.summary.image(f'img', imgs, step=self.step)
+            for i in range(num_channels):
+                img_i = imgs[..., i][..., None]
+                img_i = (img_i - tf.reduce_min(img_i)) / (
+                        tf.reduce_max(img_i) - tf.reduce_min(img_i))
+                tf.summary.image(f'img_before_autoencoder_{i}', img_i, step=self.step)
 
             for i in range(self.num_properties):
                 image_before, _ = histogramdd(pos, bins=50, weights=input_properties[:, 3+i])
