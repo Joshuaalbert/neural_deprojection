@@ -191,14 +191,17 @@ class GraphMappingNetwork(AbstractModule):
                                                 n_node=tf.fill([n_graphs], n_node_per_graph_before_concat + self.num_output))
         concat_graphs = graph_unbatch_reshape(batched_graphs)  # [n_graphs * (num_input + num_output), embedding_size]
 
-        # nodes, senders, recievers, globals
+        # nodes, senders, receivers, globals
         concat_graphs = autoregressive_connect_graph_dynamic(concat_graphs)  # exclude self edges because 3d tokens orginally placeholder?
 
+        # todo: this only works if exclude_self_edges=False
         n_edge = n_graphs * ((n_node_per_graph_before_concat + self.num_output) *
                              (n_node_per_graph_before_concat + self.num_output - 1) // 2 +
                              (n_node_per_graph_before_concat + self.num_output))
 
         latent_graphs = concat_graphs.replace(edges=tf.tile(tf.constant(self.edge_size * [0.])[None, :], [n_edge, 1]))
+        latent_graphs.receivers.set_shape([n_edge])
+        latent_graphs.senders.set_shape([n_edge])
 
         def _core(output_token_idx, latent_graphs, prev_kl_term):
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
@@ -217,7 +220,8 @@ class GraphMappingNetwork(AbstractModule):
             mask = tf.concat([tf.zeros(n_node_per_graph_before_concat, dtype=tf.bool), _mask], axis=0)  # num_input + num_output
             mask = tf.tile(mask[None, :, None], [n_graphs, 1, self.embedding_size])  # [n_graphs, num_input + num_output, embedding_size]
 
-            kl_term = tf.reduce_sum(token_3d_samples_onehot * token_3d_logits, axis=-1)  # [n_graphs, num_output]
+            # todo: used a sigmoid to prevent a diving kl_term, but not sure if this makes sense.
+            kl_term = tf.reduce_sum(token_3d_samples_onehot * (1 / (1 + tf.math.exp(-token_3d_logits))), axis=-1)  # [n_graphs, num_output]
             kl_term = tf.reduce_sum(tf.cast(_mask, tf.float32) * kl_term, axis=-1)  # [n_graphs]
             kl_term += prev_kl_term
 
@@ -231,9 +235,6 @@ class GraphMappingNetwork(AbstractModule):
 
             return (output_token_idx + 1, latent_graphs, kl_term)
 
-        latent_graphs.receivers.set_shape([n_edge])
-        latent_graphs.senders.set_shape([n_edge])
-
         _, latent_graphs, kl_div = tf.while_loop(
             cond=lambda output_token_idx, state, _: output_token_idx < self.num_output,
             body=lambda output_token_idx, state, prev_kl_term: _core(output_token_idx, state, prev_kl_term),
@@ -241,5 +242,5 @@ class GraphMappingNetwork(AbstractModule):
 
         latent_graphs = graph_batch_reshape(latent_graphs)
         token_nodes = latent_graphs.nodes[:, -self.num_output:, :]
-        # todo:scalar(temp)
+        # todo:scalar(temp) (what was this todo for?)
         return token_nodes, kl_div
