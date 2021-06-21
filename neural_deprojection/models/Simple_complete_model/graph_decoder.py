@@ -209,7 +209,13 @@ class GraphMappingNetwork(AbstractModule):
             latent_graphs = self.edge_block(latent_graphs)
             latent_graphs = self.node_block(latent_graphs)
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
+
             token_3d_logits = batched_latent_graphs.nodes[:, -self.num_output:, :]  # n_graphs, num_output, num_embedding
+            reduce_logsumexp = tf.math.reduce_logsumexp(token_3d_logits, axis=-1)  # [n_graphs, num_output]
+            reduce_logsumexp = tf.tile(reduce_logsumexp[..., None],
+                                       [1, 1, self.num_embedding])  # [ n_graphs, num_output, num_embedding]
+            token_3d_logits -= reduce_logsumexp
+
             token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=token_3d_logits)
             token_3d_samples_onehot = token_distribution.sample((1,),
                                                                 name='token_samples')  # [1, n_graphs, num_output, num_embedding]
@@ -221,8 +227,9 @@ class GraphMappingNetwork(AbstractModule):
             mask = tf.tile(mask[None, :, None], [n_graphs, 1, self.embedding_size])  # [n_graphs, num_input + num_output, embedding_size]
 
             # todo: used a sigmoid to prevent a diving kl_term, but not sure if this makes sense.
-            kl_term = tf.reduce_sum(token_3d_samples_onehot * (1 / (1 + tf.math.exp(-token_3d_logits))), axis=-1)  # [n_graphs, num_output]
-            kl_term = tf.reduce_sum(tf.cast(_mask, tf.float32) * kl_term, axis=-1)  # [n_graphs]
+            kl_term = tf.reduce_sum((token_3d_samples_onehot * token_3d_logits), axis=-1)  # [n_graphs, num_output]
+            # kl_term = tf.reduce_sum(token_3d_samples_onehot * (1 / (1 + tf.math.exp(-token_3d_logits))), axis=-1)  # [n_graphs, num_output]
+            kl_term = tf.reduce_sum(tf.cast(_mask, tf.float32) *  kl_term, axis=-1)  # [n_graphs]
             kl_term += prev_kl_term
 
             # n_graphs, n_node+num_output, embedding_size
@@ -242,5 +249,5 @@ class GraphMappingNetwork(AbstractModule):
 
         latent_graphs = graph_batch_reshape(latent_graphs)
         token_nodes = latent_graphs.nodes[:, -self.num_output:, :]
-        # todo:scalar(temp) (what was this todo for?)
+
         return token_nodes, kl_div
