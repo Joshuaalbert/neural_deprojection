@@ -226,9 +226,7 @@ class GraphMappingNetwork(AbstractModule):
             mask = tf.concat([tf.zeros(n_node_per_graph_before_concat, dtype=tf.bool), _mask], axis=0)  # num_input + num_output
             mask = tf.tile(mask[None, :, None], [n_graphs, 1, self.embedding_size])  # [n_graphs, num_input + num_output, embedding_size]
 
-            # todo: used a sigmoid to prevent a diving kl_term, but not sure if this makes sense.
             kl_term = tf.reduce_sum((token_3d_samples_onehot * token_3d_logits), axis=-1)  # [n_graphs, num_output]
-            # kl_term = tf.reduce_sum(token_3d_samples_onehot * (1 / (1 + tf.math.exp(-token_3d_logits))), axis=-1)  # [n_graphs, num_output]
             kl_term = tf.reduce_sum(tf.cast(_mask, tf.float32) *  kl_term, axis=-1)  # [n_graphs]
             kl_term += prev_kl_term
 
