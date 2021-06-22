@@ -16,6 +16,7 @@ class SimpleCompleteModel(AbstractModule):
                  discrete_image_vae,
                  num_token_samples: int,
                  batch: int,
+                 beta,
                  name=None):
         super(SimpleCompleteModel, self).__init__(name=name)
 
@@ -30,6 +31,7 @@ class SimpleCompleteModel(AbstractModule):
         self.num_components = num_components
         self.component_size = component_size
         self.batch = batch
+        self.beta = tf.Variable(tf.constant(beta, dtype=tf.float32), name='beta')
 
         self.field_reconstruction = snt.nets.MLP([num_properties * 10 * 2, num_properties * 10 * 2, num_properties],
                                                  activate_final=False)
@@ -125,12 +127,12 @@ class SimpleCompleteModel(AbstractModule):
         positions = properties[:, :, :, :3]  # [num_token_samples, batch, n_node_per_graph, 3]
         input_properties = properties[:, :, :, 3:]  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        with tf.GradientTape() as tape:
-            field_properties = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        field_properties = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
+        # todo: add variance (reconstruct_field would return it)
         diff_properties = (input_properties - field_properties)   # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        return field_properties, - tf.reduce_mean(tf.reduce_sum(tf.math.square(diff_properties), axis=-1), axis=-1)   # [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
+        return field_properties, -0.5 * tf.reduce_mean(tf.reduce_sum(tf.math.square(diff_properties), axis=-1), axis=-1)   # [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
 
     def _build(self, graphs, imgs, **kwargs) -> dict:
 
@@ -171,7 +173,7 @@ class SimpleCompleteModel(AbstractModule):
                                    n_node=tf.constant(n_graphs * [n_node_per_graph], dtype=tf.int32),
                                    n_edge=tf.constant(n_graphs * [0], dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
-        tokens_3d, kl_div = self.decoder(token_graphs, temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs]
+        tokens_3d, kl_div, token_3d_samples_onehot = self.decoder(token_graphs, temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d]
         tokens_3d = tf.reshape(tokens_3d, [self.num_token_samples,
                                            self.batch,
                                            self.num_components,
@@ -189,7 +191,7 @@ class SimpleCompleteModel(AbstractModule):
         field_properties = tf.reduce_mean(field_properties, axis=0)  # [batch, n_node_per_graph, num_properties]
         var_exp = tf.reduce_mean(log_likelihood, axis=0)  # [batch]
         kl_div = tf.reduce_mean(kl_div, axis=0)  # [batch]
-        elbo = tf.reduce_mean(var_exp - kl_div)  # scalar
+        elbo = tf.reduce_mean(var_exp - self.beta * kl_div)  # scalar
 
         entropy = -tf.reduce_sum(latent_logits * tf.math.exp(latent_logits), axis=-1)  # [batch, H, W]
         perplexity = 2. ** (-entropy / tf.math.log(2.))
@@ -204,6 +206,8 @@ class SimpleCompleteModel(AbstractModule):
             tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
             tf.summary.scalar('kl_div', tf.reduce_mean(kl_div), step=self.step)
             tf.summary.scalar('temperature', temperature, step=self.step)
+
+            tf.summary.image('token_3d_samples_onehot', token_3d_samples_onehot[..., None], step=self.step)
 
         if self.step % 200 == 0:
             input_properties = graphs.nodes[0]

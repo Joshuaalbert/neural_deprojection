@@ -203,7 +203,7 @@ class GraphMappingNetwork(AbstractModule):
         latent_graphs.receivers.set_shape([n_edge])
         latent_graphs.senders.set_shape([n_edge])
 
-        def _core(output_token_idx, latent_graphs, prev_kl_term):
+        def _core(output_token_idx, latent_graphs, prev_kl_term, prev_token_3d_samples_onehot):
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
             latent_graphs = self.edge_block(latent_graphs)
@@ -216,10 +216,13 @@ class GraphMappingNetwork(AbstractModule):
                                        [1, 1, self.num_embedding])  # [ n_graphs, num_output, num_embedding]
             token_3d_logits -= reduce_logsumexp
 
-            token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=token_3d_logits)
-            token_3d_samples_onehot = token_distribution.sample((1,),
-                                                                name='token_samples')  # [1, n_graphs, num_output, num_embedding]
-            token_3d_samples_onehot = token_3d_samples_onehot[0]  # [n_graphs, num_output, num_embedding]
+            # token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=token_3d_logits)
+            # token_3d_samples_onehot = token_distribution.sample((1,),
+            #                                                     name='token_samples')  # [1, n_graphs, num_output, num_embedding]
+            # token_3d_samples_onehot = token_3d_samples_onehot[0]  # [n_graphs, num_output, num_embedding]
+            token_3d_samples_max_index = tf.math.argmax(token_3d_logits, axis=-1, output_type=tf.int32)
+            token_3d_samples_onehot = tf.cast(tf.tile(tf.range(self.num_embedding)[None, None, :], [n_graphs, self.num_output, 1]) ==
+                                              token_3d_samples_max_index[:,:,None], tf.float32)  # [n_graphs, num_output, num_embedding]
             token_3d_samples = tf.einsum('goe,ed->god', token_3d_samples_onehot,
                                          self.embeddings)  # [n_graphs, num_ouput, embedding_dim]
             _mask = tf.range(self.num_output) == output_token_idx  # [num_output]
@@ -227,7 +230,7 @@ class GraphMappingNetwork(AbstractModule):
             mask = tf.tile(mask[None, :, None], [n_graphs, 1, self.embedding_size])  # [n_graphs, num_input + num_output, embedding_size]
 
             kl_term = tf.reduce_sum((token_3d_samples_onehot * token_3d_logits), axis=-1)  # [n_graphs, num_output]
-            kl_term = tf.reduce_sum(tf.cast(_mask, tf.float32) *  kl_term, axis=-1)  # [n_graphs]
+            kl_term = tf.reduce_sum(tf.cast(_mask, tf.float32) * kl_term, axis=-1)  # [n_graphs]
             kl_term += prev_kl_term
 
             # n_graphs, n_node+num_output, embedding_size
@@ -238,14 +241,14 @@ class GraphMappingNetwork(AbstractModule):
             batched_latent_graphs = batched_latent_graphs.replace(nodes=output_nodes)
             latent_graphs = graph_unbatch_reshape(batched_latent_graphs)
 
-            return (output_token_idx + 1, latent_graphs, kl_term)
+            return (output_token_idx + 1, latent_graphs, kl_term, token_3d_samples_onehot)
 
-        _, latent_graphs, kl_div = tf.while_loop(
-            cond=lambda output_token_idx, state, _: output_token_idx < self.num_output,
-            body=lambda output_token_idx, state, prev_kl_term: _core(output_token_idx, state, prev_kl_term),
-            loop_vars=(tf.constant([0]), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32)))
+        _, latent_graphs, kl_div, token_3d_samples_onehot = tf.while_loop(
+            cond=lambda output_token_idx, state, _, __: output_token_idx < self.num_output,
+            body=lambda output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot: _core(output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot),
+            loop_vars=(tf.constant([0]), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32), tf.zeros((n_graphs, self.num_output, self.num_embedding), dtype=tf.float32)))
 
         latent_graphs = graph_batch_reshape(latent_graphs)
         token_nodes = latent_graphs.nodes[:, -self.num_output:, :]
 
-        return token_nodes, kl_div
+        return token_nodes, kl_div, token_3d_samples_onehot
