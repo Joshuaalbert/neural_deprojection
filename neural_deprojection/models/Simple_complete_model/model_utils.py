@@ -107,7 +107,9 @@ class SimpleCompleteModel(AbstractModule):
 
         return tf.vectorized_map(_single_sample, (field_component_tokens, positions))  # [num_token_samples, batch, n_node, num_properties]
 
-    @tf.function
+    @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32),
+                                  tf.TensorSpec([None, 3], dtype=tf.float32),
+                                  tf.TensorSpec([], dtype=tf.float32)])
     def im_to_components(self, im, positions, temperature):
         '''
 
@@ -165,18 +167,10 @@ class SimpleCompleteModel(AbstractModule):
             """
 
             features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[0], 1])],
-                                 axis=-1)  # [n_node, 3 + embedding_dim_3D]
-            return self.field_reconstruction(features)  # [n_node, num_properties]
+                                 axis=-1)  # [num_positions, 3 + embedding_dim_3D]
+            return self.field_reconstruction(features)  # [num_positions, num_properties]
 
-        return tf.vectorized_map(_single_component, tokens_3d)   # [num_components, component_size]
-
-    # evaluate at positions per component
-    # return evaluation per component to plot in mayavi
-
-
-
-
-
+        return tf.vectorized_map(_single_component, tokens_3d) # [num_components, n_node, num_properties]
 
 
     def set_beta(self, beta):
