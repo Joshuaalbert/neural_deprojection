@@ -437,6 +437,10 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
         os.makedirs(checkpoint_dir, exist_ok=True)
     if save_model_dir is not None:
         os.makedirs(save_model_dir, exist_ok=True)
+    if train_one_epoch.strategy is not None:
+        training_dataset = train_one_epoch.strategy.distribute_datasets_from_function(training_dataset)
+        if test_dataset is not None:
+            test_dataset = train_one_epoch.strategy.distribute_datasets_from_function(test_dataset)
 
     training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
     if test_dataset is not None:
