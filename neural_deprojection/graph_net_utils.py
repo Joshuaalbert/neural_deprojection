@@ -340,8 +340,6 @@ class TrainOneEpoch(Module):
         # metrics = None
         loss = 0.
         num_batches = 0.
-        if self.strategy is not None:
-            train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
         for train_batch in train_dataset:
             self.minibatch.assign_add(1)
             if self.strategy is not None:
@@ -358,16 +356,14 @@ class TrainOneEpoch(Module):
     def evaluate(self, test_dataset):
         loss = 0.
         num_batches = 0.
-        if self.strategy is not None:
-            test_dataset = self.strategy.experimental_distribute_dataset(test_dataset)
         for test_batch in test_dataset:
+            if not isinstance(test_batch, (list, tuple)):
+                test_batch = (test_batch,)
             if self.strategy is not None:
                 model_output = self.strategy.run(self.model, args=(test_batch,))
                 _loss = self.strategy.run(self.loss, args=(model_output, test_batch))
                 loss += self.strategy.reduce("sum", _loss, axis=0)
             else:
-                if not isinstance(test_batch, (list, tuple)):
-                    test_batch = (test_batch,)
                 model_output = self.model(*test_batch)
                 loss += self.loss(model_output, test_batch)
             num_batches += 1.
@@ -437,14 +433,11 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
         os.makedirs(checkpoint_dir, exist_ok=True)
     if save_model_dir is not None:
         os.makedirs(save_model_dir, exist_ok=True)
-    if train_one_epoch.strategy is not None:
-        training_dataset = train_one_epoch.strategy.distribute_datasets_from_function(training_dataset)
-        if test_dataset is not None:
-            test_dataset = train_one_epoch.strategy.distribute_datasets_from_function(test_dataset)
 
-    training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
-    if test_dataset is not None:
-        test_dataset = test_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
+    if train_one_epoch.strategy is not None:
+        training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
+        if test_dataset is not None:
+            test_dataset = test_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
 
     # We'll turn the one_epoch_step function which updates our models into a tf.function using
     # autograph. This makes train_one_epoch much faster. If debugging, you can turn this
