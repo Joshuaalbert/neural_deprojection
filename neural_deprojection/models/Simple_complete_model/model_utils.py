@@ -31,7 +31,8 @@ class SimpleCompleteModel(AbstractModule):
         self.num_components = num_components
         self.component_size = component_size
         self.batch = batch
-        self.beta = tf.Variable(tf.constant(beta, dtype=tf.float32), name='beta')
+        self.beta = beta
+        # self.beta = tf.Variable(tf.constant(beta, dtype=tf.float32), name='beta')
 
         self.field_reconstruction = snt.nets.MLP([num_properties * 10 * 2, num_properties * 10 * 2, num_properties],
                                                  activate_final=False)
@@ -95,18 +96,15 @@ class SimpleCompleteModel(AbstractModule):
                     Returns:
                         [n_node, num_properties]
                     """
-                    # n_node, 3+num_properties*10
-                    # tf.concat([n_node, 3], [3, embedding_dim_3D])
-                    # concat([n_node, 3], [n_node, embedding_dim_3D]) -> [n_node, 3+embedding_dim_3D]
 
-                    features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[2], 1])], axis=-1)
-                    return self.field_reconstruction(features)
+                    features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[2], 1])], axis=-1)  # [n_node, 3 + embedding_dim_3D]
+                    return self.field_reconstruction(features)  # [n_node, num_properties]
 
-                return tf.reduce_sum(tf.vectorized_map(_single_component, tokens), axis=0)
+                return tf.reduce_sum(tf.vectorized_map(_single_component, tokens), axis=0)  # [n_node, num_properties]
 
-            return tf.vectorized_map(_single_batch, (tokens, positions))
+            return tf.vectorized_map(_single_batch, (tokens, positions))  # [batch, n_node, num_properties]
 
-        return tf.vectorized_map(_single_sample, (field_component_tokens, positions))
+        return tf.vectorized_map(_single_sample, (field_component_tokens, positions))  # [num_token_samples, batch, n_node, num_properties]
 
     def set_beta(self, beta):
         self.beta.assign(beta)
@@ -140,11 +138,11 @@ class SimpleCompleteModel(AbstractModule):
         # imgs: [batch, H', W', C]
         latent_logits = self.encoder_2d(imgs) #batch, H, W, num_embeddings
 
-        try:
-            for variable in self.discrete_image_vae.encoder.trainable_variables:
-                variable._trainable = False
-        except:
-            pass
+        # try:
+        #     for variable in self.discrete_image_vae.encoder.trainable_variables:
+        #         variable._trainable = False
+        # except:
+        #     pass
 
         [_, H, W, num_embedding] = get_shape(latent_logits)
 
@@ -153,8 +151,8 @@ class SimpleCompleteModel(AbstractModule):
         reduce_logsumexp = tf.tile(reduce_logsumexp[..., None], [1, 1, num_embedding]) # [batch, H*W, num_embedding]
         latent_logits -= reduce_logsumexp  # [batch, H*W, num_embeddings]
 
-        temperature = tf.maximum(0.1, tf.cast(10. - 0.1 * (self.step / 1000), tf.float32))
-
+        # temperature = tf.maximum(0.1, tf.cast(10. - 0.1 * (self.step / 1000), tf.float32))
+        temperature = 10.
         token_samples_onehot, token_samples = self.sample_latent_2d(latent_logits,
                                                                     temperature,
                                                                     self.num_token_samples) # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
@@ -209,25 +207,26 @@ class SimpleCompleteModel(AbstractModule):
 
             tf.summary.image('token_3d_samples_onehot', token_3d_samples_onehot[..., None], step=self.step)
 
-        if self.step % 200 == 0:
+        if self.step % 1 == 0:
             input_properties = graphs.nodes[0]
             reconstructed_properties = field_properties[0]
-            pos = input_properties[:, :2]
+            pos = tf.reverse(input_properties[:, :2], [1])
 
             for i in range(num_channels):
-                img_i = imgs[..., i][..., None]
+                img_i = imgs[0, ..., i][None, ..., None]
                 img_i = (img_i - tf.reduce_min(img_i)) / (
                         tf.reduce_max(img_i) - tf.reduce_min(img_i))
                 tf.summary.image(f'img_before_autoencoder_{i}', img_i, step=self.step)
 
             for i in range(self.num_properties):
-                image_before, _ = histogramdd(pos, bins=50, weights=input_properties[:, 3+i])
+                image_before, _ = histogramdd(pos, bins=64, weights=input_properties[:, 3+i])
                 image_before -= tf.reduce_min(image_before)
                 image_before /= tf.reduce_max(image_before)
                 tf.summary.image(f"{3+i}_xy_image_before_b", image_before[None, :, :, None], step=self.step)
                 tf.summary.scalar(f"properties{3+i}_std_before", tf.math.reduce_std(input_properties[:, 3+i]), step=self.step)
 
-                image_after, _ = histogramdd(pos, bins=50, weights=reconstructed_properties[:, i])
+                image_after, _ = histogramdd(pos, bins=64, weights=reconstructed_properties[:, i])
+                # image_after, _ = histogramdd(pos, bins=50, weights=tf.random.truncated_normal((10000, )))
                 image_after -= tf.reduce_min(image_after)
                 image_after /= tf.reduce_max(image_after)
                 tf.summary.image(f"{3+i}_xy_image_after", image_after[None, :, :, None], step=self.step)

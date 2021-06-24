@@ -216,13 +216,13 @@ class GraphMappingNetwork(AbstractModule):
                                        [1, 1, self.num_embedding])  # [ n_graphs, num_output, num_embedding]
             token_3d_logits -= reduce_logsumexp
 
-            # token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=token_3d_logits)
-            # token_3d_samples_onehot = token_distribution.sample((1,),
-            #                                                     name='token_samples')  # [1, n_graphs, num_output, num_embedding]
-            # token_3d_samples_onehot = token_3d_samples_onehot[0]  # [n_graphs, num_output, num_embedding]
-            token_3d_samples_max_index = tf.math.argmax(token_3d_logits, axis=-1, output_type=tf.int32)
-            token_3d_samples_onehot = tf.cast(tf.tile(tf.range(self.num_embedding)[None, None, :], [n_graphs, self.num_output, 1]) ==
-                                              token_3d_samples_max_index[:,:,None], tf.float32)  # [n_graphs, num_output, num_embedding]
+            token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=token_3d_logits)
+            token_3d_samples_onehot = token_distribution.sample((1,),
+                                                                name='token_samples')  # [1, n_graphs, num_output, num_embedding]
+            token_3d_samples_onehot = token_3d_samples_onehot[0]  # [n_graphs, num_output, num_embedding]
+            # token_3d_samples_max_index = tf.math.argmax(token_3d_logits, axis=-1, output_type=tf.int32)
+            # token_3d_samples_onehot = tf.cast(tf.tile(tf.range(self.num_embedding)[None, None, :], [n_graphs, self.num_output, 1]) ==
+            #                                   token_3d_samples_max_index[:,:,None], tf.float32)  # [n_graphs, num_output, num_embedding]
             token_3d_samples = tf.einsum('goe,ed->god', token_3d_samples_onehot,
                                          self.embeddings)  # [n_graphs, num_ouput, embedding_dim]
             _mask = tf.range(self.num_output) == output_token_idx  # [num_output]
