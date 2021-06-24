@@ -52,28 +52,31 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
 def build_dataset(data_dir, batch_size):
     tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
 
-    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples_old,
+    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
                                                              node_shape=(11,),
-                                                             image_shape=(256, 256, 1)))  # (graph, image, spsh, proj)
+                                                             image_shape=(256, 256, 1),
+                                                             k=6))  # (graph, image, spsh, proj)
 
-    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj: img).batch(batch_size=batch_size)
+    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj, e: img).batch(batch_size=batch_size)
 
     return dataset
 
 
 def main(data_dir, config, kwargs):
     # Make strategy at the start of your main before any other tf code is run.
-    # strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1)
+    # strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1,
+    #                                      memory_limit=None)
 
     train_dataset = build_dataset(os.path.join(data_dir, 'train'), batch_size=4)
-    test_dataset = build_dataset(os.path.join(data_dir, 'test'),      batch_size=4)
+    test_dataset = build_dataset(os.path.join(data_dir, 'test'), batch_size=4)
 
     # with strategy.scope():
     train_one_epoch = build_training(**config, **kwargs)
+    train_one_epoch.model.set_temperature(10.)
 
-    log_dir = build_log_dir('im_log_dir', config)
-    checkpoint_dir = build_checkpoint_dir('im_checkpointing', config)
-    save_model_dir = os.path.join('saved_models')
+    log_dir = build_log_dir('im_OH_log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('im_OH_checkpointing', config)
+    save_model_dir = os.path.join('OH_saved_models')
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
@@ -91,7 +94,8 @@ def main(data_dir, config, kwargs):
 
 
 if __name__ == '__main__':
-    data_dir = '/home/s1825216/data/train_data/ClaudeData/'
+    # data_dir = '/home/s1825216/data/train_data/ClaudeData/'
+    data_dir = '/home/s1825216/data/dataset/'
 
     config = dict(model_type='dis_im_vae',
                   model_parameters=dict(hidden_size=64,
