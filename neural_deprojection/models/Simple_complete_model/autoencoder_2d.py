@@ -155,9 +155,11 @@ class DiscreteImageVAE(AbstractModule):
         reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding])  # [batch*H*W, num_embedding]
         logits -= reduce_logsumexp  # [batch*H*W, num_embeddings]
 
-        temperature = tf.maximum(0.1, tf.cast(10. - 0.1 * (self.step / 1000), tf.float32))
-        token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
+        # temperature = tf.maximum(0.1, tf.cast(10. - 0.1 * (self.step / 1000), tf.float32))
+        token_distribution = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=logits)
+        # token_distribution = tfp.distributions.OneHotCategorical(logits=logits)
         token_samples_onehot = token_distribution.sample((self.num_token_samples,), name='token_samples')  # [S, batch*H*W, num_embeddings]
+        token_samples_onehot = tf.cast(token_samples_onehot, dtype=tf.float32)
 
         def _single_decode_part_1(token_sample_onehot):
             #[batch*H*W, num_embeddings] @ [num_embeddings, embedding_dim]
@@ -229,7 +231,7 @@ class DiscreteImageVAE(AbstractModule):
             tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
             tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
             tf.summary.scalar('kl_div', tf.reduce_mean(kl_div), step=self.step)
-            tf.summary.scalar('temperature', temperature, step=self.step)
+            tf.summary.scalar('temperature', self.temperature, step=self.step)
 
 
         return dict(loss=loss,
