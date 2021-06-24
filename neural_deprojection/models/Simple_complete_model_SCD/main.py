@@ -6,7 +6,7 @@ import tensorflow as tf
 import sonnet as snt
 from functools import partial
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, \
-    build_log_dir, build_checkpoint_dir
+    build_log_dir, build_checkpoint_dir, get_distribution_strategy
 from neural_deprojection.models.Simple_complete_model.model_utils import SimpleCompleteModel
 from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
 from neural_deprojection.models.identify_medium_SCD.generate_data import decode_examples_old
@@ -110,20 +110,27 @@ def build_distributed_dataset(data_dir, global_batch_size, strategy):
 
         return dataset
 
+    distributed_dataset = strategy.distribute_datasets_from_function(data_fn)
+
+    return distributed_dataset
+
 
 def main(data_dir, batch_size, config, kwargs):
     # Make strategy at the start of your main before any other tf code is run.
-    # strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1)
+    strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1,
+                                         memory_limit=None)
 
-    train_dataset = build_dataset(os.path.join(data_dir, 'train'), batch_size=batch_size)
-    test_dataset = build_dataset(os.path.join(data_dir, 'test'), batch_size=batch_size)
+
+    train_dataset = build_distributed_dataset(os.path.join(data_dir, 'train'), global_batch_size=batch_size, strategy=strategy)
+    test_dataset = build_distributed_dataset(os.path.join(data_dir, 'test'), global_batch_size=batch_size, strategy=strategy)
 
     # for (graph, positions) in iter(test_dataset):
     #     print(graph)
     #     break
 
-    # with strategy.scope():
-    train_one_epoch = build_training(**config, **kwargs)
+    with strategy.scope():
+        train_one_epoch = build_training(**config, **kwargs, strategy=strategy)
+
     train_one_epoch.model.set_temperature(10.)
 
     log_dir = build_log_dir('simple_complete_log_dir', config)
