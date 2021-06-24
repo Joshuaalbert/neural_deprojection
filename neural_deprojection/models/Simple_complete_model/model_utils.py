@@ -101,7 +101,8 @@ class SimpleCompleteModel(AbstractModule):
                     features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[2], 1])], axis=-1)  # [n_node, 3 + embedding_dim_3D]
                     return self.field_reconstruction(features)  # [n_node, num_properties]
 
-                return tf.reduce_sum(tf.vectorized_map(_single_component, tokens), axis=0)  # [n_node, num_properties]
+                vec_map = tf.vectorized_map(_single_component, tokens)
+                return tf.reduce_sum(vec_map, axis=0), vec_map  # [n_node, num_properties]
 
             return tf.vectorized_map(_single_batch, (tokens, positions))  # [batch, n_node, num_properties]
 
@@ -163,7 +164,7 @@ class SimpleCompleteModel(AbstractModule):
                 token: [component_size]
 
             Returns:
-                [n_node, num_properties]
+                [num_positions, num_properties]
             """
 
             features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[0], 1])],
