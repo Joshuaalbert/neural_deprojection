@@ -3,7 +3,7 @@ import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from neural_deprojection.graph_net_utils import AbstractModule, get_shape, graph_batch_reshape, graph_unbatch_reshape, histogramdd
 from neural_deprojection.models.Simple_complete_model.graph_decoder import GraphMappingNetwork
-
+from scipy import interpolate
 
 class SimpleCompleteModel(AbstractModule):
     def __init__(self,
@@ -13,6 +13,7 @@ class SimpleCompleteModel(AbstractModule):
                  num_embedding_3d:int,
                  edge_size:int,
                  global_size:int,
+                 n_node_per_graph:int,
                  discrete_image_vae,
                  num_token_samples: int,
                  batch: int,
@@ -29,6 +30,7 @@ class SimpleCompleteModel(AbstractModule):
         self.num_properties = num_properties
         self.num_components = num_components
         self.component_size = component_size
+        self.n_node_per_graph = n_node_per_graph
         self.batch = batch
         self.temperature = tf.Variable(initial_value=tf.constant(1.), name='temperature', trainable=False)
         self.beta = tf.Variable(initial_value=tf.constant(1.), name='beta', trainable=False)
@@ -99,8 +101,7 @@ class SimpleCompleteModel(AbstractModule):
                     features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[2], 1])], axis=-1)  # [n_node, 3 + embedding_dim_3D]
                     return self.field_reconstruction(features)  # [n_node, num_properties]
 
-                vec_map = tf.vectorized_map(_single_component, tokens)
-                return tf.reduce_sum(vec_map, axis=0), vec_map  # [n_node, num_properties]
+                return tf.reduce_sum(tf.vectorized_map(_single_component, tokens), axis=0)  # [n_node, num_properties]
 
             return tf.vectorized_map(_single_batch, (tokens, positions))  # [batch, n_node, num_properties]
 
@@ -110,6 +111,9 @@ class SimpleCompleteModel(AbstractModule):
                                   tf.TensorSpec([None, 3], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32)])
     def im_to_components(self, im, positions, temperature):
+        return self._im_to_components(im, positions, temperature)
+
+    def _im_to_components(self, im, positions, temperature):
         '''
 
         Args:
@@ -124,7 +128,7 @@ class SimpleCompleteModel(AbstractModule):
 
         [_, H, W, num_embedding] = get_shape(latent_logits)
 
-        latent_logits = tf.reshape(latent_logits, [self.batch, H * W, num_embedding])  # [batch, H*W, num_embeddings]
+        latent_logits = tf.reshape(latent_logits, [1, H * W, num_embedding])  # [batch, H*W, num_embeddings]
         reduce_logsumexp = tf.math.reduce_logsumexp(latent_logits, axis=-1)  # [batch, H*W]
         reduce_logsumexp = tf.tile(reduce_logsumexp[..., None], [1, 1, num_embedding])  # [batch, H*W, num_embedding]
         latent_logits -= reduce_logsumexp  # [batch, H*W, num_embeddings]
@@ -133,9 +137,9 @@ class SimpleCompleteModel(AbstractModule):
                                                                     temperature,
                                                                     1)  # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
 
-        [_, _, n_node_per_graph, embedding_dim] = get_shape(token_samples)
+        [_, _, _, embedding_dim] = get_shape(token_samples)
 
-        token_samples = tf.reshape(token_samples, [n_node_per_graph,
+        token_samples = tf.reshape(token_samples, [self.n_node_per_graph,
                                                    embedding_dim])  # [num_token_samples * batch * H * W, embedding_dim]
 
         token_graphs = GraphsTuple(nodes=token_samples,
@@ -143,7 +147,7 @@ class SimpleCompleteModel(AbstractModule):
                                    globals=None,
                                    senders=None,
                                    receivers=None,
-                                   n_node=tf.constant([n_node_per_graph], dtype=tf.int32),
+                                   n_node=tf.constant([self.n_node_per_graph],dtype=tf.int32),
                                    n_edge=tf.constant([0],
                                                       dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
@@ -219,17 +223,17 @@ class SimpleCompleteModel(AbstractModule):
                                                                     self.num_token_samples) # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
 
         # token_samples = tf.reshape(token_samples, [self.num_token_samples * self.batch, H * W, self.component_size])  # [num_token_samples*batch, H*W, embedding_dim]
-        [_, _, n_node_per_graph, embedding_dim] = get_shape(token_samples)
+        [_, _, _, embedding_dim] = get_shape(token_samples)
         n_graphs = self.num_token_samples * self.batch
 
-        token_samples = tf.reshape(token_samples, [n_graphs * n_node_per_graph, embedding_dim])  # [num_token_samples * batch * H * W, embedding_dim]
+        token_samples = tf.reshape(token_samples, [n_graphs * self.n_node_per_graph, embedding_dim])  # [num_token_samples * batch * H * W, embedding_dim]
 
         token_graphs = GraphsTuple(nodes=token_samples,
                                    edges=None,
                                    globals=None,
                                    senders=None,
                                    receivers=None,
-                                   n_node=tf.constant(n_graphs * [n_node_per_graph], dtype=tf.int32),
+                                   n_node=tf.constant(n_graphs * [self.n_node_per_graph], dtype=tf.int32),
                                    n_edge=tf.constant(n_graphs * [0], dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
         tokens_3d, kl_div, token_3d_samples_onehot = self.decoder(token_graphs, self.temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d]
