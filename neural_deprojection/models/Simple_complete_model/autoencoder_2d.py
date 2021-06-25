@@ -56,7 +56,7 @@ class DiscreteImageVAE(AbstractModule):
         self.num_token_samples = num_token_samples
         self.num_embedding = num_embedding
         self.embedding_dim = embedding_dim
-        self.temperature = tf.Variable(initial_value=tf.constant(1.), name='temperature', trainable=False)
+        self.temperature = tf.Variable(initial_value=tf.constant(10.), name='temperature', trainable=False)
         self.beta = tf.Variable(initial_value=tf.constant(6.6), name='beta', trainable=False)
 
         self.encoder = Encoder(hidden_size=hidden_size, num_embeddings=num_embedding, name='EncoderImage')
@@ -70,6 +70,9 @@ class DiscreteImageVAE(AbstractModule):
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32)])
     def sample_encoder(self, img):
+        return self._sample_encoder(img)
+
+    def _sample_encoder(self, img):
         [batch, H, W, _] = get_shape(img)
         img = tf.reshape(img, [batch, H, W, self.num_channels])    # number of channels must be known for conv2d
         return self.encoder(img)
@@ -78,11 +81,14 @@ class DiscreteImageVAE(AbstractModule):
                                   tf.TensorSpec([], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32)])
     def sample_decoder(self, img_logits, temperature, num_samples):
+        return self._sample_decoder(img_logits, temperature, num_samples)
+
+    def _sample_decoder(self, img_logits, temperature, num_samples):
         [batch, H, W, _] = get_shape(img_logits)
 
         logits = tf.reshape(img_logits, [batch * H * W, self.num_embedding])  # [batch*H*W, num_embeddings]
-        reduce_logsumexp = tf.math.reduce_logsumexp(logits, axis=-1)  # [batch*H*W]
-        reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding])  # [batch*H*W, num_embedding]
+        reduce_logsumexp = tf.math.reduce_logsumexp(logits, axis=-1, keepdims=True)  # [batch*H*W]
+        # reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding])  # [batch*H*W, num_embedding]
         logits -= reduce_logsumexp  # [batch*H*W, num_embeddings]
         token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
         token_samples_onehot = token_distribution.sample((num_samples,),
@@ -98,8 +104,9 @@ class DiscreteImageVAE(AbstractModule):
         decoded_imgs = self.decoder(latent_imgs)  # [S * batch, H', W', C*2]
         [_, H_2, W_2, _] = get_shape(decoded_imgs)
         decoded_imgs = tf.reshape(decoded_imgs, [self.num_token_samples, batch, H_2, W_2, 2 * self.num_channels])  # [S, batch, H, W, embedding_dim]
-        decoded_img = tf.reduce_mean(decoded_imgs, axis=0)  # [batch, H', W', C*2]
-        return decoded_img
+        # decoded_img = tf.reduce_mean(decoded_imgs, axis=0)  # [batch, H', W', C*2]
+        decoded_imgs = decoded_imgs[..., :self.num_channels]
+        return decoded_imgs  # [S, batch, H', W', C]
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32),
