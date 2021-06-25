@@ -205,12 +205,6 @@ class SimpleCompleteModel(AbstractModule):
         # imgs: [batch, H', W', C]
         latent_logits = self.encoder_2d(imgs) #batch, H, W, num_embeddings
 
-        try:
-            for variable in self.discrete_image_vae.encoder.trainable_variables:
-                variable._trainable = False
-        except:
-            pass
-
         [_, H, W, num_embedding] = get_shape(latent_logits)
 
         latent_logits = tf.reshape(latent_logits, [self.batch, H*W, num_embedding])  # [batch, H*W, num_embeddings]
