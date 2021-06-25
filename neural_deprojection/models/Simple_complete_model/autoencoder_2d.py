@@ -68,7 +68,7 @@ class DiscreteImageVAE(AbstractModule):
     def set_temperature(self, temperature):
         self.temperature.assign(temperature)
 
-    @tf.function(input_signature=[tf.TensorSpec([None, None, None, 2], dtype=tf.float32)])
+    @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32)])
     def sample_encoder(self, img):
         return self.encoder(img)
 
