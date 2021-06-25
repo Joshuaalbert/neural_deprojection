@@ -70,6 +70,8 @@ class DiscreteImageVAE(AbstractModule):
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32)])
     def sample_encoder(self, img):
+        [batch, H, W, _] = get_shape(img)
+        img = tf.reshape(img, [batch, H, W, self.num_channels])    # number of channels must be known for conv2d
         return self.encoder(img)
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32),
