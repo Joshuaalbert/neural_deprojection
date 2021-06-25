@@ -16,7 +16,6 @@ class SimpleCompleteModel(AbstractModule):
                  discrete_image_vae,
                  num_token_samples: int,
                  batch: int,
-                 beta,
                  name=None):
         super(SimpleCompleteModel, self).__init__(name=name)
 
@@ -31,9 +30,8 @@ class SimpleCompleteModel(AbstractModule):
         self.num_components = num_components
         self.component_size = component_size
         self.batch = batch
-        self.beta = beta
         self.temperature = tf.Variable(initial_value=tf.constant(1.), name='temperature', trainable=False)
-        # self.beta = tf.Variable(tf.constant(beta, dtype=tf.float32), name='beta')
+        self.beta = tf.Variable(initial_value=tf.constant(1.), name='beta', trainable=False)
 
         self.field_reconstruction = snt.nets.MLP([num_properties * 10 * 2, num_properties * 10 * 2, num_properties],
                                                  activate_final=False)
@@ -207,11 +205,11 @@ class SimpleCompleteModel(AbstractModule):
         # imgs: [batch, H', W', C]
         latent_logits = self.encoder_2d(imgs) #batch, H, W, num_embeddings
 
-        # try:
-        #     for variable in self.discrete_image_vae.encoder.trainable_variables:
-        #         variable._trainable = False
-        # except:
-        #     pass
+        try:
+            for variable in self.discrete_image_vae.encoder.trainable_variables:
+                variable._trainable = False
+        except:
+            pass
 
         [_, H, W, num_embedding] = get_shape(latent_logits)
 
