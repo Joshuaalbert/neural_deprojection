@@ -6,8 +6,7 @@ sys.path.insert(1, '/home/matthijs/git/neural_deprojection/')
 import os
 import tensorflow as tf
 import glob
-from neural_deprojection.models.Simple_complete_model_GCD.main import build_dataset
-from functools import partial
+from neural_deprojection.models.Simple_complete_model_GCD.main import double_downsample
 from neural_deprojection.models.Simple_complete_model.model_utils import SimpleCompleteModel
 from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
 from mayavi import mlab
@@ -15,6 +14,30 @@ from scipy import interpolate
 from neural_deprojection.graph_net_utils import histogramdd
 import matplotlib.pyplot as plt
 import numpy as np
+from graph_nets.graphs import GraphsTuple
+from functools import partial
+from tensorflow_addons.image import gaussian_filter2d
+from neural_deprojection.models.identify_medium_GCD.generate_data import decode_examples
+
+
+
+def build_dataset(tfrecords, batch_size):
+    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
+                                                             node_shape=(10,),
+                                                             edge_shape=(2,),
+                                                             image_shape=(1024, 1024, 1)))  # (graph, image, idx)
+
+    dataset = dataset.map(lambda graph_data_dict,
+                                 img,
+                                 cluster_idx,
+                                 projection_idx,
+                                 vprime: (GraphsTuple(**graph_data_dict),
+                                          tf.concat([double_downsample(img),
+                                                     gaussian_filter2d(double_downsample(img),
+                                                                       filter_shape=[6, 6])],
+                                                    axis=-1), cluster_idx, projection_idx)).shuffle(buffer_size=50).batch(batch_size=batch_size)
+    return dataset
+
 
 def decode_property(scm_model,
                     img,
@@ -61,6 +84,8 @@ def visualization_3d(scm_model,
                                               xi=grid_positions,
                                               method='linear',
                                               fill_value=0.)  # [grid_resolution, grid_resolution, grid_resolution]
+
+
     x = tf.reshape(x, [-1])
     y = tf.reshape(y, [-1])
     z = tf.reshape(z, [-1])
@@ -80,15 +105,24 @@ def visualization_3d(scm_model,
                                                  xi=grid_positions,
                                                  method='linear',
                                                  fill_value=0.)  # [grid_resolution, grid_resolution, grid_resolution]
-    prop_interp = tf.convert_to_tensor(np.reshape(interp_data_after, (-1)))
+
+    prop_interp_before = tf.convert_to_tensor(np.reshape(interp_data_before, (-1)))
+    prop_interp_after = tf.convert_to_tensor(np.reshape(interp_data_after, (-1)))
     histogram_positions_interp = grid_positions_tensor[:, :2]
 
     # the reverse switches x and y, this way my images and histograms line up
     graph_hist_before, _ = histogramdd(tf.reverse(histogram_positions_before, [1]), bins=32, weights=prop)
     graph_hist_after, _ = histogramdd(tf.reverse(histogram_positions_after, [1]), bins=32, weights=decoded_prop)
-    graph_hist_interp, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=32, weights=prop_interp)
 
-    return interp_data_before, interp_data_after, graph_hist_before, graph_hist_after, graph_hist_interp
+    interp_hist_before, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=32, weights=prop_interp_before)
+    interp_hist_after, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=32, weights=prop_interp_after)
+
+    return interp_data_before, \
+           interp_data_after, \
+           graph_hist_before, \
+           graph_hist_after, \
+           interp_hist_before, \
+           interp_hist_after, prop.numpy(), decoded_prop.numpy()
 
 
 def load_saved_models(scm_saved_model_dir):
@@ -126,15 +160,23 @@ def main(scm_saved_model_dir,
     else:
         simple_complete_model, discrete_image_vae = load_checkpoint_models(scm_checkpoint_dir, scm_kwargs)
 
-    data_before, data_after, image_before, image_after, image_interp = visualization_3d(scm_model=simple_complete_model,
-                                                                                        image=image,
-                                                                                        graph=input_graph,
-                                                                                        property_index=prop_index,
-                                                                                        grid_resolution=grid_res,
-                                                                                        component=component,
-                                                                                        decode_on_interp_pos=decode_on_interp_pos,
-                                                                                        debug=debug,
-                                                                                        saved_model=saved_model)
+    data_before, \
+    data_after, \
+    hist_before, \
+    hist_after, \
+    image_interp_before, \
+    image_interp_after,\
+    prop, \
+    decoded_prop = visualization_3d(scm_model=simple_complete_model,
+                                    image=image,
+                                    graph=input_graph,
+                                    property_index=prop_index,
+                                    grid_resolution=grid_res,
+                                    component=component,
+                                    decode_on_interp_pos=decode_on_interp_pos,
+                                    debug=debug,
+                                    saved_model=saved_model)
+
     if debug and not saved_model:
         decoded_img = discrete_image_vae._sample_decoder(discrete_image_vae._sample_encoder(img), 10, 4)
     else:
@@ -145,26 +187,45 @@ def main(scm_saved_model_dir,
                                        bins=([i for i in np.linspace(-1.7, 1.7, 32)],
                                              [i for i in np.linspace(-1.7, 1.7, 32)]))
 
-    fig, ax = plt.subplots(2, 3, figsize=(18, 12))
-    graph_before = ax[0, 0].imshow(image_before.numpy())
-    fig.colorbar(graph_before, ax=ax[0, 0])
-    ax[0, 0].set_title('graph before')
-    graph_after = ax[0, 1].imshow(image_after.numpy())
-    fig.colorbar(graph_after, ax=ax[0, 1])
-    ax[0, 1].set_title('graph after')
-    graph_interp = ax[0, 2].imshow(image_interp.numpy())
-    fig.colorbar(graph_interp, ax=ax[0, 2])
-    ax[0, 2].set_title('graph interp')
-    image_before = ax[1, 0].imshow(image[0, :, :, 1])
-    fig.colorbar(image_before, ax=ax[1, 0])
-    ax[1, 0].set_title('image before')
-    image_after = ax[1, 1].imshow(decoded_img[0, 0, :, :, 1].numpy())
-    fig.colorbar(image_after, ax=ax[1, 1])
-    ax[1, 1].set_title('image after')
-    hist2d = ax[1, 2].imshow(H.T, interpolation='nearest', origin='lower',
-                       extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
-    fig.colorbar(hist2d, ax=ax[1, 2])
-    ax[1, 2].set_title('particles per bin')
+    fig, ax = plt.subplots(2, 4, figsize=(24, 12))
+
+    image_before = ax[0, 0].imshow(image[0, :, :, 1])
+    fig.colorbar(image_before, ax=ax[0, 0])
+    ax[0, 0].set_title('input image')
+
+    image_after = ax[1, 0].imshow(decoded_img[0, 0, :, :, 1].numpy())
+    fig.colorbar(image_after, ax=ax[1, 0])
+    ax[1, 0].set_title('decoded image')
+
+    graph_before = ax[0, 1].imshow(hist_before.numpy())
+    fig.colorbar(graph_before, ax=ax[0, 1])
+    ax[0, 1].set_title('property histogram')
+
+    graph_after = ax[1, 1].imshow(hist_after.numpy())
+    fig.colorbar(graph_after, ax=ax[1, 1])
+    ax[1, 1].set_title('reconstructed property histogram')
+
+    hist2d = ax[0, 2].imshow(H.T, interpolation='nearest', origin='lower',
+                             extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
+    fig.colorbar(hist2d, ax=ax[0, 2])
+    ax[0, 2].set_title('particles per histogram bin')
+
+    ax[1, 2].hist(prop / np.max(prop), bins=30, histtype='step', label='before')
+    ax[1, 2].hist(decoded_prop / np.max(decoded_prop), bins=30, histtype='step', label='after')
+    ax[1, 2].set_yscale('log')
+    ax[1, 2].set_xlabel('normalized property value')
+    ax[1, 2].set_ylabel('counts')
+    ax[1, 2].set_title('normalized property value distribution')
+    ax[1, 2].legend()
+
+    interp_before = ax[0, 3].imshow(image_interp_before.numpy())
+    fig.colorbar(interp_before, ax=ax[0, 3])
+    ax[0, 3].set_title('property interpolated to grid points')
+
+    interp_after = ax[1, 3].imshow(image_interp_after.numpy())
+    fig.colorbar(interp_after, ax=ax[1, 3])
+    ax[1, 3].set_title('reconstructed property interpolated to grid points')
+
     plt.show()
 
     mlab.figure(1, bgcolor=(0, 0, 0), size=(800, 800))
@@ -217,6 +278,7 @@ if __name__ == '__main__':
     counter = 0
     thing = iter(dataset)
     (graph, img, cluster_id, proj_id) = next(thing)
+    # 56 is a cluster that has two clear blobs which is nice for comparisons
     while cluster_id != 56:
         (graph, img, cluster_id, proj_id) = next(thing)
         counter += 1
