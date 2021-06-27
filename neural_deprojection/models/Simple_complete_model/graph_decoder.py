@@ -206,8 +206,10 @@ class GraphMappingNetwork(AbstractModule):
         def _core(output_token_idx, latent_graphs, prev_kl_term, prev_token_3d_samples_onehot):
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
+
             latent_graphs = self.edge_block(latent_graphs)
             latent_graphs = self.node_block(latent_graphs)
+
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
 
             token_3d_logits = batched_latent_graphs.nodes[:, -self.num_output:, :]  # n_graphs, num_output, num_embedding
