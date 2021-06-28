@@ -1,9 +1,11 @@
 import tensorflow as tf
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
+from graph_nets.modules import SelfAttention
 from neural_deprojection.graph_net_utils import AbstractModule, get_shape, graph_batch_reshape, graph_unbatch_reshape, histogramdd
 from neural_deprojection.models.Simple_complete_model.graph_decoder import GraphMappingNetwork
-from scipy import interpolate
+from sonnet.src import utils, once
+
 
 class SimpleCompleteModel(AbstractModule):
     def __init__(self,
@@ -16,6 +18,8 @@ class SimpleCompleteModel(AbstractModule):
                  n_node_per_graph:int,
                  discrete_image_vae,
                  num_token_samples: int,
+                 multi_head_output_size: int,
+                 num_heads: int,
                  batch: int,
                  name=None):
         super(SimpleCompleteModel, self).__init__(name=name)
@@ -23,6 +27,8 @@ class SimpleCompleteModel(AbstractModule):
         self.discrete_image_vae = discrete_image_vae
         self.decoder = GraphMappingNetwork(num_output=num_components,
                                            num_embedding=num_embedding_3d,
+                                           multi_head_output_size=multi_head_output_size,
+                                           num_heads=num_heads,
                                            embedding_size=component_size,
                                            edge_size=edge_size,
                                            global_size=global_size)
@@ -304,3 +310,112 @@ class SimpleCompleteModel(AbstractModule):
                     metrics=dict(var_exp=var_exp,
                                  kl_term=kl_div,
                                  mean_perplexity=mean_perplexity))
+
+
+class MultiHeadLinear(AbstractModule):
+    """Linear module, optionally including bias."""
+
+    def __init__(self,
+                 output_size: int,
+                 num_heads: int = 1,
+                 with_bias: bool = True,
+                 w_init=None,
+                 b_init=None,
+                 name=None):
+        """Constructs a `Linear` module.
+
+        Args:
+          output_size: Output dimensionality.
+          with_bias: Whether to include bias parameters. Default `True`.
+          w_init: Optional initializer for the weights. By default the weights are
+            initialized truncated random normal values with a standard deviation of
+            `1 / sqrt(input_feature_size)`, which is commonly used when the inputs
+            are zero centered (see https://arxiv.org/abs/1502.03167v3).
+          b_init: Optional initializer for the bias. By default the bias is
+            initialized to zero.
+          name: Name of the module.
+        """
+        super(MultiHeadLinear, self).__init__(name=name)
+        self.output_size = output_size
+        self.with_bias = with_bias
+        self.w_init = w_init
+        self.num_heads = num_heads
+        if with_bias:
+            self.b_init = b_init if b_init is not None else snt.initializers.Zeros()
+        elif b_init is not None:
+            raise ValueError("When not using a bias the b_init must be None.")
+
+    @once.once
+    def _initialize(self, inputs: tf.Tensor):
+        """Constructs parameters used by this module."""
+        utils.assert_minimum_rank(inputs, 2)
+
+        input_size = inputs.shape[-1]
+        if input_size is None:  # Can happen inside an @tf.function.
+            raise ValueError("Input size must be specified at module build time.")
+
+        self.input_size = input_size
+
+        if self.w_init is None:
+            # See https://arxiv.org/abs/1502.03167v3.
+            stddev = 1 / tf.math.sqrt(self.input_size * 1.0)
+            self.w_init = snt.initializers.TruncatedNormal(stddev=stddev)
+
+        self.w = tf.Variable(
+            self.w_init([self.num_heads, self.input_size, self.output_size], inputs.dtype),
+            name="w")
+
+        if self.with_bias:
+            self.b = tf.Variable(
+                self.b_init([self.num_heads, self.output_size], inputs.dtype), name="b")
+
+    def _build(self, inputs: tf.Tensor) -> tf.Tensor:
+        self._initialize(inputs)
+
+        # [num_nodes, node_size].[num_heads, node_size, output_size] -> [num_nodes, num_heads, output_size]
+        outputs = tf.einsum('ns,hso->nho', inputs, self.w, optimize='optimal')
+        # outputs = tf.matmul(inputs, self.w)
+        if self.with_bias:
+            outputs = tf.add(outputs, self.b)
+        return
+
+
+class CoreNetwork(AbstractModule):
+    """
+    Core network which can be used in the EncodeProcessDecode network. Consists of a (full) graph network block
+    and a self attention block.
+    """
+
+    def __init__(self,
+                 num_heads,
+                 multi_head_output_size,
+                 input_node_size,
+                 name=None):
+        super(CoreNetwork, self).__init__(name=name)
+        self.num_heads = num_heads
+        self.multi_head_output_size = multi_head_output_size
+
+        self.output_linear = snt.Linear(output_size=input_node_size)
+        self.FFN = snt.nets.MLP([32, input_node_size], activate_final=False)  # Feed forward network
+        self.normalization = lambda x: (x - tf.reduce_mean(x)) / tf.math.reduce_std(x)
+        self.ln1 = snt.LayerNorm(axis=1, eps=1e-6, create_scale=True, create_offset=True)
+        self.ln2 = snt.LayerNorm(axis=1, eps=1e-6, create_scale=True, create_offset=True)
+
+        self.v_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # values
+        self.k_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # keys
+        self.q_linear = MultiHeadLinear(output_size=multi_head_output_size, num_heads=num_heads)  # queries
+        self.self_attention = SelfAttention()
+
+    def _build(self, latent):
+        node_values = self.v_linear(latent.nodes)
+        node_keys = self.k_linear(latent.nodes)
+        node_queries = self.q_linear(latent.nodes)
+        attended_latent = self.self_attention(node_values=node_values,
+                                              node_keys=node_keys,
+                                              node_queries=node_queries,
+                                              attention_graph=latent)
+        output_nodes = tf.reshape(attended_latent.nodes, (-1, self.num_heads * self.multi_head_output_size))
+        output_nodes = self.ln1(self.output_linear(output_nodes) + latent.nodes)
+        output_nodes = self.ln2(self.FFN(output_nodes))
+        output_graph = latent.replace(nodes=output_nodes)
+        return output_graph
