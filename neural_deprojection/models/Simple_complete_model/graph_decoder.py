@@ -241,7 +241,7 @@ class GraphMappingNetwork(AbstractModule):
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
 
             # todo: use self-attention
-            # latent_graphs = self.selfattention_core(latent_graphs)
+            latent_graphs = self.selfattention_core(latent_graphs)
             latent_graphs = self.edge_block(latent_graphs)     # also use node & edge blocks?
             latent_graphs = self.node_block(latent_graphs)
 
