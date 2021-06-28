@@ -49,16 +49,17 @@ class SimpleCompleteModel(AbstractModule):
                                                                                        num_token_samples)
         return token_samples_onehot, token_samples
 
-    def reconstruct_field(self, field_component_tokens, positions):
+    def reconstruct_field(self, field_component_tokens, positions, basis_weights):
         """
         Reconstruct the field at positions.
 
         Args:
             field_component_tokens: [num_token_samples, batch, output_size, embedding_dim_3d]
             positions: [num_token_samples, batch, n_node, 3]
+            basis_weights: [num_token_samples, batch, output_size]
 
         Returns:
-            [batch, n_node, num_properties]
+            [num_token_samples, batch, n_node, num_properties*2]
         """
         pos_shape = get_shape(positions)
 
@@ -69,11 +70,12 @@ class SimpleCompleteModel(AbstractModule):
             Args:
                 tokens: [batch, output_size, embedding_dim_3d]
                 positions: [batch, n_node, 3]
+                basis_weights: [batch, output_size]
 
             Returns:
                 [n_node, num_properties]
             """
-            tokens, positions = args
+            tokens, positions, basis_weights = args
 
             def _single_batch(args):
                 """
@@ -82,11 +84,15 @@ class SimpleCompleteModel(AbstractModule):
                 Args:
                     tokens: [output_size, embedding_dim_3d]
                     positions: [n_node, 3]
+                    basis_weights: [output_size]
 
                 Returns:
                     [n_node, num_properties]
                 """
-                tokens, positions = args
+                tokens, positions, basis_weights = args
+                #output_size, num_properties*2
+                basis_weights = tf.concat([tf.tile(basis_weights[:, None], [1, self.num_properties]),
+                                           tf.ones([self.num_components, self.num_properties])], axis=-1)
 
                 def _single_component(token):
                     """
@@ -102,11 +108,11 @@ class SimpleCompleteModel(AbstractModule):
                     features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[2], 1])], axis=-1)  # [n_node, 3 + embedding_dim_3D]
                     return self.field_reconstruction(features)  # [n_node, num_properties]
 
-                return tf.reduce_sum(tf.vectorized_map(_single_component, tokens), axis=0)  # [n_node, num_properties]
+                return tf.reduce_sum(basis_weights[:, None, :] * tf.vectorized_map(_single_component, tokens), axis=0)  # [n_node, num_properties]
 
             return tf.vectorized_map(_single_batch, (tokens, positions))  # [batch, n_node, num_properties]
 
-        return tf.vectorized_map(_single_sample, (field_component_tokens, positions))  # [num_token_samples, batch, n_node, num_properties]
+        return tf.vectorized_map(_single_sample, (field_component_tokens, positions, basis_weights))  # [num_token_samples, batch, n_node, num_properties*2]
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32),
                                   tf.TensorSpec([None, 3], dtype=tf.float32),
@@ -154,29 +160,13 @@ class SimpleCompleteModel(AbstractModule):
                                    n_edge=tf.constant([0],
                                                       dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
-        tokens_3d, kl_div, token_3d_samples_onehot = self.decoder(token_graphs,
-                                                                  temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d]
-        tokens_3d = tf.reshape(tokens_3d, [self.num_components,
+        tokens_3d, kl_div, token_3d_samples_onehot, basis_weights = self.decoder(token_graphs,
+                                                                  temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
+        tokens_3d = tf.reshape(tokens_3d, [1,1,self.num_components,
                                            self.component_size])  # [num_token_samples, batch, num_output, embedding_dim_3d]
-
-        pos_shape = get_shape(positions)
-
-        def _single_component(token):
-            """
-            Compute for a single component.
-
-            Args:
-                token: [component_size]
-
-            Returns:
-                [num_positions, num_properties]
-            """
-
-            features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[0], 1])],
-                                 axis=-1)  # [num_positions, 3 + embedding_dim_3D]
-            return self.field_reconstruction(features)  # [num_positions, 2*num_properties]
-
-        log_likelihood_params = tf.vectorized_map(_single_component, tokens_3d) # [num_components, n_node, 2*num_properties]
+        basis_weights = tf.reshape(basis_weights, [1, 1, self.num_components])
+        #take off the fake sample and batch dims
+        log_likelihood_params = self.reconstruct_field(tokens_3d, positions, basis_weights)[0,0,:,:]
         mu = log_likelihood_params[..., :self.num_properties]
         log_stddev = log_likelihood_params[..., self.num_properties:]
         return mu, log_stddev
@@ -188,27 +178,12 @@ class SimpleCompleteModel(AbstractModule):
     def set_temperature(self, temperature):
         self.temperature.assign(temperature)
 
-    def weighting_function(self, positions):
-        """
-        Compute a weighting functoin that down-weights positions that are clustered closely together.
-        Uses a kernel to approximate proximity.
-
-        Args:
-            positions: [n_graphs, n_node_per_graph, 3]
-
-        Returns:
-            weights [n_graphs, n_node_per_graph]
-
-        """
-        pass
-
-        
-    def log_likelihood(self, tokens_3d, properties):
+    def log_likelihood(self, tokens_3d, properties, basis_weights):
         """
                 Args:
                     tokens_3d: [num_token_samples, batch, n_tokens, embedding_dim_3d]
                     properties: [num_token_samples, batch, n_node_per_graph, 3 + num_properties]
-
+                    basis_weights: [num_token_samples, batch, n_node_per_graph]
                 Returns:
                     scalar
                 """
@@ -216,7 +191,7 @@ class SimpleCompleteModel(AbstractModule):
         positions = properties[:, :, :, :3]  # [num_token_samples, batch, n_node_per_graph, 3]
         input_properties = properties[:, :, :, 3:]  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        mu_field_properties, log_stddev_field_properties = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        mu_field_properties, log_stddev_field_properties = self.reconstruct_field(tokens_3d, positions, basis_weights)  # [num_token_samples, batch, n_node_per_graph, num_properties]
         # todo: add variance (reconstruct_field would return it)
         diff_properties = (input_properties - mu_field_properties)   # [num_token_samples, batch, n_node_per_graph, num_properties]
         diff_properties /= tf.math.exp(log_stddev_field_properties)
@@ -261,18 +236,21 @@ class SimpleCompleteModel(AbstractModule):
                                    n_node=tf.constant(n_graphs * [self.n_node_per_graph], dtype=tf.int32),
                                    n_edge=tf.constant(n_graphs * [0], dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
-        tokens_3d, kl_div, token_3d_samples_onehot = self.decoder(token_graphs, self.temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d]
+        tokens_3d, kl_div, token_3d_samples_onehot, basis_weights = self.decoder(token_graphs, self.temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
         tokens_3d = tf.reshape(tokens_3d, [self.num_token_samples,
                                            self.batch,
                                            self.num_components,
                                            self.component_size])  # [num_token_samples, batch, num_output, embedding_dim_3d]
+        basis_weights = tf.reshape(basis_weights, [self.num_token_samples,
+                                           self.batch,
+                                           self.num_components]) # [num_token_samples, batch, num_output]
         kl_div = tf.reshape(kl_div, [self.num_token_samples,
                                      self.batch])  # [num_token_samples, batch]
 
         # properties: [num_token_samples, batch, n_node_per_graph, 3+num_properties]
         # tokens_3d: [num_token_samples, batch, num_output, embedding_dim_3d]
         properties = tf.tile(graphs.nodes[None, ...], [self.num_token_samples, 1, 1, 1])
-        field_properties, log_likelihood = self.log_likelihood(tokens_3d, properties)
+        field_properties, log_likelihood = self.log_likelihood(tokens_3d, properties, basis_weights)
         # field_properties: [num_token_samples, batch, n_node_per_graph, num_properties]
         # log_likelihood: [num_token_samples, batch]
 

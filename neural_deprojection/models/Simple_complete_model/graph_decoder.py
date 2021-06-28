@@ -166,6 +166,22 @@ class GraphMappingNetwork(AbstractModule):
                                            use_nodes=True,
                                            use_globals=True)
 
+        basis_weight_node_model_fn = lambda: snt.nets.MLP([num_embedding, 1], activate_final=True,
+                                             activation=tf.nn.leaky_relu)
+        basis_weight_edge_model_fn = lambda: snt.nets.MLP([edge_size, edge_size], activate_final=True, activation=tf.nn.leaky_relu)
+
+        self.basis_weight_edge_block = blocks.EdgeBlock(basis_weight_edge_model_fn,
+                                           use_edges=False,
+                                           use_receiver_nodes=True,
+                                           use_sender_nodes=True,
+                                           use_globals=True)
+
+        self.basis_weight_node_block = blocks.NodeBlock(basis_weight_node_model_fn,
+                                           use_received_edges=True,
+                                           use_sent_edges=True,
+                                           use_nodes=True,
+                                           use_globals=True)
+
 
 
 
@@ -175,8 +191,13 @@ class GraphMappingNetwork(AbstractModule):
 
         Args:
             graphs: batched GraphsTuple, node_shape = [n_graphs * num_input, input_embedding_size]
-
+            temperature: scalar > 0
         Returns:
+            #todo: give shapes to returns
+            token_node
+             kl_div
+             token_3d_samples_onehot
+             basis_weights
 
         """
         # give graphs edges and new node dimension (linear transformation)
@@ -207,6 +228,7 @@ class GraphMappingNetwork(AbstractModule):
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
 
+            # todo: use self-attention
             latent_graphs = self.edge_block(latent_graphs)
             latent_graphs = self.node_block(latent_graphs)
 
@@ -250,7 +272,16 @@ class GraphMappingNetwork(AbstractModule):
             body=lambda output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot: _core(output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot),
             loop_vars=(tf.constant([0]), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32), tf.zeros((n_graphs, self.num_output, self.num_embedding), dtype=tf.float32)))
 
+        # compute weights for how much each basis function will contribute, forcing later ones to contribute less.
+        #todo: use self-attention
+        basis_weight_graphs = self.basis_weight_node_block(self.basis_weight_edge_block(latent_graphs))
+        basis_weight_graphs = graph_batch_reshape(basis_weight_graphs)
+        #[n_graphs, num_output]
+        basis_weights = basis_weight_graphs.nodes[:,-self.num_output, 0]
+        #make the weights shrink with increasing component
+        basis_weights = tf.math.cumprod(tf.nn.sigmoid(basis_weights), axis=-1)
+
         latent_graphs = graph_batch_reshape(latent_graphs)
         token_nodes = latent_graphs.nodes[:, -self.num_output:, :]
 
-        return token_nodes, kl_div, token_3d_samples_onehot
+        return token_nodes, kl_div, token_3d_samples_onehot, basis_weights
