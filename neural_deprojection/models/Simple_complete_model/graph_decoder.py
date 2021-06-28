@@ -4,6 +4,7 @@ import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from graph_nets import utils_tf
 from neural_deprojection.graph_net_utils import AbstractModule, get_shape, graph_batch_reshape, graph_unbatch_reshape
+from neural_deprojection.models.Simple_complete_model.model_utils import CoreNetwork
 import tensorflow_probability as tfp
 
 
@@ -125,6 +126,8 @@ class GraphMappingNetwork(AbstractModule):
     def __init__(self,
                  num_output: int,
                  num_embedding: int,
+                 multi_head_output_size: int,
+                 num_heads: int = 4,
                  embedding_size: int = 4,
                  edge_size: int = 4,
                  global_size: int = 10,
@@ -182,6 +185,13 @@ class GraphMappingNetwork(AbstractModule):
                                            use_nodes=True,
                                            use_globals=True)
 
+        self.selfattention_core = CoreNetwork(num_heads=num_heads,
+                                              multi_head_output_size=multi_head_output_size,
+                                              input_node_size=embedding_size)
+
+        self.selfattention_weights = CoreNetwork(num_heads=num_heads,
+                                              multi_head_output_size=multi_head_output_size,
+                                              input_node_size=embedding_size)
 
 
 
@@ -229,8 +239,9 @@ class GraphMappingNetwork(AbstractModule):
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
 
             # todo: use self-attention
-            latent_graphs = self.edge_block(latent_graphs)
-            latent_graphs = self.node_block(latent_graphs)
+            latent_graphs = self.selfattention_core(latent_graphs)
+            # latent_graphs = self.edge_block(latent_graphs)     # also use node & edge blocks?
+            # latent_graphs = self.node_block(latent_graphs)
 
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
 
@@ -274,7 +285,8 @@ class GraphMappingNetwork(AbstractModule):
 
         # compute weights for how much each basis function will contribute, forcing later ones to contribute less.
         #todo: use self-attention
-        basis_weight_graphs = self.basis_weight_node_block(self.basis_weight_edge_block(latent_graphs))
+        basis_weight_graphs = self.selfattention_weights(latent_graphs)
+        basis_weight_graphs = self.basis_weight_node_block(self.basis_weight_edge_block(basis_weight_graphs))
         basis_weight_graphs = graph_batch_reshape(basis_weight_graphs)
         #[n_graphs, num_output]
         basis_weights = basis_weight_graphs.nodes[:,-self.num_output, 0]
