@@ -241,11 +241,11 @@ class GraphMappingNetwork(AbstractModule):
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
 
             # todo: use self-attention
-            latent_graphs = self.selfattention_core(latent_graphs)
-            # latent_graphs = self.edge_block(latent_graphs)     # also use node & edge blocks?
-            # latent_graphs = self.node_block(latent_graphs)
+            # latent_graphs = self.selfattention_core(latent_graphs)
+            latent_graphs = self.edge_block(latent_graphs)     # also use node & edge blocks?
+            latent_graphs = self.node_block(latent_graphs)
 
-            # batched_latent_graphs = graph_batch_reshape(latent_graphs)
+            batched_latent_graphs = graph_batch_reshape(latent_graphs)
 
             token_3d_logits = batched_latent_graphs.nodes[:, -self.num_output:, :]  # n_graphs, num_output, num_embedding
             reduce_logsumexp = tf.math.reduce_logsumexp(token_3d_logits, axis=-1)  # [n_graphs, num_output]
@@ -291,7 +291,7 @@ class GraphMappingNetwork(AbstractModule):
         basis_weight_graphs = self.basis_weight_node_block(self.basis_weight_edge_block(basis_weight_graphs))
         basis_weight_graphs = graph_batch_reshape(basis_weight_graphs)
         #[n_graphs, num_output]
-        basis_weights = basis_weight_graphs.nodes[:,-self.num_output, 0]
+        basis_weights = basis_weight_graphs.nodes[:,-self.num_output:, 0]
         #make the weights shrink with increasing component
         basis_weights = tf.math.cumprod(tf.nn.sigmoid(basis_weights), axis=-1)
 
@@ -366,7 +366,7 @@ class MultiHeadLinear(AbstractModule):
         # outputs = tf.matmul(inputs, self.w)
         if self.with_bias:
             outputs = tf.add(outputs, self.b)
-        return
+        return outputs
 
 
 class CoreNetwork(AbstractModule):

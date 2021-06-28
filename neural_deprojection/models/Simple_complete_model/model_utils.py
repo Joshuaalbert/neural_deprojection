@@ -111,15 +111,16 @@ class SimpleCompleteModel(AbstractModule):
 
                     features = tf.concat([positions, tf.tile(token[None, :], [pos_shape[2], 1])], axis=-1)  # [n_node, 3 + embedding_dim_3D]
                     return self.field_reconstruction(features)  # [n_node, num_properties]
-
+                # basis_weights[:, None, :] 4, 1, 14
+                # tf.vectorized_map(_single_component, tokens) 4, 10000, 14
                 return tf.reduce_sum(basis_weights[:, None, :] * tf.vectorized_map(_single_component, tokens), axis=0)  # [n_node, num_properties]
 
-            return tf.vectorized_map(_single_batch, (tokens, positions))  # [batch, n_node, num_properties]
+            return tf.vectorized_map(_single_batch, (tokens, positions, basis_weights))  # [batch, n_node, num_properties]
 
         return tf.vectorized_map(_single_sample, (field_component_tokens, positions, basis_weights))  # [num_token_samples, batch, n_node, num_properties*2]
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32),
-                                  tf.TensorSpec([None, 3], dtype=tf.float32),
+                                  tf.TensorSpec([None, None, None, 3], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32)])
     def im_to_components(self, im, positions, temperature):
         # returns mu, std, so return only mu
@@ -195,7 +196,7 @@ class SimpleCompleteModel(AbstractModule):
         positions = properties[:, :, :, :3]  # [num_token_samples, batch, n_node_per_graph, 3]
         input_properties = properties[:, :, :, 3:]  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        mu_field_properties, log_stddev_field_properties = self.reconstruct_field(tokens_3d, positions, basis_weights)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        mu_field_properties, log_stddev_field_properties = tf.split(self.reconstruct_field(tokens_3d, positions, basis_weights), num_or_size_splits=2, axis=-1)  # [num_token_samples, batch, n_node_per_graph, num_properties]
         # todo: add variance (reconstruct_field would return it)
         diff_properties = (input_properties - mu_field_properties)   # [num_token_samples, batch, n_node_per_graph, num_properties]
         diff_properties /= tf.math.exp(log_stddev_field_properties)
