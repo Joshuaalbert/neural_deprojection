@@ -12,7 +12,7 @@ import tensorflow as tf
 import json
 import sonnet as snt
 
-MODEL_MAP = {'discvae': DiscreteGraphVAE}
+MODEL_MAP = {'disc_graph_vae': DiscreteGraphVAE}
 
 def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters, strategy=None, **kwargs) -> TrainOneEpoch:
     model_cls = MODEL_MAP[model_type]
@@ -66,7 +66,6 @@ def build_dataset(tfrecords, batch_size):
 
     return dataset
 
-
 def train_disc_graph_vae(data_dir, config, kwargs):
     # strategy = get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1)
 
@@ -87,6 +86,7 @@ def train_disc_graph_vae(data_dir, config, kwargs):
     # checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
     log_dir = 'test_log_dir'
     checkpoint_dir = 'test_checkpointing'
+    save_dir = 'saved_model'
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
@@ -95,19 +95,20 @@ def train_disc_graph_vae(data_dir, config, kwargs):
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
                           test_dataset=test_dataset,
-                          num_epochs=100,
+                          num_epochs=1000,
                           early_stop_patience=10,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
-                          debug=True)
+                          save_model_dir=save_dir,
+                          debug=False)
 
 
 def main(data_dir):
-    config = dict(model_type='discvae',
+    config = dict(model_type='disc_graph_vae',
                   model_parameters=dict(embedding_dim=64,
                                         num_embedding=512,
-                                        num_latent_tokens=16,
-                                        num_gaussian_components=4),
+                                        num_latent_tokens=1024,
+                                        num_gaussian_components=32),
                   optimizer_parameters=dict(learning_rate=1e-5, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict(
