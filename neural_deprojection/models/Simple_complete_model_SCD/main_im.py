@@ -74,9 +74,9 @@ def main(data_dir, config, kwargs):
     train_one_epoch = build_training(**config, **kwargs)
     train_one_epoch.model.set_temperature(10.)
 
-    log_dir = build_log_dir('im_OH_log_dir', config)
-    checkpoint_dir = build_checkpoint_dir('im_OH_checkpointing', config)
-    save_model_dir = os.path.join('OH_saved_models')
+    log_dir = build_log_dir('new_im_16_log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('new_im_16_checkpointing', config)
+    save_model_dir = os.path.join('new_im_16_saved_models')
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
