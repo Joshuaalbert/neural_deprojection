@@ -43,20 +43,21 @@ def decode_property(scm_model,
                     img,
                     positions,
                     property_index,
+                    temperature,
                     component=None,
                     debug=False,
                     saved_model=True):
     if debug and not saved_model:
-        properties = scm_model._im_to_components(img, positions, 10)  # [num_components, num_positions, num_properties]
+        decoded_properties, _ = scm_model._im_to_components(img, positions[None, None, :, :], temperature)  # [num_components, num_positions, num_properties]
     else:
-        properties = scm_model.im_to_components(img, positions, 10)  # [num_components, num_positions, num_properties]
+        decoded_properties = scm_model.im_to_components(img, positions[None, None, :, :], temperature)  # [num_components, num_positions, num_properties]
 
     if component is not None:
-        properties_one_component = properties[component]  # [num_positions, num_properties]
+        properties_one_component = decoded_properties[component]  # [num_positions, num_properties]
     else:
-        properties_one_component = tf.reduce_sum(properties, axis=0)  # [num_positions, num_properties]
-    data_flat_after = properties_one_component[:, property_index]  # [num_positions] (3=density)
-    return data_flat_after
+        properties_one_component = tf.reduce_mean(decoded_properties, axis=0)  # [num_positions, num_properties]
+    decoded_property = properties_one_component[:, property_index]  # [num_positions]
+    return decoded_property
 
 
 def visualization_3d(scm_model,
@@ -64,6 +65,7 @@ def visualization_3d(scm_model,
                      graph,
                      property_index,
                      grid_resolution,
+                     temperature,
                      component=None,
                      decode_on_interp_pos=True,
                      debug=False,
@@ -94,12 +96,12 @@ def visualization_3d(scm_model,
     if decode_on_interp_pos:
         # Directly calculate the decoded 3D property for the grid positions
         histogram_positions_after = grid_positions_tensor[:, :2]
-        decoded_prop = decode_property(scm_model, image, grid_positions_tensor, property_index, component, debug, saved_model)
+        decoded_prop = decode_property(scm_model, image, grid_positions_tensor, property_index, temperature, component, debug, saved_model)
         interp_data_after = tf.reshape(decoded_prop, [grid_resolution, grid_resolution, grid_resolution]).numpy()
     else:
         # Calculate the decoded 3D property for the node positions and interpolate to grid positions
         histogram_positions_after = graph.nodes[0, :, :2]
-        decoded_prop = decode_property(scm_model, image, graph.nodes[0, :, :3], property_index, component, debug, saved_model)
+        decoded_prop = decode_property(scm_model, image, graph.nodes[0, :, :3], property_index, temperature, component, debug, saved_model)
         interp_data_after = interpolate.griddata(node_positions,
                                                  decoded_prop.numpy(),
                                                  xi=grid_positions,
@@ -110,12 +112,13 @@ def visualization_3d(scm_model,
     prop_interp_after = tf.convert_to_tensor(np.reshape(interp_data_after, (-1)))
     histogram_positions_interp = grid_positions_tensor[:, :2]
 
+    # decoded_prop = tf.random.uniform((10000,))
     # the reverse switches x and y, this way my images and histograms line up
-    graph_hist_before, _ = histogramdd(tf.reverse(histogram_positions_before, [1]), bins=32, weights=prop)
-    graph_hist_after, _ = histogramdd(tf.reverse(histogram_positions_after, [1]), bins=32, weights=decoded_prop)
+    graph_hist_before, _ = histogramdd(tf.reverse(histogram_positions_before, [1]), bins=grid_resolution, weights=prop)
+    graph_hist_after, _ = histogramdd(tf.reverse(histogram_positions_after, [1]), bins=grid_resolution, weights=decoded_prop)
 
-    interp_hist_before, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=32, weights=prop_interp_before)
-    interp_hist_after, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=32, weights=prop_interp_after)
+    interp_hist_before, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=grid_resolution, weights=prop_interp_before)
+    interp_hist_after, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=grid_resolution, weights=prop_interp_after)
 
     return interp_data_before, \
            interp_data_after, \
@@ -127,28 +130,26 @@ def visualization_3d(scm_model,
 
 def load_saved_models(scm_saved_model_dir):
     simple_complete_model = tf.saved_model.load(scm_saved_model_dir)
-    discrete_image_vae = simple_complete_model.discrete_image_vae
-    return simple_complete_model, discrete_image_vae
+    return simple_complete_model
 
 
-def load_checkpoint_models(scm_checkpoint_dir, scm_kwargs):
-    simple_complete_model = SimpleCompleteModel(**scm_kwargs)
-    encoder_cp = tf.train.Checkpoint(decoder=simple_complete_model.decoder,
-                                     field_reconstruction=simple_complete_model.field_reconstruction,
-                                     discrete_image_vae=simple_complete_model.discrete_image_vae)
-    model_cp = tf.train.Checkpoint(_model=encoder_cp)
+def load_checkpoint_models(scm_checkpoint_dir, model, cp_kwargs):
+    objects_cp = tf.train.Checkpoint(**cp_kwargs)
+    model_cp = tf.train.Checkpoint(_model=objects_cp)
     checkpoint = tf.train.Checkpoint(module=model_cp)
     manager = tf.train.CheckpointManager(checkpoint, scm_checkpoint_dir, max_to_keep=3,
-                                         checkpoint_name=simple_complete_model.__class__.__name__)
+                                         checkpoint_name=model.__class__.__name__)
     checkpoint.restore(manager.latest_checkpoint).expect_partial()
-    return simple_complete_model, simple_complete_model.discrete_image_vae
+    return model
 
 
 def main(scm_saved_model_dir,
          scm_checkpoint_dir,
-         scm_kwargs,
+         scm_model,
+         cp_kwargs,
          image,
          input_graph,
+         temperature,
          prop_index: int,
          grid_res: int,
          component=None,
@@ -156,9 +157,9 @@ def main(scm_saved_model_dir,
          saved_model=True,
          debug=False):
     if saved_model:
-        simple_complete_model, discrete_image_vae = load_saved_models(scm_saved_model_dir)
+        simple_complete_model = load_saved_models(scm_saved_model_dir)
     else:
-        simple_complete_model, discrete_image_vae = load_checkpoint_models(scm_checkpoint_dir, scm_kwargs)
+        simple_complete_model = load_checkpoint_models(scm_checkpoint_dir, scm_model, cp_kwargs)
 
     data_before, \
     data_after, \
@@ -172,27 +173,33 @@ def main(scm_saved_model_dir,
                                     graph=input_graph,
                                     property_index=prop_index,
                                     grid_resolution=grid_res,
+                                    temperature=temperature,
                                     component=component,
                                     decode_on_interp_pos=decode_on_interp_pos,
                                     debug=debug,
                                     saved_model=saved_model)
 
     if debug and not saved_model:
-        decoded_img = discrete_image_vae._sample_decoder(discrete_image_vae._sample_encoder(img), 10, 4)
+        decoded_img = simple_complete_model.discrete_image_vae._sample_decoder(
+            simple_complete_model.discrete_image_vae._sample_encoder(img), temperature, num_samples=1)
     else:
-        decoded_img = discrete_image_vae.sample_decoder(discrete_image_vae.sample_encoder(img), 10, 4)
+        decoded_img = simple_complete_model.discrete_image_vae.sample_decoder(
+            simple_complete_model.discrete_image_vae.sample_encoder(img), temperature, num_samples=1)
 
     H, xedges, yedges = np.histogram2d(graph.nodes[0, :, 0].numpy(),
                                        -graph.nodes[0, :, 1].numpy(),
-                                       bins=([i for i in np.linspace(-1.7, 1.7, 32)],
-                                             [i for i in np.linspace(-1.7, 1.7, 32)]))
+                                       bins=([i for i in np.linspace(-1.7, 1.7, grid_res)],
+                                             [i for i in np.linspace(-1.7, 1.7, grid_res)]))
 
     fig, ax = plt.subplots(2, 4, figsize=(24, 12))
 
+    # image channel 1 is smoothed image
     image_before = ax[0, 0].imshow(image[0, :, :, 1])
     fig.colorbar(image_before, ax=ax[0, 0])
     ax[0, 0].set_title('input image')
 
+    # decoded_img [S, batch, H, W, channels]
+    # image channel 1 is decoded from the smoothed image
     image_after = ax[1, 0].imshow(decoded_img[0, 0, :, :, 1].numpy())
     fig.colorbar(image_after, ax=ax[1, 0])
     ax[1, 0].set_title('decoded image')
@@ -210,8 +217,13 @@ def main(scm_saved_model_dir,
     fig.colorbar(hist2d, ax=ax[0, 2])
     ax[0, 2].set_title('particles per histogram bin')
 
-    ax[1, 2].hist(prop / np.max(prop), bins=30, histtype='step', label='before')
-    ax[1, 2].hist(decoded_prop / np.max(decoded_prop), bins=30, histtype='step', label='after')
+    ax[1, 2].hist(prop, bins=32, histtype='step', label='input data')
+    ax[1, 2].hist(decoded_prop, bins=32, histtype='step', label='reconstructed')
+
+    offset = (np.min(decoded_prop) * np.max(prop) - np.max(decoded_prop) * np.min(prop)) / (np.max(prop) - np.min(prop))
+    scale = np.max(prop) / np.max(decoded_prop - offset)
+
+    ax[1, 2].hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled')
     ax[1, 2].set_yscale('log')
     ax[1, 2].set_xlabel('normalized property value')
     ax[1, 2].set_ylabel('counts')
@@ -242,8 +254,8 @@ def main(scm_saved_model_dir,
     # v_max_after = np.min(data_after) + 0.75 * (np.max(data_after) - np.min(data_after))
     # mlab.pipeline.volume(source_after, vmin=v_min_after, vmax=v_max_after)
 
-    # mlab.pipeline.iso_surface(source_before, contours=16, opacity=0.05)
-    mlab.pipeline.iso_surface(source_after, contours=16, opacity=0.05)
+    mlab.pipeline.iso_surface(source_before, contours=16, opacity=0.4)
+    mlab.pipeline.iso_surface(source_after, contours=16, opacity=0.4)
 
     # mlab.pipeline.scalar_cut_plane(source_before, line_width=2.0, plane_orientation='z_axes')
     # mlab.pipeline.scalar_cut_plane(source_after, line_width=2.0, plane_orientation='z_axes')
@@ -284,32 +296,39 @@ if __name__ == '__main__':
         counter += 1
         print(counter, cluster_id.numpy()[0], proj_id.numpy()[0])
 
-    _scm_kwargs = dict(num_properties=7,
-                       num_components=4,
-                       component_size=128,
-                       num_embedding_3d=512,
-                       edge_size=8,
-                       global_size=16,
-                       n_node_per_graph=256,
-                       discrete_image_vae=DiscreteImageVAE(embedding_dim=64,
-                                                           num_embedding=1024,
-                                                           hidden_size=64,
-                                                           num_token_samples=4,
-                                                           num_channels=2),
-                       num_token_samples=2,
-                       batch=2,
-                       name='simple_complete_model')
+    simple_complete_model = SimpleCompleteModel(num_properties=7,
+                                                num_components=4,
+                                                component_size=32,
+                                                num_embedding_3d=256,
+                                                edge_size=8,
+                                                global_size=16,
+                                                n_node_per_graph=256,
+                                                num_heads=4,
+                                                multi_head_output_size=32,
+                                                discrete_image_vae=DiscreteImageVAE(embedding_dim=64,
+                                                                                    num_embedding=1024,
+                                                                                    hidden_size=64,
+                                                                                    num_token_samples=4,
+                                                                                    num_channels=2),
+                                                num_token_samples=2,
+                                                batch=2,
+                                                name='simple_complete_model')
 
     # property_index 0: vx, 1: vy, 2: vz, 3: rho, 4: U, 5: particle_mass, 6: smoothing length
 
     main(scm_saved_model_dir=scm_saved_dir,
-         scm_checkpoint_dir=glob.glob(os.path.join(scm_cp_dir,'*'))[0],
-         scm_kwargs=_scm_kwargs,
+         scm_checkpoint_dir=glob.glob(os.path.join(scm_cp_dir, '*'))[0],
+         scm_model=simple_complete_model,
+         cp_kwargs=dict(decoder=simple_complete_model.decoder,
+                        field_reconstruction=simple_complete_model.field_reconstruction,
+                        discrete_image_vae=simple_complete_model.discrete_image_vae
+                        ),
          image=img,
          input_graph=graph,
+         temperature=10.,
          prop_index=3,
-         grid_res=32,
-         component=0,
-         decode_on_interp_pos=False,
+         grid_res=28,
+         component=3,
+         decode_on_interp_pos=True,
          saved_model=False,
          debug=True)
