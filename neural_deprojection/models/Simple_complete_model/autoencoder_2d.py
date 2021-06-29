@@ -87,8 +87,6 @@ class DiscreteImageVAE(AbstractModule):
         [batch, H, W, _] = get_shape(img_logits)
 
         logits = tf.reshape(img_logits, [batch * H * W, self.num_embedding])  # [batch*H*W, num_embeddings]
-        logits -= tf.reduce_mean(logits, axis=-1)
-        logits /= tf.math.reduce_std(logits, axis=-1)
         reduce_logsumexp = tf.math.reduce_logsumexp(logits, axis=-1, keepdims=True)  # [batch*H*W]
         # reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding])  # [batch*H*W, num_embedding]
         logits -= reduce_logsumexp  # [batch*H*W, num_embeddings]
@@ -162,8 +160,6 @@ class DiscreteImageVAE(AbstractModule):
         [batch, H, W, _] = get_shape(encoded_img_logits)
 
         logits = tf.reshape(encoded_img_logits, [batch*H*W, self.num_embedding])  # [batch*H*W, num_embeddings]
-        logits -= tf.reduce_mean(logits, axis=-1)
-        logits /= tf.math.reduce_std(logits, axis=-1)
         reduce_logsumexp = tf.math.reduce_logsumexp(logits, axis=-1)  # [batch*H*W]
         reduce_logsumexp = tf.tile(reduce_logsumexp[:, None], [1, self.num_embedding])  # [batch*H*W, num_embedding]
         logits -= reduce_logsumexp  # [batch*H*W, num_embeddings]
