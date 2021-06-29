@@ -113,18 +113,19 @@ class SimpleCompleteModel(AbstractModule):
                     return self.field_reconstruction(features)  # [n_node, num_properties]
                 # basis_weights[:, None, :] 4, 1, 14
                 # tf.vectorized_map(_single_component, tokens) 4, 10000, 14
-                return tf.reduce_sum(basis_weights[:, None, :] * tf.vectorized_map(_single_component, tokens), axis=0)  # [n_node, num_properties]
+                return basis_weights[:, None, :] * tf.vectorized_map(_single_component, tokens)  # [num_components, n_node, num_properties]
 
-            return tf.vectorized_map(_single_batch, (tokens, positions, basis_weights))  # [batch, n_node, num_properties]
+            return tf.vectorized_map(_single_batch, (tokens, positions, basis_weights))  # [batch, num_components, n_node, num_properties]
 
-        return tf.vectorized_map(_single_sample, (field_component_tokens, positions, basis_weights))  # [num_token_samples, batch, n_node, num_properties*2]
+        mu, log_stddev = tf.split(tf.vectorized_map(_single_sample, (field_component_tokens, positions, basis_weights)), num_or_size_splits=2, axis=-1)  # [num_token_samples, batch, num_components, n_node_per_graph, num_properties]
+        return mu, log_stddev
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32),
                                   tf.TensorSpec([None, None, None, 3], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32)])
     def im_to_components(self, im, positions, temperature):
         # returns mu, std, so return only mu
-        mu, _ = self._im_to_components(im, positions, temperature)
+        mu, _ = self._im_to_components(im, positions, temperature)  # [num_components, n_node_per_graph, num_properties]
         return mu
 
     def _im_to_components(self, im, positions, temperature):
@@ -167,15 +168,12 @@ class SimpleCompleteModel(AbstractModule):
 
         tokens_3d, kl_div, token_3d_samples_onehot, basis_weights = self.decoder(token_graphs,
                                                                   temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
-        tokens_3d = tf.reshape(tokens_3d, [1,1,self.num_components,
+        tokens_3d = tf.reshape(tokens_3d, [1, 1, self.num_components,
                                            self.component_size])  # [num_token_samples, batch, num_output, embedding_dim_3d]
         basis_weights = tf.reshape(basis_weights, [1, 1, self.num_components])
-        #take off the fake sample and batch dims
-        log_likelihood_params = self.reconstruct_field(tokens_3d, positions, basis_weights)[0,0,:,:]
-        mu = log_likelihood_params[..., :self.num_properties]
-        log_stddev = log_likelihood_params[..., self.num_properties:]
-        return mu, log_stddev
-
+        mu, log_stddev = self.reconstruct_field(tokens_3d, positions, basis_weights)  # [num_token_samples, batch, num_components, n_node_per_graph, num_properties]
+        # take off the fake sample and batch dims
+        return mu[0, 0, :, :, :], log_stddev[0, 0, :, :, :]  # [num_components, n_node_per_graph, num_properties]
 
     def set_beta(self, beta):
         self.beta.assign(beta)
@@ -196,8 +194,13 @@ class SimpleCompleteModel(AbstractModule):
         positions = properties[:, :, :, :3]  # [num_token_samples, batch, n_node_per_graph, 3]
         input_properties = properties[:, :, :, 3:]  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        mu_field_properties, log_stddev_field_properties = tf.split(self.reconstruct_field(tokens_3d, positions, basis_weights), num_or_size_splits=2, axis=-1)  # [num_token_samples, batch, n_node_per_graph, num_properties]
-        # todo: add variance (reconstruct_field would return it)
+        mu_field_properties, log_stddev_field_properties = self.reconstruct_field(tokens_3d, positions, basis_weights)  # [num_token_samples, batch, num_components, n_node_per_graph, num_properties]
+
+        # Average over the component dimension, this is done outside reconstruct_field to be able to look at individual
+        # components in im_to_components
+        mu_field_properties = tf.reduce_mean(mu_field_properties, axis=2)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        log_stddev_field_properties = tf.reduce_mean(log_stddev_field_properties, axis=2)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+
         diff_properties = (input_properties - mu_field_properties)   # [num_token_samples, batch, n_node_per_graph, num_properties]
         diff_properties /= tf.math.exp(log_stddev_field_properties)
         maha_term = -0.5 * tf.math.square(diff_properties)   #[num_token_samples, batch, n_node_per_graph, num_properties]
@@ -205,7 +208,6 @@ class SimpleCompleteModel(AbstractModule):
         log_likelihood = tf.reduce_mean(tf.reduce_sum(maha_term + log_det_term, axis=-1), axis=-1) #num_token_samples, batch]
 
         return mu_field_properties, log_likelihood# [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
-
 
 
     def _build(self, graphs, imgs, **kwargs) -> dict:
