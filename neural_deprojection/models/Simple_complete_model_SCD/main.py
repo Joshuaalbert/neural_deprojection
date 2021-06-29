@@ -65,7 +65,7 @@ def _build_dataset(data_dir):
                                                              node_shape=(11,),
                                                              image_shape=(256, 256, 1)))  # (graph, image, spsh, proj)
 
-    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj: (graph_data_dict, img))
+    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj: (GraphsTuple(**graph_data_dict), img))
 
     return dataset
 
@@ -117,21 +117,29 @@ def build_distributed_dataset(data_dir, global_batch_size, strategy):
 
 def main(data_dir, batch_size, config, kwargs):
     # Make strategy at the start of your main before any other tf code is run.
-    strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1,
-                                         memory_limit=None)
+    # strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1,
+    #                                      memory_limit=None)
+    strategy = None
 
-
-    train_dataset = build_distributed_dataset(os.path.join(data_dir, 'train'), global_batch_size=batch_size, strategy=strategy)
-    test_dataset = build_distributed_dataset(os.path.join(data_dir, 'test'), global_batch_size=batch_size, strategy=strategy)
+    if strategy is not None:
+        train_dataset = build_distributed_dataset(os.path.join(data_dir, 'train'), global_batch_size=batch_size, strategy=strategy)
+        test_dataset = build_distributed_dataset(os.path.join(data_dir, 'test'), global_batch_size=batch_size, strategy=strategy)
+    else:
+        train_dataset = build_dataset(os.path.join(data_dir, 'train'), batch_size=batch_size)
+        test_dataset = build_dataset(os.path.join(data_dir, 'test'), batch_size=batch_size)
 
     # for (graph, positions) in iter(test_dataset):
     #     print(graph)
     #     break
 
-    with strategy.scope():
+    if strategy is not None:
+        with strategy.scope():
+            train_one_epoch = build_training(**config, **kwargs, strategy=strategy)
+    else:
         train_one_epoch = build_training(**config, **kwargs, strategy=strategy)
 
     train_one_epoch.model.set_temperature(10.)
+    train_one_epoch.model.set_beta(6.6)
 
     log_dir = build_log_dir('simple_complete_log_dir', config)
     checkpoint_dir = build_checkpoint_dir('simple_complete_checkpointing', config)
@@ -155,37 +163,29 @@ def main(data_dir, batch_size, config, kwargs):
 
 if __name__ == '__main__':
     data_dir = '/home/s1825216/data/train_data/ClaudeData/'
-    checkpoint_dir = 'autoencoder_2d_checkpointing'
+    saved_model_dir = 'new_im_16_saved_models'
+    checkpoint_dir = 'im_16_checkpointing'
+    n_node_per_graph = 50000
 
     batch_size = 4
 
-    # Load the autoencoder model from checkpoint
-    discrete_image_vae = DiscreteImageVAE(embedding_dim=64,  # 64
-                                          num_embedding=1024,  # 1024
-                                          hidden_size=64,  # 64
-                                          num_token_samples=4,  # 4
-                                          num_channels=1)
-
-    encoder_cp = tf.train.Checkpoint(encoder=discrete_image_vae.encoder)
-    model_cp = tf.train.Checkpoint(_model=encoder_cp)
-    checkpoint = tf.train.Checkpoint(module=model_cp)
-    status = tf.train.latest_checkpoint(checkpoint_dir)
-
-    checkpoint.restore(status).expect_partial()
-
-    # set trainable false?  -> change line 190 graph_net_utils
+    # no attributes or trainable variables so not trainable?
+    discrete_image_vae = tf.saved_model.load(saved_model_dir)
 
     config = dict(model_type='simple_complete_model',
                   model_parameters=dict(num_properties=8,
-                                        num_components=64,
-                                        component_size=16,
+                                        num_components=16,
+                                        component_size=64,
                                         num_embedding_3d=1024,
                                         edge_size=8,
                                         global_size=16,
+                                        num_heads=4,
+                                        multi_head_output_size=64,
                                         name='simple_complete_model'),
                   optimizer_parameters=dict(learning_rate=1e-4, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict(num_token_samples=4,
+                  n_node_per_graph=256,
                   batch=batch_size,
                   discrete_image_vae=discrete_image_vae)
     main(data_dir, batch_size, config, kwargs)
