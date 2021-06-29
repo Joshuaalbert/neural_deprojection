@@ -249,8 +249,8 @@ class GraphMappingNetwork(AbstractModule):
 
             token_3d_logits = batched_latent_graphs.nodes[:, -self.num_output:, :]  # n_graphs, num_output, num_embedding
 
-            token_3d_logits -= tf.reduce_mean(token_3d_logits, axis=-1)
-            token_3d_logits /= tf.math.reduce_std(token_3d_logits, axis=-1)
+            token_3d_logits -= tf.reduce_mean(token_3d_logits, axis=-1, keepdims=True)
+            token_3d_logits /= tf.math.reduce_std(token_3d_logits, axis=-1, keepdims=True)
             reduce_logsumexp = tf.math.reduce_logsumexp(token_3d_logits, axis=-1)  # [n_graphs, num_output]
             reduce_logsumexp = tf.tile(reduce_logsumexp[..., None],
                                        [1, 1, self.num_embedding])  # [ n_graphs, num_output, num_embedding]
