@@ -144,20 +144,20 @@ if __name__ == '__main__':
         print('Running at home')
 
     # Load the autoencoder model from checkpoint
-    simple_complete_model = tf.saved_model.load(scm_saved_model_dir)
+    discrete_image_vae = tf.saved_model.load(autoencoder_saved_model_dir)
 
     config = dict(model_type='simple_complete_model',
                   model_parameters=dict(num_properties=7,
-                                        num_components=4,  # 32
-                                        component_size=32,  # 32
-                                        num_embedding_3d=256,  # 128
+                                        num_components=16,  # 32
+                                        component_size=128,  # 32
+                                        num_embedding_3d=1024,  # 128
                                         edge_size=8,  # 4
                                         global_size=16, # 16
                                         num_heads=4,
-                                        multi_head_output_size=32),
-                  optimizer_parameters=dict(learning_rate=4e-4, opt_type='adam'),
+                                        multi_head_output_size=128),
+                  optimizer_parameters=dict(learning_rate=2e-4, opt_type='adam'),
                   loss_parameters=dict())
-    kwargs = dict(discrete_image_vae=simple_complete_model.discrete_image_vae,
+    kwargs = dict(discrete_image_vae=discrete_image_vae,
                   n_node_per_graph=256,
                   num_token_samples=2,  # 2
                   batch=2,  # 2
