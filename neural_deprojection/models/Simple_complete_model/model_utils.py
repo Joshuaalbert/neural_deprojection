@@ -280,12 +280,7 @@ class SimpleCompleteModel(AbstractModule):
             tf.summary.scalar('kl_div', tf.reduce_mean(kl_div), step=self.step)
             tf.summary.scalar('temperature', self.temperature, step=self.step)
 
-            token_3d_samples_onehot -= tf.reduce_mean(token_3d_samples_onehot)
-            token_3d_samples_onehot /= tf.math.reduce_std(token_3d_samples_onehot)
             tf.summary.image('token_3d_samples_onehot', token_3d_samples_onehot[..., None], step=self.step)
-
-            latent_logits -= tf.reduce_mean(latent_logits)
-            latent_logits /= tf.math.reduce_std(latent_logits)
             tf.summary.image('latent_logits', latent_logits[..., None], step=self.step)
 
         if self.step % 10 == 0:
