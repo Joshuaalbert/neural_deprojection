@@ -242,12 +242,15 @@ class GraphMappingNetwork(AbstractModule):
 
             # todo: use self-attention
             latent_graphs = self.selfattention_core(latent_graphs)
-            latent_graphs = self.edge_block(latent_graphs)     # also use node & edge blocks?
+            latent_graphs = self.edge_block(latent_graphs)
             latent_graphs = self.node_block(latent_graphs)
 
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
 
             token_3d_logits = batched_latent_graphs.nodes[:, -self.num_output:, :]  # n_graphs, num_output, num_embedding
+
+            token_3d_logits -= tf.reduce_mean(token_3d_logits, axis=-1)
+            token_3d_logits /= tf.math.reduce_std(token_3d_logits, axis=-1)
             reduce_logsumexp = tf.math.reduce_logsumexp(token_3d_logits, axis=-1)  # [n_graphs, num_output]
             reduce_logsumexp = tf.tile(reduce_logsumexp[..., None],
                                        [1, 1, self.num_embedding])  # [ n_graphs, num_output, num_embedding]
