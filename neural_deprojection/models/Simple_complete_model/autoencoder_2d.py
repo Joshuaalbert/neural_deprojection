@@ -74,12 +74,12 @@ class DiscreteImageVAE(AbstractModule):
 
     def _sample_encoder(self, img):
         [batch, H, W, _] = get_shape(img)
-        img = tf.reshape(img, [batch, H, W, self.num_channels])    # number of channels must be known for conv2d
+        img = tf.reshape(img, [batch, H, W, self.num_channels])  # number of channels must be known for conv2d
         return self.encoder(img)
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None, None], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32),
-                                  tf.TensorSpec([], dtype=tf.float32)])
+                                  tf.TensorSpec([], dtype=tf.int32)])
     def sample_decoder(self, img_logits, temperature, num_samples):
         return self._sample_decoder(img_logits, temperature, num_samples)
 
@@ -100,17 +100,17 @@ class DiscreteImageVAE(AbstractModule):
             return latent_img
 
         latent_imgs = tf.vectorized_map(_single_latent_img, token_samples_onehot)  # [S, batch, H, W, embedding_dim]
-        latent_imgs = tf.reshape(latent_imgs, [self.num_token_samples * batch, H, W, self.embedding_dim])  # [S * batch, H, W, embedding_dim]
+        latent_imgs = tf.reshape(latent_imgs, [num_samples * batch, H, W, self.embedding_dim])  # [S * batch, H, W, embedding_dim]
         decoded_imgs = self.decoder(latent_imgs)  # [S * batch, H', W', C*2]
         [_, H_2, W_2, _] = get_shape(decoded_imgs)
-        decoded_imgs = tf.reshape(decoded_imgs, [self.num_token_samples, batch, H_2, W_2, 2 * self.num_channels])  # [S, batch, H, W, embedding_dim]
+        decoded_imgs = tf.reshape(decoded_imgs, [num_samples, batch, H_2, W_2, 2 * self.num_channels])  # [S, batch, H, W, embedding_dim]
         # decoded_img = tf.reduce_mean(decoded_imgs, axis=0)  # [batch, H', W', C*2]
         decoded_imgs = decoded_imgs[..., :self.num_channels]
         return decoded_imgs  # [S, batch, H', W', C]
 
     @tf.function(input_signature=[tf.TensorSpec([None, None, None], dtype=tf.float32),
                                   tf.TensorSpec([], dtype=tf.float32),
-                                  tf.TensorSpec([], dtype=tf.float32)])
+                                  tf.TensorSpec([], dtype=tf.int32)])
     def sample_latent_2d(self, latent_logits, temperature, num_token_samples):
         return self._sample_latent_2d(latent_logits, temperature, num_token_samples)
 
