@@ -203,11 +203,11 @@ class SimpleCompleteModel(AbstractModule):
 
         diff_properties = (input_properties - mu_field_properties)  # [num_token_samples, batch, n_node_per_graph, num_properties]
         diff_properties /= tf.math.exp(log_stddev_field_properties)
-        maha_term = -0.5 * tf.math.square(diff_properties)   #[num_token_samples, batch, n_node_per_graph, num_properties]
-        log_det_term = -log_stddev_field_properties #[num_token_samples, batch, n_node_per_graph, num_properties]
-        log_likelihood = tf.reduce_mean(tf.reduce_sum(maha_term + log_det_term, axis=-1), axis=-1) #num_token_samples, batch]
+        maha_term = -0.5 * tf.math.square(diff_properties)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        log_det_term = -log_stddev_field_properties  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        log_likelihood = tf.reduce_mean(tf.reduce_sum(maha_term + log_det_term, axis=-1), axis=-1)  # num_token_samples, batch]
 
-        return mu_field_properties, log_likelihood# [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
+        return mu_field_properties, log_likelihood  # [num_token_samples, batch, n_node_per_graph, num_properties], [num_token_samples, batch]
 
 
     def _build(self, graphs, imgs, **kwargs) -> dict:
@@ -219,6 +219,8 @@ class SimpleCompleteModel(AbstractModule):
         [_, H, W, num_embedding] = get_shape(latent_logits)
 
         latent_logits = tf.reshape(latent_logits, [self.batch, H*W, num_embedding])  # [batch, H*W, num_embeddings]
+        latent_logits -= tf.reduce_mean(latent_logits, axis=-1, keepdims=True)
+        latent_logits /= tf.math.reduce_std(latent_logits, axis=-1, keepdims=True)
         reduce_logsumexp = tf.math.reduce_logsumexp(latent_logits, axis=-1)  # [batch, H*W]
         reduce_logsumexp = tf.tile(reduce_logsumexp[..., None], [1, 1, num_embedding]) # [batch, H*W, num_embedding]
         latent_logits -= reduce_logsumexp  # [batch, H*W, num_embeddings]
@@ -280,10 +282,15 @@ class SimpleCompleteModel(AbstractModule):
             tf.summary.scalar('kl_div', tf.reduce_mean(kl_div), step=self.step)
             tf.summary.scalar('temperature', self.temperature, step=self.step)
 
+            token_3d_samples_onehot -= tf.reduce_min(token_3d_samples_onehot)
+            token_3d_samples_onehot /= tf.reduce_max(token_3d_samples_onehot)
             tf.summary.image('token_3d_samples_onehot', token_3d_samples_onehot[..., None], step=self.step)
+
+            latent_logits -= tf.reduce_min(latent_logits)
+            latent_logits /= tf.reduce_max(latent_logits)
             tf.summary.image('latent_logits', latent_logits[..., None], step=self.step)
 
-        if self.step % 10 == 0:
+        if self.step % 50 == 0:
             input_properties = graphs.nodes[0]
             reconstructed_properties = field_properties[0]
             pos = tf.reverse(input_properties[:, :2], [1])
