@@ -498,9 +498,9 @@ class VoxelisedModel(AbstractModule):
                                                                                               temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
         tokens_3d = tf.reshape(tokens_3d, [1, 1, self.num_components,
                                            self.component_size])  # [num_token_samples, batch, num_output, embedding_dim_3d]
-        mu, log_stddev = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, num_components, n_node_per_graph, num_properties]
+        mu, log_stddev = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, n_node_per_graph, num_properties]
         # take off the fake sample and batch dims
-        return mu[0, 0, :, :, :], log_stddev[0, 0, :, :, :]  # [num_components, n_node_per_graph, num_properties]
+        return mu[0, 0, :, :], log_stddev[0, 0, :, :]  # [n_node_per_graph, num_properties]
 
     def set_beta(self, beta):
         self.beta.assign(beta)
