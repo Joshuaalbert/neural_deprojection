@@ -400,7 +400,7 @@ class VoxelisedModel(AbstractModule):
                              self.component_size])
         # [num_token_samples*batch, N,N,N, num_properties*2]
         voxels = self.decoder_3d(latent_voxels)
-        _,N,_,_,_,_ = get_shape(voxels)
+        _,N,_,_,_ = get_shape(voxels)
 
         positions = tf.reshape(positions, (self.num_token_samples*batch, n_node, 3))
         #interpolate the field
@@ -425,11 +425,11 @@ class VoxelisedModel(AbstractModule):
             coords = [positions[:,0], positions[:,1], positions[:,2]]
 
             def interp(x, xp, fp):
-                i = tf.clip_by_value(tf.searchsorted(xp, x, side='right'), 1, len(xp) - 1)
+                i = tf.clip_by_value(tf.searchsorted(xp, x, side='right'), 1, len(xp) - 1)[0]
                 df = fp[i] - fp[i - 1]
                 dx = xp[i] - xp[i - 1]
                 delta = x - xp[i - 1]
-                f = tf.where((dx == 0), fp[i], fp[i - 1] + (delta / dx) * df)
+                f = tf.where((dx == 0), tf.cast(fp[i], tf.float32), tf.cast(fp[i - 1], tf.float32) + (delta / dx) * tf.cast(df, tf.float32))
                 return f
 
             fractional_coordinates = [interp(coord, array, tf.range(N))
