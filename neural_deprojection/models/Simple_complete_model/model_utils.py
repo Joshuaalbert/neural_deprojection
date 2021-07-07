@@ -144,14 +144,14 @@ class SimpleCompleteModel(AbstractModule):
 
         [_, H, W, num_embedding] = get_shape(latent_logits)
 
-        latent_logits = tf.reshape(latent_logits, [1, H * W, num_embedding])  # [batch, H*W, num_embeddings]
+        latent_logits = tf.reshape(latent_logits, [self.batch, H * W, num_embedding])  # [batch, H*W, num_embeddings]
         reduce_logsumexp = tf.math.reduce_logsumexp(latent_logits, axis=-1)  # [batch, H*W]
         reduce_logsumexp = tf.tile(reduce_logsumexp[..., None], [1, 1, num_embedding])  # [batch, H*W, num_embedding]
         latent_logits -= reduce_logsumexp  # [batch, H*W, num_embeddings]
 
         token_samples_onehot, token_samples = self.sample_latent_2d(latent_logits,
                                                                     temperature,
-                                                                    1)  # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
+                                                                    self.num_token_samples)  # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
 
         [_, _, _, embedding_dim] = get_shape(token_samples)
 
@@ -169,9 +169,9 @@ class SimpleCompleteModel(AbstractModule):
 
         tokens_3d, kl_div, token_3d_samples_onehot, basis_weights = self.decoder(token_graphs,
                                                                   temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
-        tokens_3d = tf.reshape(tokens_3d, [1, 1, self.num_components,
+        tokens_3d = tf.reshape(tokens_3d, [self.num_token_samples, self.batch, self.num_components,
                                            self.component_size])  # [num_token_samples, batch, num_output, embedding_dim_3d]
-        basis_weights = tf.reshape(basis_weights, [1, 1, self.num_components])
+        basis_weights = tf.reshape(basis_weights, [self.num_token_samples, self.batch, self.num_components])
         mu, log_stddev = self.reconstruct_field(tokens_3d, positions, basis_weights)  # [num_token_samples, batch, num_components, n_node_per_graph, num_properties]
         # take off the fake sample and batch dims
         return mu[0, 0, :, :, :], log_stddev[0, 0, :, :, :]  # [num_components, n_node_per_graph, num_properties]
@@ -425,7 +425,7 @@ class VoxelisedModel(AbstractModule):
             coords = [positions[:,0], positions[:,1], positions[:,2]]
 
             def interp(x, xp, fp):
-                i = tf.clip_by_value(tf.searchsorted(xp, x, side='right'), 1, len(xp) - 1)[0]
+                i = tf.clip_by_value(tf.searchsorted(xp, x, side='right'), 1, xp.shape[0] - 1)[0]
                 df = fp[i] - fp[i - 1]
                 dx = xp[i] - xp[i - 1]
                 delta = x - xp[i - 1]
@@ -471,18 +471,18 @@ class VoxelisedModel(AbstractModule):
 
         [_, H, W, num_embedding] = get_shape(latent_logits)
 
-        latent_logits = tf.reshape(latent_logits, [1, H * W, num_embedding])  # [batch, H*W, num_embeddings]
+        latent_logits = tf.reshape(latent_logits, [self.batch, H * W, num_embedding])  # [batch, H*W, num_embeddings]
         reduce_logsumexp = tf.math.reduce_logsumexp(latent_logits, axis=-1)  # [batch, H*W]
         reduce_logsumexp = tf.tile(reduce_logsumexp[..., None], [1, 1, num_embedding])  # [batch, H*W, num_embedding]
         latent_logits -= reduce_logsumexp  # [batch, H*W, num_embeddings]
 
         token_samples_onehot, token_samples = self.sample_latent_2d(latent_logits,
                                                                     temperature,
-                                                                    1)  # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
+                                                                    self.num_token_samples)  # [num_token_samples, batch, H*W, num_embedding / embedding_dim]
 
         [_, _, _, embedding_dim] = get_shape(token_samples)
 
-        token_samples = tf.reshape(token_samples, [self.n_node_per_graph,
+        token_samples = tf.reshape(token_samples, [self.num_token_samples * self.batch * self.n_node_per_graph,
                                                    embedding_dim])  # [num_token_samples * batch * H * W, embedding_dim]
 
         token_graphs = GraphsTuple(nodes=token_samples,
@@ -490,13 +490,13 @@ class VoxelisedModel(AbstractModule):
                                    globals=None,
                                    senders=None,
                                    receivers=None,
-                                   n_node=tf.constant([self.n_node_per_graph],dtype=tf.int32),
-                                   n_edge=tf.constant([0],
+                                   n_node=tf.constant(self.num_token_samples * self.batch * [self.n_node_per_graph],dtype=tf.int32),
+                                   n_edge=tf.constant(self.num_token_samples * self.batch * [0],
                                                       dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
         tokens_3d, kl_div, token_3d_samples_onehot = self.autoregressive_prior(token_graphs,
                                                                                               temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
-        tokens_3d = tf.reshape(tokens_3d, [1, 1, self.num_components,
+        tokens_3d = tf.reshape(tokens_3d, [self.num_token_samples, self.batch, self.num_components,
                                            self.component_size])  # [num_token_samples, batch, num_output, embedding_dim_3d]
         mu, log_stddev = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, n_node_per_graph, num_properties]
         # take off the fake sample and batch dims
