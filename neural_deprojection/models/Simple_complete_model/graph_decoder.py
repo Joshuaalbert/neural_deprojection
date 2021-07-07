@@ -133,6 +133,7 @@ class GraphMappingNetwork(AbstractModule):
                  embedding_size: int = 4,
                  edge_size: int = 4,
                  global_size: int = 10,
+                 do_basis_weight=True,
                  name=None):
         super(GraphMappingNetwork, self).__init__(name=name)
         self.num_output = num_output
@@ -171,29 +172,31 @@ class GraphMappingNetwork(AbstractModule):
                                            use_nodes=True,
                                            use_globals=True)
 
-        basis_weight_node_model_fn = lambda: snt.nets.MLP([num_embedding, 1], activate_final=True,
-                                             activation=tf.nn.leaky_relu)
-        basis_weight_edge_model_fn = lambda: snt.nets.MLP([edge_size, edge_size], activate_final=True, activation=tf.nn.leaky_relu)
-
-        self.basis_weight_edge_block = blocks.EdgeBlock(basis_weight_edge_model_fn,
-                                           use_edges=False,
-                                           use_receiver_nodes=True,
-                                           use_sender_nodes=True,
-                                           use_globals=True)
-
-        self.basis_weight_node_block = blocks.NodeBlock(basis_weight_node_model_fn,
-                                           use_received_edges=True,
-                                           use_sent_edges=True,
-                                           use_nodes=True,
-                                           use_globals=True)
-
         self.selfattention_core = CoreNetwork(num_heads=num_heads,
                                               multi_head_output_size=multi_head_output_size,
                                               input_node_size=embedding_size)
 
-        self.selfattention_weights = CoreNetwork(num_heads=num_heads,
-                                              multi_head_output_size=multi_head_output_size,
-                                              input_node_size=embedding_size)
+        self.do_basis_weight=do_basis_weight
+        if do_basis_weight:
+            basis_weight_node_model_fn = lambda: snt.nets.MLP([num_embedding, 1], activate_final=True,
+                                                 activation=tf.nn.leaky_relu)
+            basis_weight_edge_model_fn = lambda: snt.nets.MLP([edge_size, edge_size], activate_final=True, activation=tf.nn.leaky_relu)
+
+            self.basis_weight_edge_block = blocks.EdgeBlock(basis_weight_edge_model_fn,
+                                               use_edges=False,
+                                               use_receiver_nodes=True,
+                                               use_sender_nodes=True,
+                                               use_globals=True)
+
+            self.basis_weight_node_block = blocks.NodeBlock(basis_weight_node_model_fn,
+                                               use_received_edges=True,
+                                               use_sent_edges=True,
+                                               use_nodes=True,
+                                               use_globals=True)
+
+            self.selfattention_weights = CoreNetwork(num_heads=num_heads,
+                                                  multi_head_output_size=multi_head_output_size,
+                                                  input_node_size=embedding_size)
 
 
 
@@ -288,20 +291,22 @@ class GraphMappingNetwork(AbstractModule):
             body=lambda output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot: _core(output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot),
             loop_vars=(tf.constant([0]), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32), tf.zeros((n_graphs, self.num_output, self.num_embedding), dtype=tf.float32)))
 
-        # compute weights for how much each basis function will contribute, forcing later ones to contribute less.
-        #todo: use self-attention
-        basis_weight_graphs = self.selfattention_weights(latent_graphs)
-        basis_weight_graphs = self.basis_weight_node_block(self.basis_weight_edge_block(basis_weight_graphs))
-        basis_weight_graphs = graph_batch_reshape(basis_weight_graphs)
-        #[n_graphs, num_output]
-        basis_weights = basis_weight_graphs.nodes[:,-self.num_output:, 0]
-        #make the weights shrink with increasing component
-        basis_weights = tf.math.cumprod(tf.nn.sigmoid(basis_weights), axis=-1)
-
         latent_graphs = graph_batch_reshape(latent_graphs)
         token_nodes = latent_graphs.nodes[:, -self.num_output:, :]
 
-        return token_nodes, kl_div, token_3d_samples_onehot, basis_weights
+        if self.do_basis_weight:
+            # compute weights for how much each basis function will contribute, forcing later ones to contribute less.
+            #todo: use self-attention
+            basis_weight_graphs = self.selfattention_weights(latent_graphs)
+            basis_weight_graphs = self.basis_weight_node_block(self.basis_weight_edge_block(basis_weight_graphs))
+            basis_weight_graphs = graph_batch_reshape(basis_weight_graphs)
+            #[n_graphs, num_output]
+            basis_weights = basis_weight_graphs.nodes[:,-self.num_output:, 0]
+            #make the weights shrink with increasing component
+            basis_weights = tf.math.cumprod(tf.nn.sigmoid(basis_weights), axis=-1)
+            return token_nodes, kl_div, token_3d_samples_onehot, basis_weights
+        else:
+            return token_nodes, kl_div, token_3d_samples_onehot
 
 
 class MultiHeadLinear(AbstractModule):

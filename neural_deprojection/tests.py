@@ -7,7 +7,7 @@ from neural_deprojection.data.geometric_graph import find_screen_length, generat
 from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, \
     save_graph_examples, \
     decode_graph_examples, save_graph_and_image_examples, decode_graph_and_image_examples, histogramdd, \
-    efficient_nn_index, graph_batch_reshape, graph_unbatch_reshape
+    efficient_nn_index, graph_batch_reshape, graph_unbatch_reshape, map_coordinates
 
 
 class TestClass(object):
@@ -152,3 +152,7 @@ def test_batch_reshape():
     for (t1, t2) in zip(graphs, unbatched_graphs):
         if t1 is not None:
             assert tf.reduce_all(t1==t2).numpy()
+
+
+def test_map_coordinates():
+    assert map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), (1., 1.), 1).numpy() == 6.0

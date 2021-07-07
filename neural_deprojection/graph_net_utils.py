@@ -13,6 +13,8 @@ import abc
 import contextlib
 import os
 from collections import namedtuple
+from functools import partial, reduce
+import itertools
 
 def sort_graph(graphs:GraphsTuple, node_ids, edge_ids)->GraphsTuple:
     """
@@ -921,3 +923,86 @@ class CoreNetwork(AbstractModule):
             prepend_nodes = tf.concat([positions, output_graph.nodes[:, 3:]], axis=1)
             output_graph = output_graph.replace(nodes=prepend_nodes)
         return output_graph
+
+# interpolate on nd-array
+
+
+_nonempty_prod = partial(reduce, tf.multiply)
+_nonempty_sum = partial(reduce, tf.add)
+
+_INDEX_FIXERS = {
+    'constant': lambda index, size: index,
+    'nearest': lambda index, size: tf.clip_by_value(index, 0, size - 1),
+    'wrap': lambda index, size: index % size,
+}
+
+
+def _round_half_away_from_zero(a):
+    return tf.round(a)
+
+
+def _nearest_indices_and_weights(coordinate):
+    index = tf.cast(_round_half_away_from_zero(coordinate), tf.int32)
+    weight = coordinate.dtype.type(1)
+    return [(index, weight)]
+
+
+def _linear_indices_and_weights(coordinate):
+    lower = tf.math.floor(coordinate)
+    upper_weight = coordinate - lower
+    lower_weight = 1 - upper_weight
+    index = tf.cast(lower, tf.int32)
+    return [(index, lower_weight), (index + 1, upper_weight)]
+
+
+def _map_coordinates(input, coordinates, order, mode, cval):
+    input = tf.convert_to_tensor(input)
+    coordinates = [tf.convert_to_tensor(c) for c in coordinates]
+    cval = tf.constant(cval, input.dtype)
+
+    if len(coordinates) != len(get_shape(input)):
+        raise ValueError('coordinates must be a sequence of length input.ndim, but '
+                         '{} != {}'.format(len(coordinates), len(get_shape(input))))
+
+    index_fixer = _INDEX_FIXERS.get(mode)
+
+    if mode == 'constant':
+        is_valid = lambda index, size: (0 <= index) & (index < size)
+    else:
+        is_valid = lambda index, size: True
+
+    if order == 0:
+        interp_fun = _nearest_indices_and_weights
+    elif order == 1:
+        interp_fun = _linear_indices_and_weights
+    else:
+        raise NotImplementedError(
+            'map_coordinates currently requires order<=1')
+
+    valid_1d_interpolations = []
+    for coordinate, size in zip(coordinates, get_shape(input)):
+        interp_nodes = interp_fun(coordinate)
+        valid_interp = []
+        for index, weight in interp_nodes:
+            fixed_index = index_fixer(index, size)
+            valid = is_valid(index, size)
+            valid_interp.append((fixed_index, valid, weight))
+        valid_1d_interpolations.append(valid_interp)
+
+    outputs = []
+    for items in itertools.product(*valid_1d_interpolations):
+        indices, validities, weights = zip(*items)
+        if all(valid is True for valid in validities):
+            # fast path
+            contribution = input[indices]
+        else:
+            all_valid = reduce(tf.logical_and, validities)
+            contribution = tf.where(all_valid, input[indices], cval)
+        outputs.append(_nonempty_prod(weights) * contribution)
+    result = _nonempty_sum(outputs)
+    return tf.cast(result, input.dtype)
+
+
+def map_coordinates(input, coordinates, order, mode='constant', cval=0.0):
+    return _map_coordinates(input, coordinates, order, mode, cval)
+
