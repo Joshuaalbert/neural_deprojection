@@ -520,12 +520,12 @@ class VoxelisedModel(AbstractModule):
         positions = properties[:, :, :, :3]  # [num_token_samples, batch, n_node_per_graph, 3]
         input_properties = properties[:, :, :, 3:]  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
-        mu_field_properties, log_stddev_field_properties = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, num_components, n_node_per_graph, num_properties]
+        mu_field_properties, log_stddev_field_properties = self.reconstruct_field(tokens_3d, positions)  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
         # Average over the component dimension, this is done outside reconstruct_field to be able to look at individual
         # components in im_to_components
-        mu_field_properties = tf.reduce_mean(mu_field_properties, axis=2)  # [num_token_samples, batch, n_node_per_graph, num_properties]
-        log_stddev_field_properties = tf.reduce_mean(log_stddev_field_properties, axis=2)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        # mu_field_properties = tf.reduce_mean(mu_field_properties, axis=2)  # [num_token_samples, batch, n_node_per_graph, num_properties]
+        # log_stddev_field_properties = tf.reduce_mean(log_stddev_field_properties, axis=2)  # [num_token_samples, batch, n_node_per_graph, num_properties]
 
         diff_properties = (input_properties - mu_field_properties)  # [num_token_samples, batch, n_node_per_graph, num_properties]
         diff_properties /= tf.math.exp(log_stddev_field_properties)
