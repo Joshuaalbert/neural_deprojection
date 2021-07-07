@@ -4,9 +4,7 @@ from graph_nets import utils_tf
 from graph_nets.graphs import GraphsTuple
 
 from neural_deprojection.data.geometric_graph import find_screen_length, generate_example
-from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, \
-    save_graph_examples, \
-    decode_graph_examples, save_graph_and_image_examples, decode_graph_and_image_examples, histogramdd, \
+from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, histogramdd, \
     efficient_nn_index, graph_batch_reshape, graph_unbatch_reshape, map_coordinates
 
 
@@ -51,48 +49,6 @@ def test_vanillia_training_loop():
 
     training = TrainOneEpoch(Model(), loss, snt.optimizers.Adam(1e-4))
     vanilla_training_loop(dataset, training, 100, debug = False)
-
-
-def test_graph_encode_decode():
-    import numpy as np
-    graph = GraphsTuple(nodes=np.random.normal(size=(100,2)),
-                        edges=np.random.normal(size=(30,3)),
-                        senders=np.random.randint(low=0, high=100,size=(30,)),
-                        receivers=np.random.randint(low=0, high=100,size=(30,)),
-                        globals=None,
-                        n_node=100,
-                        n_edge=30)
-
-    tfrecords = save_graph_examples([graph])
-    #loading the data into tf.data.Dataset object (same as TFDS makes)
-    dataset = tf.data.TFRecordDataset(tfrecords).map(decode_graph_examples)
-    loaded_graph = next(iter(dataset))
-    for a,b in zip(graph, loaded_graph):
-        if b is None:
-            continue
-        assert np.allclose(a,b.numpy())
-
-
-def test_graph_image_encode_decode():
-    import numpy as np
-    graph = GraphsTuple(nodes=np.random.normal(size=(100,2)),
-                        edges=np.random.normal(size=(30,3)),
-                        senders=np.random.randint(low=0, high=100,size=(30,)),
-                        receivers=np.random.randint(low=0, high=100,size=(30,)),
-                        globals=None,
-                        n_node=100,
-                        n_edge=30)
-
-    image = np.random.normal(size=(100,100, 3))
-
-    tfrecords = save_graph_and_image_examples([graph], [image])
-    dataset = tf.data.TFRecordDataset(tfrecords).map(decode_graph_and_image_examples)
-    loaded_graph, loaded_image = next(iter(dataset))
-    assert np.allclose(image, loaded_image.numpy())
-    for a,b in zip(graph, loaded_graph):
-        if b is None:
-            continue
-        assert np.allclose(a,b.numpy())
 
 
 def test_find_screen_length():
@@ -155,4 +111,9 @@ def test_batch_reshape():
 
 
 def test_map_coordinates():
+    # print(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)))
+    # print(map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), ((0., 1., 2.), (0., 1., 3.)), 1).numpy())
     assert map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), (1., 1.), 1).numpy() == 6.0
+    assert map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), ((0., 1., 2.), (0., 1., 3.)), 1).numpy().tolist() == [0., 6., 13.]
+    assert tf.function(lambda coords: map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), coords, 1))((1., 1.)).numpy() == 6.
+    assert tf.function(lambda coords: map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), coords, 1))(((0., 1., 2.), (0., 1., 3.))).numpy().tolist() == [0., 6., 13.]

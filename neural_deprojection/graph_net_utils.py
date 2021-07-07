@@ -992,12 +992,13 @@ def _map_coordinates(input, coordinates, order, mode, cval):
     outputs = []
     for items in itertools.product(*valid_1d_interpolations):
         indices, validities, weights = zip(*items)
+        indices = tf.stack(indices, axis=-1)
         if all(valid is True for valid in validities):
             # fast path
-            contribution = input[indices]
+            contribution = tf.gather_nd(input, indices)
         else:
             all_valid = reduce(tf.logical_and, validities)
-            contribution = tf.where(all_valid, input[indices], cval)
+            contribution = tf.where(all_valid, tf.gather_nd(input, indices), cval)
         outputs.append(_nonempty_prod(weights) * contribution)
     result = _nonempty_sum(outputs)
     return tf.cast(result, input.dtype)
