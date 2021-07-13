@@ -5,7 +5,6 @@ from neural_deprojection.graph_net_utils import AbstractModule, get_shape, graph
 from neural_deprojection.models.Simple_complete_model.graph_decoder import GraphMappingNetwork
 from neural_deprojection.models.openai_dvae_modules.modules import Decoder3D
 
-
 class SimpleCompleteModel(AbstractModule):
     def __init__(self,
                  num_properties: int,
@@ -425,12 +424,13 @@ class VoxelisedModel(AbstractModule):
             coords = [positions[:,0], positions[:,1], positions[:,2]]
 
             def interp(x, xp, fp):
-                i = tf.clip_by_value(tf.searchsorted(xp, x, side='right'), 1, xp.shape[0] - 1)[0]
-                df = fp[i] - fp[i - 1]
-                dx = xp[i] - xp[i - 1]
-                delta = x - xp[i - 1]
-                f = tf.where((dx == 0), tf.cast(fp[i], tf.float32), tf.cast(fp[i - 1], tf.float32) + (delta / dx) * tf.cast(df, tf.float32))
-                return f
+                i = tf.clip_by_value(tf.searchsorted(xp, x, side='right'), 0, xp.shape[0] - 1)
+                df = tf.gather(fp, i) - tf.gather(fp, i - 1)
+                dx = tf.gather(xp, i) - tf.gather(xp, i - 1)
+                delta = x - tf.gather(xp, i - 1)
+                f = tf.where((dx == 0), tf.cast(tf.gather(fp, i), tf.float32),
+                             tf.cast(tf.gather(fp, i - 1), tf.float32) + (delta / dx) * tf.cast(df, tf.float32))
+                return f * 0.99999
 
             fractional_coordinates = [interp(coord, array, tf.range(N))
                                                   for array, coord in zip(arrays, coords)]
@@ -494,7 +494,7 @@ class VoxelisedModel(AbstractModule):
                                    n_edge=tf.constant(self.num_token_samples * self.batch * [0],
                                                       dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
-        tokens_3d, kl_div, token_3d_samples_onehot = self.autoregressive_prior(token_graphs,
+        tokens_3d, kl_div, token_3d_samples_onehot, tokens_3d_logits = self.autoregressive_prior(token_graphs,
                                                                                               temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
         tokens_3d = tf.reshape(tokens_3d, [self.num_token_samples, self.batch, self.num_components,
                                            self.component_size])  # [num_token_samples, batch, num_output, embedding_dim_3d]
