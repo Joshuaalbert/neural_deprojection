@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 # from mayavi import mlab
-
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 def build_dataset(data_dir, batch_size):
     dataset = _build_dataset(data_dir)
@@ -37,7 +37,7 @@ def _build_dataset(data_dir):
                                                              image_shape=(256, 256, 1),
                                                              k=6))  # (graph, image, spsh, proj)
 
-    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj, e: (GraphsTuple(**graph_data_dict), img))
+    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj, e: (GraphsTuple(**graph_data_dict), img, e))
 
     return dataset
 
@@ -74,8 +74,9 @@ def visualization_3d(scm_model,
                      component=None,
                      decode_on_interp_pos=True,
                      debug=False,
-                     saved_model=True):
-    x = tf.linspace(-1.7, 1.7, grid_resolution)[..., None]
+                     saved_model=True,
+                     width=10.0):
+    x = tf.linspace(-width/2., width/2., grid_resolution)[..., None]
     x, y, z = tf.meshgrid(x, x, x, indexing='ij')  # 3 x [grid_resolution, grid_resolution, grid_resolution]
     grid_positions = (x, y, z)  # [3, grid_resolution, grid_resolution, grid_resolution]
 
@@ -118,12 +119,11 @@ def visualization_3d(scm_model,
     histogram_positions_interp = grid_positions_tensor[:, :2]
 
     # decoded_prop = tf.random.uniform((10000,))
-    # the reverse switches x and y, this way my images and histograms line up
-    graph_hist_before, _ = histogramdd(tf.reverse(histogram_positions_before, [1]), bins=grid_resolution, weights=prop)
-    graph_hist_after, _ = histogramdd(tf.reverse(histogram_positions_after, [1]), bins=grid_resolution, weights=decoded_prop)
+    graph_hist_before, _ = histogramdd(histogram_positions_before, bins=grid_resolution, weights=prop)
+    graph_hist_after, _ = histogramdd(histogram_positions_after, bins=grid_resolution, weights=decoded_prop)
 
-    interp_hist_before, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=grid_resolution, weights=prop_interp_before)
-    interp_hist_after, _ = histogramdd(tf.reverse(histogram_positions_interp, [1]), bins=grid_resolution, weights=prop_interp_after)
+    interp_hist_before, _ = histogramdd(histogram_positions_interp, bins=grid_resolution, weights=prop_interp_before)
+    interp_hist_after, _ = histogramdd(histogram_positions_interp, bins=grid_resolution, weights=prop_interp_after)
 
     return interp_data_before, \
            interp_data_after, \
@@ -160,7 +160,8 @@ def main(scm_saved_model_dir,
          component=None,
          decode_on_interp_pos=True,
          saved_model=True,
-         debug=False):
+         debug=False,
+         width=10.):
     if saved_model:
         simple_complete_model = load_saved_models(scm_saved_model_dir)
     else:
@@ -182,7 +183,8 @@ def main(scm_saved_model_dir,
                                     component=component,
                                     decode_on_interp_pos=decode_on_interp_pos,
                                     debug=debug,
-                                    saved_model=saved_model)
+                                    saved_model=saved_model,
+                                    width=width)
 
     if debug and not saved_model:
         decoded_img = simple_complete_model.discrete_image_vae._sample_decoder(
@@ -193,58 +195,135 @@ def main(scm_saved_model_dir,
 
     H, xedges, yedges = np.histogram2d(graph.nodes[0, :, 0].numpy(),
                                        -graph.nodes[0, :, 1].numpy(),
-                                       bins=([i for i in np.linspace(-1.7, 1.7, grid_res)],
-                                             [i for i in np.linspace(-1.7, 1.7, grid_res)]))
+                                       bins=([i for i in np.linspace(-width/2., width/2., grid_res)],
+                                             [i for i in np.linspace(-width/2., width/2., grid_res)]))
 
-    fig, ax = plt.subplots(2, 4, figsize=(24, 12))
+    # fig, ax = plt.subplots(2, 4, figsize=(24, 12))
+    #
+    # # image channel 1 is smoothed image
+    # image_before = ax[0, 0].imshow(image[0, :, :, 0])
+    # fig.colorbar(image_before, ax=ax[0, 0])
+    # ax[0, 0].set_title('input image')
+    #
+    # # decoded_img [S, batch, H, W, channels]
+    # # image channel 1 is decoded from the smoothed image
+    # image_after = ax[1, 0].imshow(decoded_img[0, 0, :, :, 0].numpy())
+    # fig.colorbar(image_after, ax=ax[1, 0])
+    # ax[1, 0].set_title('decoded image')
+    #
+    # graph_before = ax[0, 1].imshow(hist_before.numpy())
+    # fig.colorbar(graph_before, ax=ax[0, 1])
+    # ax[0, 1].set_title('property histogram')
+    #
+    # graph_after = ax[1, 1].imshow(hist_after.numpy())
+    # fig.colorbar(graph_after, ax=ax[1, 1])
+    # ax[1, 1].set_title('reconstructed property histogram')
+    #
+    # hist2d = ax[0, 2].imshow(H, interpolation='nearest', origin='lower',
+    #                          extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
+    # fig.colorbar(hist2d, ax=ax[0, 2])
+    # ax[0, 2].set_title('particles per histogram bin')
+    #
+    # ax[1, 2].hist(prop, bins=32, histtype='step', label='input data')
+    # ax[1, 2].hist(decoded_prop, bins=32, histtype='step', label='reconstructed')
+    #
+    # offset = (np.min(decoded_prop) * np.max(prop) - np.max(decoded_prop) * np.min(prop)) / (np.max(prop) - np.min(prop))
+    # scale = np.max(prop) / np.max(decoded_prop - offset)
+    #
+    # ax[1, 2].hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled')
+    # ax[1, 2].set_yscale('log')
+    # ax[1, 2].set_xlabel('property value')
+    # ax[1, 2].set_ylabel('counts')
+    # ax[1, 2].set_title('property value distributions')
+    # ax[1, 2].legend()
+    #
+    # interp_before = ax[0, 3].imshow(image_interp_before.numpy())
+    # fig.colorbar(interp_before, ax=ax[0, 3])
+    # ax[0, 3].set_title('property interpolated to grid points')
+    #
+    # interp_after = ax[1, 3].imshow(image_interp_after.numpy())
+    # fig.colorbar(interp_after, ax=ax[1, 3])
+    # ax[1, 3].set_title('reconstructed property interpolated to grid points')
+    #
+    # plt.tight_layout()
+    # plt.savefig('3d_vis.pdf')
 
-    # image channel 1 is smoothed image
-    image_before = ax[0, 0].imshow(image[0, :, :, 1])
-    fig.colorbar(image_before, ax=ax[0, 0])
-    ax[0, 0].set_title('input image')
+    fig, ax = plt.subplots(2, 2, figsize=(8, 8))
 
+    # image channel 1 is the image
+    image_before = ax[0, 0].imshow(image[0, :, :, 0], cmap='gray')
+    # fig.colorbar(image_before, ax=ax[0, 0])
+    ax[0, 0].set_title('input projection')
+    ax[0, 0].axis('off')
     # decoded_img [S, batch, H, W, channels]
     # image channel 1 is decoded from the smoothed image
-    image_after = ax[1, 0].imshow(decoded_img[0, 0, :, :, 1].numpy())
-    fig.colorbar(image_after, ax=ax[1, 0])
+    image_after = ax[1, 0].imshow(decoded_img[0, 0, :, :, 0].numpy(), cmap='gray')
+    # fig.colorbar(image_after, ax=ax[1, 0])
     ax[1, 0].set_title('decoded image')
+    ax[1,0].axis('off')
+    # graph_before = ax[0, 1].imshow(hist_before.numpy())
+    # fig.colorbar(graph_before, ax=ax[0, 1])
+    # ax[0, 1].set_title('property histogram')
+    #
+    # graph_after = ax[1, 1].imshow(hist_after.numpy())
+    # fig.colorbar(graph_after, ax=ax[1, 1])
+    # ax[1, 1].set_title('reconstructed property histogram')
+    #
+    # hist2d = ax[0, 2].imshow(H, interpolation='nearest', origin='lower',
+    #                          extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
+    # fig.colorbar(hist2d, ax=ax[0, 2])
+    # ax[0, 2].set_title('particles per histogram bin')
+    #
+    # ax[1, 2].hist(prop, bins=32, histtype='step', label='input data')
+    # ax[1, 2].hist(decoded_prop, bins=32, histtype='step', label='reconstructed')
+    #
+    # offset = (np.min(decoded_prop) * np.max(prop) - np.max(decoded_prop) * np.min(prop)) / (np.max(prop) - np.min(prop))
+    # scale = np.max(prop) / np.max(decoded_prop - offset)
+    #
+    # ax[1, 2].hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled')
+    # ax[1, 2].set_yscale('log')
+    # ax[1, 2].set_xlabel('property value')
+    # ax[1, 2].set_ylabel('counts')
+    # ax[1, 2].set_title('property value distributions')
+    # ax[1, 2].legend()
 
-    graph_before = ax[0, 1].imshow(hist_before.numpy())
-    fig.colorbar(graph_before, ax=ax[0, 1])
-    ax[0, 1].set_title('property histogram')
+    interp_before = ax[0, 1].imshow(image_interp_before.numpy())
+    # fig.colorbar(interp_before, ax=ax[0, 1], label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
+    divider = make_axes_locatable(ax[0,1])
+    cax = divider.append_axes('right', size='5%', pad=0.05)
+    fig.colorbar(interp_before, cax=cax, orientation='vertical', label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
 
-    graph_after = ax[1, 1].imshow(hist_after.numpy())
-    fig.colorbar(graph_after, ax=ax[1, 1])
-    ax[1, 1].set_title('reconstructed property histogram')
+    ax[0, 1].set_title('density interpolated\nto grid points')
+    ax[0, 1].axis('off')
 
-    hist2d = ax[0, 2].imshow(H.T, interpolation='nearest', origin='lower',
-                             extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
-    fig.colorbar(hist2d, ax=ax[0, 2])
-    ax[0, 2].set_title('particles per histogram bin')
+    interp_after = ax[1, 1].imshow(image_interp_after.numpy())
+    # fig.colorbar(interp_after, ax=ax[1, 1], label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
+    divider = make_axes_locatable(ax[1,1])
+    cax = divider.append_axes('right', size='5%', pad=0.05)
+    fig.colorbar(interp_after, cax=cax, orientation='vertical', label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
 
-    ax[1, 2].hist(prop, bins=32, histtype='step', label='input data')
-    ax[1, 2].hist(decoded_prop, bins=32, histtype='step', label='reconstructed')
+    ax[1, 1].set_title('reconstructed density\ninterpolated to grid points')
+    ax[1, 1].axis('off')
+    plt.tight_layout()
+    plt.savefig('3d_vis.pdf')
+
+    # histogram
+    plt.figure(figsize=(5,4))
+    plt.hist(prop, bins=32, histtype='step', label='input data', color='dodgerblue')
+    plt.hist(decoded_prop, bins=32, histtype='step', label='reconstructed', color='darkorange')
 
     offset = (np.min(decoded_prop) * np.max(prop) - np.max(decoded_prop) * np.min(prop)) / (np.max(prop) - np.min(prop))
     scale = np.max(prop) / np.max(decoded_prop - offset)
 
-    ax[1, 2].hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled')
-    ax[1, 2].set_yscale('log')
-    ax[1, 2].set_xlabel('property value')
-    ax[1, 2].set_ylabel('counts')
-    ax[1, 2].set_title('property value distributions')
-    ax[1, 2].legend()
-
-    interp_before = ax[0, 3].imshow(image_interp_before.numpy())
-    fig.colorbar(interp_before, ax=ax[0, 3])
-    ax[0, 3].set_title('property interpolated to grid points')
-
-    interp_after = ax[1, 3].imshow(image_interp_after.numpy())
-    fig.colorbar(interp_after, ax=ax[1, 3])
-    ax[1, 3].set_title('reconstructed property interpolated to grid points')
+    plt.hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled', color='violet')
+    plt.yscale('log')
+    plt.xlabel(r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
+    plt.ylabel('counts')
+    plt.title('density distributions')
+    plt.legend()
 
     plt.tight_layout()
-    plt.savefig('3d_vis.pdf')
+    plt.savefig('hist.pdf')
 
     # if mayavi==True:
     #     mlab.figure(1, bgcolor=(0, 0, 0), size=(800, 800))
@@ -277,6 +356,7 @@ if __name__ == '__main__':
     data_dir = '/home/s1825216/data/dataset/test/'
     scm_cp_dir = 'single_voxelised_checkpointing'
     scm_saved_dir = 'single_voxelised_saved_models'
+    global_batch_size=1
 
     # _simple_complete_model = SimpleCompleteModel(num_properties=7,
     #                                              num_components=8,
@@ -311,17 +391,20 @@ if __name__ == '__main__':
                                                                           num_embedding=1024,
                                                                           num_channels=1,
                                                                           num_token_samples=4,),
-                                      num_token_samples=2,
+                                      num_token_samples=1,
                                       n_node_per_graph=256,
-                                      batch=1,
+                                      batch=global_batch_size,
                                       name='voxelised_model')
 
-    dataset = build_dataset(data_dir, batch_size=1)
-    cluster = 0
+    dataset = build_dataset(data_dir, batch_size=global_batch_size)
+    cluster = 7
     iter_ds = iter(dataset)
 
     for i in range(20):
-        (graph, img) = next(iter_ds)
+        (graph, img, e) = next(iter_ds)
+        width = e[0][-1]
+        width *= 3.2407792896664e-19  # to pc
+        print('width = ', width)
         if i == cluster:
             main(scm_saved_model_dir=scm_saved_dir,
                  scm_checkpoint_dir=glob.glob(os.path.join(scm_cp_dir, '*'))[0],
@@ -336,7 +419,8 @@ if __name__ == '__main__':
                  prop_index=0,
                  grid_res=256,
                  component=None,
-                 decode_on_interp_pos=True,
+                 decode_on_interp_pos=False,
                  saved_model=False,
-                 debug=True)
+                 debug=True,
+                 width=width)
             break
