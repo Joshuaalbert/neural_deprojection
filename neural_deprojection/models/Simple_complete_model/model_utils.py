@@ -571,7 +571,7 @@ class VoxelisedModel(AbstractModule):
                                    n_node=tf.constant(n_graphs * [self.n_node_per_graph], dtype=tf.int32),
                                    n_edge=tf.constant(n_graphs * [0], dtype=tf.int32))  # [n_node, embedding_dim], n_node = n_graphs * n_node_per_graph
 
-        tokens_3d, kl_div, token_3d_samples_onehot = self.autoregressive_prior(token_graphs, self.temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
+        tokens_3d, kl_div, token_3d_samples_onehot, logits_3d = self.autoregressive_prior(token_graphs, self.temperature)  # [n_graphs, num_output, embedding_dim_3d], [n_graphs], [n_graphs, num_output, num_embedding_3d], [n_graphs, num_output]
 
         tokens_3d = tf.reshape(tokens_3d, [self.num_token_samples,
                                            self.batch,
@@ -611,9 +611,15 @@ class VoxelisedModel(AbstractModule):
             token_3d_samples_onehot /= tf.reduce_max(token_3d_samples_onehot)
             tf.summary.image('token_3d_samples_onehot', token_3d_samples_onehot[..., None], step=self.step)
 
-            latent_logits -= tf.reduce_min(latent_logits)
-            latent_logits /= tf.reduce_max(latent_logits)
-            tf.summary.image('latent_logits', latent_logits[..., None], step=self.step)
+            logits_3d -= tf.reduce_min(logits_3d)
+            logits_3d /= tf.reduce_max(logits_3d)
+            tf.summary.image('logits_3d', logits_3d[..., None], step=self.step)
+
+            token_samples_onehot = token_samples_onehot[0]
+
+            token_samples_onehot -= tf.reduce_min(token_samples_onehot)
+            token_samples_onehot /= tf.reduce_max(token_samples_onehot)
+            tf.summary.image('token_samples_onehot', token_samples_onehot[..., None], step=self.step)
 
         if self.step % 50 == 0:
             input_properties = graphs.nodes[0]
