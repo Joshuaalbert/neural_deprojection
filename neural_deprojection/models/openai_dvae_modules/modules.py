@@ -14,17 +14,15 @@ class EncoderResBlock2D(AbstractModule):
         self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv2D(self.out_size, 1, name='id_path')
-        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 3, padding="SAME", name='conv_1'),
+        self.conv_block = snt.Sequential([snt.LayerNorm(-1, True, True, name='layer_norm'),
+                                          tf.nn.relu, snt.Conv2D(hidden_size, 3, padding="SAME", name='conv_1'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, padding="SAME", name='conv_2'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, padding="SAME", name='conv_3'),
                                           tf.nn.relu, snt.Conv2D(out_size, 1, padding="SAME", name='conv_4')])
-        self.instance_norm1 = snt.LayerNorm(-1, True, True, name='instance_norm1')
-        self.instance_norm2 = snt.LayerNorm(-1, True, True, name='instance_norm2')
         self.post_gain = post_gain
 
     def _build(self, img, **kwargs):
-        output = self.id_path(img) + self.post_gain * self.instance_norm1(self.conv_block(img))
-        output = self.instance_norm2(output)
+        output = self.id_path(img) + self.post_gain * self.conv_block(img)
         return output
 
 
@@ -64,17 +62,15 @@ class DecoderResBlock2D(AbstractModule):
         self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv2D(self.out_size, 1, name='id_path')
-        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv2D(hidden_size, 1, padding="SAME", name='conv_1'),
+        self.conv_block = snt.Sequential([snt.LayerNorm(-1,True, True, name='layer_norm'),
+                                          tf.nn.relu, snt.Conv2D(hidden_size, 1, padding="SAME", name='conv_1'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, padding="SAME", name='conv_2'),
                                           tf.nn.relu, snt.Conv2D(hidden_size, 3, padding="SAME", name='conv_3'),
                                           tf.nn.relu, snt.Conv2D(out_size, 3, padding="SAME", name='conv_4')])
-        self.instance_norm1 = snt.LayerNorm(-1,True, True, name='instance_norm1')
-        self.instance_norm2 = snt.LayerNorm(-1,True, True, name='instance_norm2')
         self.post_gain = post_gain
 
     def _build(self, img, **kwargs):
-        output = self.id_path(img) + self.post_gain * self.instance_norm1(self.conv_block(img))
-        output = self.instance_norm2(output)
+        output = self.id_path(img) + self.post_gain * self.conv_block(img)
         return output
 
 
@@ -131,18 +127,16 @@ class DecoderResBlock3D(AbstractModule):
         self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv3D(self.out_size, 1, name='id_path')
-        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv3D(hidden_size, 1, padding="SAME", name='conv_1'),
+        self.conv_block = snt.Sequential([snt.LayerNorm(-1, True, True, name='layer_norm'),
+                                          tf.nn.relu, snt.Conv3D(hidden_size, 1, padding="SAME", name='conv_1'),
                                           tf.nn.relu, snt.Conv3D(hidden_size, 3, padding="SAME", name='conv_2'),
                                           tf.nn.relu, snt.Conv3D(hidden_size, 3, padding="SAME", name='conv_3'),
                                           tf.nn.relu, snt.Conv3D(out_size, 3, padding="SAME", name='conv_4')])
-        self.instance_norm1 = snt.LayerNorm(-1, True, True, name='instance_norm1')
-        self.instance_norm2 = snt.LayerNorm(-1, True, True, name='instance_norm2')
         self.post_gain = post_gain
 
     def _build(self, img, **kwargs):
         # self.initialise(img)
-        output = self.id_path(img) + self.post_gain * self.instance_norm1( self.conv_block(img))
-        output = self.instance_norm2(output)
+        output = self.id_path(img) + self.post_gain * self.conv_block(img)
         return output
 
 class Decoder3D(AbstractModule):
@@ -186,19 +180,17 @@ class EncoderResBlock3D(AbstractModule):
         self.out_size = out_size
         hidden_size = out_size // 4
         self.id_path = snt.Conv3D(self.out_size, 1, name='id_path')
-        self.conv_block = snt.Sequential([tf.nn.relu, snt.Conv3D(hidden_size, 3, padding="SAME", name='conv_1'),
+        self.conv_block = snt.Sequential([snt.LayerNorm(-1,True, True,name='layer_norm'),
+                                          tf.nn.relu, snt.Conv3D(hidden_size, 3, padding="SAME", name='conv_1'),
                                           tf.nn.relu, snt.Conv3D(hidden_size, 3, padding="SAME", name='conv_2'),
                                           tf.nn.relu, snt.Conv3D(hidden_size, 3, padding="SAME", name='conv_3'),
                                           tf.nn.relu, snt.Conv3D(out_size, 1, padding="SAME", name='conv_4')])
 
         self.post_gain = post_gain
-        self.instance_norm1 = snt.LayerNorm(-1,True, True,name='instance_norm1')
-        self.instance_norm2 = snt.LayerNorm(-1,True, True,name='instance_norm2')
 
     def _build(self, img, **kwargs):
         # self.initialise(img)
-        output = self.id_path(img) + self.post_gain * self.instance_norm1(self.conv_block(img))
-        output = self.instance_norm2(output)
+        output = self.id_path(img) + self.post_gain * self.conv_block(img)
         return output
 
 

@@ -45,12 +45,6 @@ class DiscreteImageVAE(AbstractModule):
         #[batch, W, H, num_embeddings]
         logits = self._encoder(img)
         logits -= tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
-        # print(logits.shape)
-        # import pylab as plt
-        # plt.imshow(logits[0,:,:,0])
-        # plt.colorbar()
-        # plt.show()
-        # exit(0)
 
         return logits
 
@@ -148,9 +142,6 @@ class DiscreteImageVAE(AbstractModule):
         latent_logits = self.compute_logits(img) # [batch, H, W, num_embeddings]
         token_samples_onehot, latent_tokens = self.sample_latent(latent_logits, self.temperature, self.num_token_samples) # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
         mu, logb = self.compute_likelihood_parameters(latent_tokens) # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
-        print(tf.math.reduce_min(mu), tf.math.reduce_max(mu))
-        print(tf.math.reduce_std(tf.math.exp(logb)))
-        print(tf.reduce_mean(latent_logits),tf.math.reduce_std(latent_logits))
         log_likelihood = self.log_likelihood(img, mu, logb) # [num_samples, batch]
         kl_term = self.kl_term(latent_logits, token_samples_onehot) # [num_samples, batch]
 
