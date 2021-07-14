@@ -807,6 +807,7 @@ def histogramdd(sample, bins=10, weights=None, density=None):
         bin_edges_by_dim[i] = dim_bin_edges
         dedges[i] = bin_edges_by_dim[i][1:] - bin_edges_by_dim[i][:-1]
 
+    nbins = tf.constant(nbins, dtype=tf.int64)
     xy = tf_ravel_multi_index(bin_idx_by_dim, nbins)
     def _sum_weights(weights):
         hist = tf.math.bincount(tf.cast(xy, tf.int32), weights, minlength=nbins.prod(), maxlength=nbins.prod())
