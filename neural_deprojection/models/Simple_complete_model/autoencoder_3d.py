@@ -197,7 +197,7 @@ class DiscreteVoxelsVAE(AbstractModule):
         q_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
         log_prob_q = q_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
 
-        prior_dist = tfp.distributions.RelaxedOneHotCategorical(1./(self.num_embedding - 1.), logits=tf.zeros_like(latent_logits))
+        prior_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=tf.zeros_like(latent_logits))
         log_prob_prior = prior_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
         return tf.reduce_sum(log_prob_q - log_prob_prior, axis=[-1, -2, -3])  # num_samples, batch
 
