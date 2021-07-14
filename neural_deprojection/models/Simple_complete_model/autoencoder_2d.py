@@ -1,8 +1,7 @@
 import tensorflow as tf
-from neural_deprojection.graph_net_utils import AbstractModule, get_shape,  grid_graphs, map_coordinates
+from neural_deprojection.graph_net_utils import AbstractModule, get_shape
 import tensorflow_probability as tfp
 from neural_deprojection.models.openai_dvae_modules.modules import Encoder2D, Decoder2D
-from graph_nets.graphs import GraphsTuple
 
 
 class DiscreteImageVAE(AbstractModule):

@@ -271,9 +271,10 @@ class TrainOneEpoch(Module):
     def __init__(self, model: AbstractModule, loss, opt: Optimizer, strategy: tf.distribute.MirroredStrategy = None,
                  name=None):
         super(TrainOneEpoch, self).__init__(name=name)
-        self.epoch = tf.Variable(0, dtype=tf.int64)
-        self.minibatch = tf.Variable(0, dtype=tf.int64)
+        self.epoch = tf.Variable(0, dtype=tf.int64, trainable=False)
+        self.minibatch = tf.Variable(0, dtype=tf.int64, trainable=False)
         self._model = model
+        self._learn_variables = None
         self._model.epoch = self.epoch
         self._model.step = self.minibatch
         self._opt = opt
@@ -319,7 +320,10 @@ class TrainOneEpoch(Module):
             model_output = self.model(*batch)
             loss = self.loss(model_output, batch)
             # summaries = self.summarize(model_output, batch)
-        params = self.model.trainable_variables
+        if self._learn_variables is None:
+            params = self.model.trainable_variables
+        else:
+            params = self._learn_variables
         grads = tape.gradient(loss, params)
 
         if self.strategy is not None:
@@ -415,18 +419,21 @@ def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1,
 
 
 def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
-                          early_stop_patience=None, checkpoint_dir=None, log_dir=None, save_model_dir=None, debug=False):
+                          early_stop_patience=None, checkpoint_dir=None, log_dir=None, save_model_dir=None, variables=None, debug=False):
     """
-    Does simple training.
+    A simple training loop.
 
     Args:
-        training_dataset: Dataset for training
-        train_one_epoch: TrainOneEpoch
-        num_epochs: how many epochs to train
-        test_dataset: Dataset for testing
-        early_stop_patience: Stops training after this many epochs where test dataset loss doesn't improve
-        checkpoint_dir: where to save epoch results.
-        debug: bool, whether to use debug mode.
+        train_one_epoch: TrainOneEpoch object
+        training_dataset: training dataset, elements are expected to be tuples of model input
+        test_dataset: test dataset, elements are expected to be tuples of model input
+        num_epochs: int
+        early_stop_patience: int, how many epochs with non-decreasing loss before stopping.
+        checkpoint_dir: where to save checkpoints
+        log_dir: where to log to tensorboard
+        save_model_dir: where to save the model
+        variables: optional, if not None then which variables to train on, defaults to model.trainable_variables.
+        debug: bool, whether to not compile to faster code but allow debugging.
 
     Returns:
 
@@ -440,6 +447,11 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
         training_dataset = training_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
         if test_dataset is not None:
             test_dataset = test_dataset.prefetch(tf.data.experimental.AUTOTUNE).cache()
+
+    if variables is not None:
+        train_one_epoch._learn_variables = variables
+    else:
+        train_one_epoch._learn_variables = None
 
     # We'll turn the one_epoch_step function which updates our models into a tf.function using
     # autograph. This makes train_one_epoch much faster. If debugging, you can turn this
@@ -465,7 +477,7 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
     manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3,
                                          checkpoint_name=train_one_epoch.model.__class__.__name__)
     if manager.latest_checkpoint is not None:
-        checkpoint.restore(manager.latest_checkpoint)
+        checkpoint.restore(manager.latest_checkpoint).expect_partial()
         print(f"Restored from {manager.latest_checkpoint}")
     for step_num in fancy_progress_bar:
         with train_summary_writer.as_default():
@@ -756,7 +768,24 @@ def tf_ravel_multi_index(multi_index, dims):
 
 
 def histogramdd(sample, bins=10, weights=None, density=None):
-    N, D = sample.shape
+    """
+    Compute histogram over D-dimensional samples, potentially summing weights.
+
+    Args:
+        sample: [N, D] or tuple of array[N]
+        bins: int
+        weights: [N, P], optionally [N]
+        density: bool
+
+    Returns:
+        [bins-1]*D + [P], optionally missing [P] if weights is 1-D
+
+    """
+    if isinstance(sample, (tuple, list)):
+        sample = tf.stack(sample, axis=-1)
+    N, D = get_shape(sample)
+    if weights is None:
+        weights = tf.ones((N,))
 
     if not isinstance(bins, int):
         raise ValueError("Only support integer bins")
@@ -779,13 +808,24 @@ def histogramdd(sample, bins=10, weights=None, density=None):
         dedges[i] = bin_edges_by_dim[i][1:] - bin_edges_by_dim[i][:-1]
 
     xy = tf_ravel_multi_index(bin_idx_by_dim, nbins)
-    hist = tf.math.bincount(tf.cast(xy, tf.int32), weights, minlength=nbins.prod(), maxlength=nbins.prod())
-    hist = tf.reshape(hist, nbins)
-    core = D * (slice(1, -1),)
-    hist = hist[core]
+    def _sum_weights(weights):
+        hist = tf.math.bincount(tf.cast(xy, tf.int32), weights, minlength=nbins.prod(), maxlength=nbins.prod())
+        hist = tf.reshape(hist, nbins)
+        core = D * (slice(1, -1),)
+        hist = hist[core]
+        return hist
+
+    if len(get_shape(weights)) == 2:
+        hist = tf.vectorized_map(_sum_weights, tf.transpose(weights, (1,0)), weights) #[P] + [bins]*D
+        perm = list(range(len(hist.shape)))
+        perm.append(perm[0])
+        del perm[0]
+        hist = tf.transpose(hist, perm)#[bins]*D + [P]
+    else:
+        hist = _sum_weights(weights)
 
     if density:
-        raise ValueError('Density doesnt work')
+        raise ValueError('density=True not supported.')
         # s = sum(hist)
         # for i in range(D):
         #     _shape = np.ones(D, int)
@@ -1006,4 +1046,127 @@ def _map_coordinates(input, coordinates, order, mode, cval):
 
 def map_coordinates(input, coordinates, order, mode='constant', cval=0.0):
     return _map_coordinates(input, coordinates, order, mode, cval)
+
+### grid graph onto voxel grid
+
+def grid_properties(positions, properties, voxels_per_dimension):
+    """
+    We construct a meshgrid over the min/max range of positions, which act as the bin boundaries.
+    Args:
+        positions: [n_node_per_graph, 3]
+        properties: [n_node_per_graph, num_properties]
+        voxels_per_dimension: int
+
+    Returns:
+        [voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
+    """
+    binned_properties, bin_edges = histogramdd(positions,
+                                               bins=voxels_per_dimension,
+                                               weights=properties)  # n_node_per_graph, num_properties
+
+    bin_count, _ = histogramdd(positions,
+                               bins=voxels_per_dimension) # n_node_per_graph
+
+    # binned_properties /= bin_count[:, None]# n_node_per_graph, num_properties
+    binned_properties = tf.where(bin_count[..., None] > 0, binned_properties/bin_count[..., None], 0.)
+    return binned_properties
+
+def grid_graphs(graphs, voxels_per_dimension):
+    """
+    Grid the nodes onto a voxel 3D meshgrid.
+
+    Args:
+        graphs: GraphTuples a batch of graphs
+
+    Returns:
+        [batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
+    """
+    batched_graphs = graph_batch_reshape(graphs)
+    positions = batched_graphs.nodes[..., :3]#num_graphs, n_node_per_graph, 3
+    properties = batched_graphs.nodes[..., 3:]#num_graphs, n_node_per_graph, num_properties
+
+    gridded_graphs = tf.vectorized_map(lambda args: grid_properties(*args, voxels_per_dimension), (positions, properties))#[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
+    return gridded_graphs
+
+
+def build_example_dataset(num_examples, batch_size, num_blobs=3, num_nodes=64**3, image_dim=256):
+    """
+    Creates an example dataset
+    Args:
+        num_examples: int, number of examples in an epoch
+        batch_size: int, ideally should divide num_examples
+        num_blobs: number of components in the 3D medium
+        n_voxels_per_dimension: size of one cube dimension
+
+    Returns:
+        Dataset (GraphsTuple,
+        image [batch, n_voxels_per_dimension, n_voxels_per_dimension, 1]
+
+    """
+    def _single_blob(positions):
+        # all same weight
+        weight = tf.random.uniform(shape=(), minval=1., maxval=1.)
+        shift = tf.random.uniform(shape=(3,))
+        lengthscale = tf.random.uniform(shape=(), minval=0.05, maxval=0.15)
+        density = weight * tf.math.exp(-0.5 * tf.linalg.norm(positions - shift, axis=-1) ** 2 / lengthscale ** 2)
+        return density
+
+    def _map(i):
+        positions = tf.random.uniform(shape=(num_nodes, 3))
+        density = _single_blob(positions)
+        for _ in range(num_blobs-1):
+            density += _single_blob(positions)
+
+        image = grid_properties(positions[:,:2], density[:, None], image_dim)#[image_dim, image_dim, 1]
+        image += tfp.stats.percentile(image, 5) * tf.random.normal(shape=image.shape)
+        image = tf.math.log(tf.math.maximum(image, 1e-5))
+
+        log_properties = tf.math.log(tf.math.maximum(density, 1e-10))
+        nodes = tf.concat([positions, log_properties[:, None]], axis=-1)
+        n_node = tf.shape(nodes)[:1]
+        data_dict = dict(nodes=nodes,n_node=n_node, n_edge=tf.zeros_like(n_node))
+        return (data_dict, image)
+
+    dataset = tf.data.Dataset.range(num_examples)
+    dataset = dataset.map(_map).batch(batch_size)
+    #batch fixing mechanism
+    dataset = dataset.map(lambda data_dict, image: (batch_graph_data_dict(data_dict), image))
+    dataset = dataset.map(lambda data_dict, image: (GraphsTuple(**data_dict,
+                                                                edges=None, receivers=None, senders=None, globals=None), image))
+    dataset = dataset.map(lambda batched_graphs, image: (graph_unbatch_reshape(batched_graphs), image))
+    dataset = dataset.cache()
+    return dataset
+
+def batch_graph_data_dict(batched_data_dict):
+    """
+    After running dataset.batch() on data_dict representation of GraphTuple, correct the batch dimensions.
+
+    Args:
+        batched_data_dict: dict(
+            nodes[num_graphs, n_node_per_graph, F_nodes],
+            edges[num_graphs, n_edge_per_graph, F_edges],
+            senders[num_graphs, n_edge_per_graph],
+            receivers[num_graphs, n_edge_per_graph],
+            globals[num_graphs, 1, F_globals],
+            n_node[num_graphs, 1],
+            n_edge[num_graphs, 1])
+
+    Returns:
+        batched_data_dict representing a batched GraphTuple:
+        dict(
+            nodes[num_graphs, n_node_per_graph, F_nodes],
+            edges[num_graphs, n_edge_per_graph, F_edges],
+            senders[num_graphs, n_edge_per_graph],
+            receivers[num_graphs, n_edge_per_graph],
+            globals[num_graphs, F_globals],
+            n_node[num_graphs],
+            n_edge[num_graphs])
+    """
+    if "globals" in batched_data_dict.keys():
+        batched_data_dict["globals"] = batched_data_dict["globals"][:,0,:]
+    if "n_node" in batched_data_dict.keys():
+        batched_data_dict['n_node'] = batched_data_dict['n_node'][:,0]
+    if "n_edge" in batched_data_dict.keys():
+        batched_data_dict['n_edge'] = batched_data_dict['n_edge'][:,0]
+    return batched_data_dict
 

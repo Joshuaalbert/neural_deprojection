@@ -1,9 +1,8 @@
 import tensorflow as tf
-from neural_deprojection.graph_net_utils import AbstractModule, get_shape, histogramdd, grid_graphs, graph_batch_reshape, map_coordinates
+from neural_deprojection.graph_net_utils import AbstractModule, get_shape, grid_graphs, map_coordinates
 import tensorflow_probability as tfp
 from neural_deprojection.models.openai_dvae_modules.modules import Encoder3D, Decoder3D
 from graph_nets.graphs import GraphsTuple
-import sonnet as snt
 
 
 class DiscreteVoxelsVAE(AbstractModule):
