@@ -7,7 +7,7 @@ import os
 import tensorflow as tf
 import glob
 from neural_deprojection.models.Simple_complete_model_GCD.main import double_downsample
-from neural_deprojection.models.Simple_complete_model.model_utils import SimpleCompleteModel
+from neural_deprojection.models.Simple_complete_model.model_utils import SimpleCompleteModel, VoxelisedModel
 from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
 from mayavi import mlab
 from scipy import interpolate
@@ -18,7 +18,6 @@ from graph_nets.graphs import GraphsTuple
 from functools import partial
 from tensorflow_addons.image import gaussian_filter2d
 from neural_deprojection.models.identify_medium_GCD.generate_data import decode_examples
-
 
 
 def build_dataset(tfrecords, batch_size):
@@ -48,15 +47,18 @@ def decode_property(scm_model,
                     debug=False,
                     saved_model=True):
     if debug and not saved_model:
-        decoded_properties, _ = scm_model._im_to_components(img, positions[None, None, :, :], temperature)  # [num_components, num_positions, num_properties]
+        decoded_properties, _ = scm_model._im_to_components(img, tf.tile(positions[None, None, :, :], (scm_model.num_token_samples, scm_model.batch, 1, 1)), temperature)  # [num_components, num_positions, num_properties]
     else:
-        decoded_properties = scm_model.im_to_components(img, positions[None, None, :, :], temperature)  # [num_components, num_positions, num_properties]
+        decoded_properties = scm_model.im_to_components(img, tf.tile(positions[None, None, :, :], (scm_model.num_token_samples, scm_model.batch, 1, 1)), temperature)  # [num_components, num_positions, num_properties]
 
-    if component is not None:
-        properties_one_component = decoded_properties[component]  # [num_positions, num_properties]
+    if scm_model.name == 'simple_complete_model':
+        if component is not None:
+            properties_one_component = decoded_properties[component]  # [num_positions, num_properties]
+        else:
+            properties_one_component = tf.reduce_mean(decoded_properties, axis=0)  # [num_positions, num_properties]
+        decoded_property = properties_one_component[:, property_index]  # [num_positions]
     else:
-        properties_one_component = tf.reduce_mean(decoded_properties, axis=0)  # [num_positions, num_properties]
-    decoded_property = properties_one_component[:, property_index]  # [num_positions]
+        decoded_property = decoded_properties[:, property_index]  # [num_positions]
     return decoded_property
 
 
@@ -181,10 +183,10 @@ def main(scm_saved_model_dir,
 
     if debug and not saved_model:
         decoded_img = simple_complete_model.discrete_image_vae._sample_decoder(
-            simple_complete_model.discrete_image_vae._sample_encoder(img), temperature, num_samples=1)
+            simple_complete_model.discrete_image_vae._sample_encoder(img), temperature, 1)
     else:
         decoded_img = simple_complete_model.discrete_image_vae.sample_decoder(
-            simple_complete_model.discrete_image_vae.sample_encoder(img), temperature, num_samples=1)
+            simple_complete_model.discrete_image_vae.sample_encoder(img), temperature, 4)
 
     H, xedges, yedges = np.histogram2d(graph.nodes[0, :, 0].numpy(),
                                        -graph.nodes[0, :, 1].numpy(),
@@ -225,9 +227,9 @@ def main(scm_saved_model_dir,
 
     ax[1, 2].hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled')
     ax[1, 2].set_yscale('log')
-    ax[1, 2].set_xlabel('normalized property value')
+    ax[1, 2].set_xlabel('property value')
     ax[1, 2].set_ylabel('counts')
-    ax[1, 2].set_title('normalized property value distribution')
+    ax[1, 2].set_title('property value distributions')
     ax[1, 2].legend()
 
     interp_before = ax[0, 3].imshow(image_interp_before.numpy())
@@ -270,19 +272,14 @@ if __name__ == '__main__':
     if os.getcwd().split('/')[2] == 's2675544':
         tfrec_base_dir = '/home/s2675544/data/tf_records'
         base_dir = '/home/s2675544/git/neural_deprojection/neural_deprojection/models/Simple_complete_model_GCD'
-        # autoencoder_checkpoint_dir = os.path.join(base_dir, 'autoencoder_2d_checkpointing')
-        scm_cp_dir = os.path.join(base_dir, 'simple_complete_checkpointing')
-        # autoencoder_saved_model_dir = os.path.join(base_dir, 'autoencoder_2d_saved_model')
-        scm_saved_dir = os.path.join(base_dir, 'simple_complete_saved_model')
         print('Running on ALICE')
     else:
         tfrec_base_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data/tf_records'
         base_dir = '/home/matthijs/git/neural_deprojection/neural_deprojection/models/Simple_complete_model_GCD'
-        # autoencoder_checkpoint_dir = os.path.join(base_dir, 'autoencoder_2d_checkpointing')
-        scm_cp_dir = os.path.join(base_dir, 'simple_complete_checkpointing')
-        # autoencoder_saved_model_dir = os.path.join(base_dir, 'autoencoder_2d_saved_model')
-        scm_saved_dir = os.path.join(base_dir, 'simple_complete_saved_model')
         print('Running at home')
+
+    scm_cp_dir = os.path.join(base_dir, 'voxelised_model_checkpointing')
+    scm_saved_dir = os.path.join(base_dir, 'voxelised_model_saved')
 
     tfrec_dir = os.path.join(tfrec_base_dir, 'snap_128_tf_records')
     tfrecords = glob.glob(os.path.join(tfrec_dir, 'train', '*.tfrecords'))
@@ -296,39 +293,58 @@ if __name__ == '__main__':
         counter += 1
         print(counter, cluster_id.numpy()[0], proj_id.numpy()[0])
 
-    simple_complete_model = SimpleCompleteModel(num_properties=7,
-                                                num_components=4,
-                                                component_size=32,
-                                                num_embedding_3d=256,
-                                                edge_size=8,
-                                                global_size=16,
-                                                n_node_per_graph=256,
-                                                num_heads=4,
-                                                multi_head_output_size=32,
-                                                discrete_image_vae=DiscreteImageVAE(embedding_dim=64,
-                                                                                    num_embedding=1024,
-                                                                                    hidden_size=64,
-                                                                                    num_token_samples=4,
-                                                                                    num_channels=2),
-                                                num_token_samples=2,
-                                                batch=2,
-                                                name='simple_complete_model')
+    # _simple_complete_model = SimpleCompleteModel(num_properties=7,
+    #                                              num_components=8,
+    #                                              component_size=64,
+    #                                              num_embedding_3d=512,
+    #                                              edge_size=8,
+    #                                              global_size=16,
+    #                                              n_node_per_graph=256,
+    #                                              num_heads=4,
+    #                                              multi_head_output_size=64,
+    #                                              discrete_image_vae=DiscreteImageVAE(embedding_dim=64,
+    #                                                                                  num_embedding=1024,
+    #                                                                                  hidden_size=64,
+    #                                                                                  num_token_samples=4,
+    #                                                                                  num_channels=2),
+    #                                              num_token_samples=2,
+    #                                              batch=2,
+    #                                              name='simple_complete_model')
+
+    _voxelised_model = VoxelisedModel(num_properties=7,
+                                      voxel_per_dimension=4,
+                                      component_size=16,
+                                      num_embedding_3d=1024,
+                                      edge_size=8,
+                                      global_size=16,
+                                      n_node_per_graph=256,
+                                      num_heads=2,
+                                      multi_head_output_size=16,
+                                      decoder_3d_hidden_size=4,
+                                      discrete_image_vae=DiscreteImageVAE(embedding_dim=64,
+                                                                          num_embedding=1024,
+                                                                          hidden_size=64,
+                                                                          num_token_samples=4,
+                                                                          num_channels=2),
+                                      num_token_samples=2,
+                                      batch=1,
+                                      name='voxelised_model')
 
     # property_index 0: vx, 1: vy, 2: vz, 3: rho, 4: U, 5: particle_mass, 6: smoothing length
 
     main(scm_saved_model_dir=scm_saved_dir,
          scm_checkpoint_dir=glob.glob(os.path.join(scm_cp_dir, '*'))[0],
-         scm_model=simple_complete_model,
-         cp_kwargs=dict(decoder=simple_complete_model.decoder,
-                        field_reconstruction=simple_complete_model.field_reconstruction,
-                        discrete_image_vae=simple_complete_model.discrete_image_vae
+         scm_model=_voxelised_model,
+         cp_kwargs=dict(autoregressive_prior=_voxelised_model.autoregressive_prior,
+                        decoder_3d=_voxelised_model.decoder_3d,
+                        discrete_image_vae=_voxelised_model.discrete_image_vae
                         ),
          image=img,
          input_graph=graph,
          temperature=10.,
          prop_index=3,
-         grid_res=28,
-         component=3,
+         grid_res=64,
+         component=None,
          decode_on_interp_pos=True,
          saved_model=False,
          debug=True)

@@ -44,12 +44,14 @@ def _create_autogressive_edges_from_nodes_dynamic(n_node, exclude_self_edges):
 def test_autoregressive_connect_graph_dynamic():
     graphs = GraphsTuple(nodes=tf.range(20), n_node=tf.constant([12, 8]), n_edge=tf.constant([0, 0]),
                          edges=None, receivers=None, senders=None, globals=None)
+    graphs = GraphsTuple(nodes=tf.range(6), n_node=tf.constant([6, 0]), n_edge=tf.constant([0, 0]),
+                         edges=None, receivers=None, senders=None, globals=None)
     graphs = autoregressive_connect_graph_dynamic(graphs, exclude_self_edges=False)
     import networkx as nx
     G = nx.MultiDiGraph()
     for sender, receiver in zip(graphs.senders.numpy(), graphs.receivers.numpy()):
         G.add_edge(sender, receiver)
-    nx.drawing.draw_circular(G)
+    nx.drawing.draw_circular(G, with_labels=True, node_color=(0,0,0), font_color=(1,1,1), font_size=25, node_size=1000, arrowsize=30,)
     import pylab as plt
     plt.show()
 
@@ -239,7 +241,7 @@ class GraphMappingNetwork(AbstractModule):
         latent_graphs.receivers.set_shape([n_edge])
         latent_graphs.senders.set_shape([n_edge])
 
-        def _core(output_token_idx, latent_graphs, prev_kl_term, prev_token_3d_samples_onehot):
+        def _core(output_token_idx, latent_graphs, prev_kl_term, prev_token_3d_samples_onehot, prev_logits_3d):
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
             batched_input_nodes = batched_latent_graphs.nodes  # [n_graphs, num_input + num_output, embedding_size]
 
@@ -284,12 +286,12 @@ class GraphMappingNetwork(AbstractModule):
             batched_latent_graphs = batched_latent_graphs.replace(nodes=output_nodes)
             latent_graphs = graph_unbatch_reshape(batched_latent_graphs)
 
-            return (output_token_idx + 1, latent_graphs, kl_term, token_3d_samples_onehot)
+            return (output_token_idx + 1, latent_graphs, kl_term, token_3d_samples_onehot, token_3d_logits)
 
-        _, latent_graphs, kl_div, token_3d_samples_onehot = tf.while_loop(
-            cond=lambda output_token_idx, state, _, __: output_token_idx < self.num_output,
-            body=lambda output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot: _core(output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot),
-            loop_vars=(tf.constant([0]), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32), tf.zeros((n_graphs, self.num_output, self.num_embedding), dtype=tf.float32)))
+        _, latent_graphs, kl_div, token_3d_samples_onehot, logits_3d = tf.while_loop(
+            cond=lambda output_token_idx, state, _, __, ___: output_token_idx < self.num_output,
+            body=lambda output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot, prev_logits_3d: _core(output_token_idx, state, prev_kl_term, prev_token_3d_samples_onehot, prev_logits_3d),
+            loop_vars=(tf.constant([0]), latent_graphs, tf.zeros((n_graphs,), dtype=tf.float32), tf.zeros((n_graphs, self.num_output, self.num_embedding), dtype=tf.float32), tf.zeros((n_graphs, self.num_output, self.num_embedding), dtype=tf.float32)))
 
         latent_graphs = graph_batch_reshape(latent_graphs)
         token_nodes = latent_graphs.nodes[:, -self.num_output:, :]
@@ -304,9 +306,9 @@ class GraphMappingNetwork(AbstractModule):
             basis_weights = basis_weight_graphs.nodes[:,-self.num_output:, 0]
             #make the weights shrink with increasing component
             basis_weights = tf.math.cumprod(tf.nn.sigmoid(basis_weights), axis=-1)
-            return token_nodes, kl_div, token_3d_samples_onehot, basis_weights
+            return token_nodes, kl_div, token_3d_samples_onehot, basis_weights, logits_3d
         else:
-            return token_nodes, kl_div, token_3d_samples_onehot
+            return token_nodes, kl_div, token_3d_samples_onehot, logits_3d
 
 
 class MultiHeadLinear(AbstractModule):
