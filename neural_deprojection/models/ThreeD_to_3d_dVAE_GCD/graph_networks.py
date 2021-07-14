@@ -182,7 +182,7 @@ class DiscreteGraphVAE(AbstractModule):
 
 class GraphMappingNetwork(AbstractModule):
     """
-    Encoder network that updates the graph to viable input for the DiscreteGraphVAE network.
+    Encoder2D network that updates the graph to viable input for the DiscreteGraphVAE network.
     """
 
     def __init__(self,
