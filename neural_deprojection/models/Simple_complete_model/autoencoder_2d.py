@@ -3,7 +3,6 @@ from neural_deprojection.graph_net_utils import AbstractModule, get_shape
 import tensorflow_probability as tfp
 from neural_deprojection.models.openai_dvae_modules.modules import Encoder2D, Decoder2D
 
-
 class DiscreteImageVAE(AbstractModule):
     def __init__(self,
                  hidden_size: int = 32,
@@ -46,6 +45,13 @@ class DiscreteImageVAE(AbstractModule):
         #[batch, W, H, num_embeddings]
         logits = self._encoder(img)
         logits -= tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
+        # print(logits.shape)
+        # import pylab as plt
+        # plt.imshow(logits[0,:,:,0])
+        # plt.colorbar()
+        # plt.show()
+        # exit(0)
+
         return logits
 
     def sample_latent(self, logits, temperature, num_samples):
@@ -126,7 +132,7 @@ class DiscreteImageVAE(AbstractModule):
         q_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
         log_prob_q = q_dist.log_prob(token_samples_onehot) #num_samples, batch, H, W
 
-        prior_dist = tfp.distributions.RelaxedOneHotCategorical(1./(self.num_embedding - 1.), logits=tf.zeros_like(latent_logits))
+        prior_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=tf.zeros_like(latent_logits))
         log_prob_prior = prior_dist.log_prob(token_samples_onehot) # num_samples, batch, H, W
         return tf.reduce_sum(log_prob_q - log_prob_prior, axis=[-1,-2])# num_samples, batch
 

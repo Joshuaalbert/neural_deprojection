@@ -48,8 +48,7 @@ class Encoder2D(AbstractModule):
         for groud_idx in range(num_groups):
             groups.append(_single_group(groud_idx))
         groups.append(
-            snt.Sequential([tf.nn.relu, snt.Conv2D(num_embeddings, 1, padding="SAME", name='logits_conv'),
-                            lambda x: x/tf.math.sqrt(float(2 ** (num_groups-1) * hidden_size)/2)],
+            snt.Sequential([tf.nn.relu, snt.Conv2D(num_embeddings, 1, padding="SAME", name='logits_conv')],
                            name='output_group'))
 
         self.blocks = snt.Sequential(groups, name='groups')
@@ -223,8 +222,7 @@ class Encoder3D(AbstractModule):
         for groud_idx in range(num_groups):
             groups.append(_single_group(groud_idx))
         groups.append(
-            snt.Sequential([tf.nn.relu, snt.Conv3D(num_embeddings, 1, padding="SAME", name='logits_conv'),
-                            lambda x: x/tf.math.sqrt(float(2 ** (num_groups-1) * hidden_size)/2)],
+            snt.Sequential([tf.nn.relu, snt.Conv3D(num_embeddings, 1, padding="SAME", name='logits_conv')],
                            name='output_group'))
 
         self.blocks = snt.Sequential(groups, name='groups')
