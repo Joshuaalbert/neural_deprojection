@@ -157,7 +157,7 @@ class DiscreteImageVAE(AbstractModule):
         perplexity = 2. ** (entropy / tf.math.log(2.)) # [S, batch, H, W]
         mean_perplexity = tf.reduce_mean(perplexity)  # scalar
 
-        if self.step % 10 == 0:
+        if self.step % 100 == 0:
             tf.summary.scalar('perplexity', mean_perplexity, step=self.step)
             tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
             tf.summary.scalar('kl_div', tf.reduce_mean(kl_div), step=self.step)
