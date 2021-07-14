@@ -51,6 +51,7 @@ class DiscreteVoxelsVAE(AbstractModule):
         # number of channels must be known for conv3d
         img.set_shape([None, None, None, None, self.num_channels])
         logits = self._encoder(img)
+        logits /= 1e-5 + tf.math.reduce_std(logits, axis=-1, keepdims=True)
         logits -= tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
         return logits
 
