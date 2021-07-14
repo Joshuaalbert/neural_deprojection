@@ -61,8 +61,8 @@ def train_discrete_voxel_vae(config, kwargs):
         train_one_epoch.model(*batch)
         break
 
-    log_dir = build_log_dir('test_log_dir', config)
-    checkpoint_dir = build_checkpoint_dir('test_checkpointing', config)
+    log_dir = build_log_dir('log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('checkpointing', config)
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
@@ -70,7 +70,7 @@ def train_discrete_voxel_vae(config, kwargs):
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=dataset,
-                          num_epochs=1000,
+                          num_epochs=100,
                           early_stop_patience=5,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
@@ -89,7 +89,7 @@ def main():
                   loss_parameters=dict())
     kwargs = dict(num_channels=1,
                   num_token_samples=4,
-                  temperature=1.,
+                  temperature=2.,
                   beta=1.)
     train_discrete_voxel_vae(config, kwargs)
 
