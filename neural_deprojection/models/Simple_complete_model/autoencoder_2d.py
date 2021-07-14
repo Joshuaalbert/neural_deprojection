@@ -44,6 +44,7 @@ class DiscreteImageVAE(AbstractModule):
         """
         #[batch, W, H, num_embeddings]
         logits = self._encoder(img)
+        logits /= 1e-5 + tf.math.reduce_std(logits, axis=-1, keepdims=True)
         logits -= tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
 
         return logits
