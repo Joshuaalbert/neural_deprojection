@@ -791,7 +791,7 @@ def histogramdd(sample, bins=10, weights=None, density=None):
         raise ValueError("Only support integer bins")
 
     bin_idx_by_dim = D * [None]
-    nbins = np.empty(D, int)
+    nbins = [None]*D
     bin_edges_by_dim = D * [None]
     dedges = D * [None]
 
