@@ -1,3 +1,5 @@
+import re
+
 import tensorflow as tf
 from graph_nets.graphs import GraphsTuple
 from graph_nets.modules import SelfAttention
@@ -417,6 +419,62 @@ def get_distribution_strategy(use_cpus=True, logical_per_physical_factor=1,
 
     return strategy
 
+def test_checkpoint_restore():
+
+    class TestClassA(AbstractModule):
+        def __init__(self, name=None):
+            super(TestClassA, self).__init__(name=name)
+            self.mlp = snt.nets.MLP([1], name='mlp_a')
+        def _build(self, input):
+            return self.mlp(input)
+
+    class TestClassB(AbstractModule):
+        def __init__(self, name=None):
+            super(TestClassB, self).__init__(name=name)
+            self.a = TestClassA()
+
+        def _build(self, input):
+            return self.a(input) + input
+
+    b = TestClassB()
+
+    input = tf.ones((5,1))
+    output = b(input)
+
+    print(b.trainable_variables)
+
+    checkpoint_dir = 'test_ckpt_2'
+
+    ### save b
+    checkpoint = tf.train.Checkpoint(module=b.a)#saving b.a means that we can't load b but only a later
+    manager = tf.train.CheckpointManager(checkpoint,
+                                         checkpoint_dir,
+                                         max_to_keep=3,
+                                         checkpoint_name=b.__class__.__name__)
+    manager.save()
+
+    ### restore into b
+    b = TestClassB()
+    input = tf.ones((5, 1))
+    output = b(input)
+    print("Before restore", b.trainable_variables)
+    checkpoint = tf.train.Checkpoint(module=b)#won't work because we saved from a
+    checkpoint.restore(manager.latest_checkpoint).expect_partial()
+    print(f"Restored from {manager.latest_checkpoint}")
+    print("After restore", b.trainable_variables)
+
+    ### restore into a
+    a = TestClassA()
+    input = tf.ones((5, 1))
+    output = a(input)
+    print("Before restore", a.trainable_variables)
+    checkpoint = tf.train.Checkpoint(module=a)#will work because we saved from a
+    checkpoint.restore(manager.latest_checkpoint).expect_partial()
+    # print(restore_checkpoint_from_other_model(manager.latest_checkpoint, a.trainable_variables))
+    print(f"Restored from {manager.latest_checkpoint}")
+    print("After restore", a.trainable_variables)
+    # Note, no re.match happens.
+
 
 def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test_dataset=None, num_epochs=1,
                           early_stop_patience=None, checkpoint_dir=None, log_dir=None, save_model_dir=None, variables=None, debug=False):
@@ -473,7 +531,7 @@ def vanilla_training_loop(train_one_epoch: TrainOneEpoch, training_dataset, test
     train_summary_writer = tf.summary.create_file_writer(train_log_dir)
     test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 
-    checkpoint = tf.train.Checkpoint(module=train_one_epoch)
+    checkpoint = tf.train.Checkpoint(module=train_one_epoch.model)
     manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3,
                                          checkpoint_name=train_one_epoch.model.__class__.__name__)
     if manager.latest_checkpoint is not None:

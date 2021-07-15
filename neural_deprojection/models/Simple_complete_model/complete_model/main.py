@@ -162,6 +162,11 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
 
+    exclude_variables = [variable.name for variable in kwargs['discrete_image_vae'].trainable_variables] \
+                        + [variable.name for variable in kwargs['discrete_voxel_vae'].trainable_variables]
+    trainable_variables = list(filter(lambda variable: (variable.name not in exclude_variables),
+                                      train_one_epoch.model.trainable_variables))
+
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=dataset,
                           num_epochs=num_epochs,
@@ -169,6 +174,7 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           save_model_dir=checkpoint_dir,
+                          variables=trainable_variables,
                           debug=False)
 
 
@@ -185,7 +191,7 @@ def main():
     kwargs = dict(num_token_samples=4,
                   temperature=1.,
                   beta=1.)
-    discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=50)
+    discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=0)
 
     print("Training the discrete voxel VAE.")
     config = dict(model_type='disc_voxel_vae',
@@ -199,7 +205,7 @@ def main():
     kwargs = dict(num_token_samples=4,
                   temperature=2.,
                   beta=1.)
-    discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=50)
+    discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=0)
 
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
