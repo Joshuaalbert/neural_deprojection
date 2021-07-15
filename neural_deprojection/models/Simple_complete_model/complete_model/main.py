@@ -51,7 +51,7 @@ def train_discrete_image_vae(config, kwargs, num_epochs=100):
     # show example of image
     for graphs, image in iter(dataset):
         assert image.numpy().shape == (2, 256, 256, 1)
-        plt.imshow(image[0].numpy())
+        plt.imshow(image[0,...,0].numpy())
         plt.colorbar()
         plt.show()
         break
@@ -94,12 +94,12 @@ def train_discrete_voxel_vae(config, kwargs, num_epochs=100):
     # we show here what that produces from a batch of graphs.
     for graphs, image in iter(dataset):
         assert image.numpy().shape == (2, 256, 256, 1)
-        plt.imshow(image[0].numpy())
+        plt.imshow(image[0,...,0].numpy())
         plt.colorbar()
         plt.show()
         voxels = grid_graphs(graphs, 64)
         assert voxels.numpy().shape == (2, 64, 64, 64, 1)
-        plt.imshow(tf.reduce_mean(voxels[0], axis=-2))
+        plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
         plt.colorbar()
         plt.show()
         break
@@ -140,12 +140,12 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
     # we show here what that produces from a batch of graphs.
     for graphs, image in iter(dataset):
         assert image.numpy().shape == (2, 256, 256, 1)
-        plt.imshow(image[0].numpy())
+        plt.imshow(image[0,...,0].numpy())
         plt.colorbar()
         plt.show()
         voxels = grid_graphs(graphs, 64)
         assert voxels.numpy().shape == (2, 64, 64, 64, 1)
-        plt.imshow(tf.reduce_mean(voxels[0], axis=-2))
+        plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
         plt.colorbar()
         plt.show()
         break
