@@ -64,7 +64,7 @@ def train_discrete_image_vae(config, kwargs):
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=dataset,
-                          num_epochs=100,
+                          num_epochs=1,
                           early_stop_patience=5,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,

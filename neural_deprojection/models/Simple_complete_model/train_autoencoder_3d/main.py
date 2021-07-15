@@ -70,7 +70,7 @@ def train_discrete_voxel_vae(config, kwargs):
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=dataset,
-                          num_epochs=100,
+                          num_epochs=1,
                           early_stop_patience=5,
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
@@ -81,9 +81,10 @@ def train_discrete_voxel_vae(config, kwargs):
 def main():
 
     config = dict(model_type='disc_voxel_vae',
-                  model_parameters=dict(embedding_dim=64,  # 64
+                  model_parameters=dict(voxels_per_dimension=8*8,
+                                        embedding_dim=64,  # 64
                                         num_embedding=128,  # 1024
-                                        hidden_size=8,
+                                        hidden_size=4,
                                         num_channels=1),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())

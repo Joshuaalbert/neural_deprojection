@@ -181,6 +181,20 @@ class DiscreteVoxelsVAE(AbstractModule):
         #num_samples, batch
         return tf.reduce_sum(log_prob, axis=[-1, -2, -3, -4])
 
+    def log_prob_q(self,latent_logits, token_samples_onehot):
+        """
+        Args:
+            latent_logits: [batch, H, W, D, num_embeddings] (normalised)
+            token_samples_onehot: [num_samples, batch, H, W, D, num_embeddings]
+
+        Returns:
+
+        """
+        _, H, W, D, _ = get_shape(latent_logits)
+        q_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
+        log_prob_q = q_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
+        return log_prob_q
+
     def kl_term(self, latent_logits, token_samples_onehot):
         """
         Compute the term, which if marginalised over q(z) results in KL(q | prior).
@@ -194,9 +208,7 @@ class DiscreteVoxelsVAE(AbstractModule):
         Returns:
             kl_term: [num_samples, batch]
         """
-        _, H, W, D, _ = get_shape(latent_logits)
-        q_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
-        log_prob_q = q_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
+        log_prob_q = self.log_prob_q(latent_logits, token_samples_onehot)  # num_samples, batch, H, W, D
 
         prior_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=tf.zeros_like(latent_logits))
         log_prob_prior = prior_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
