@@ -78,12 +78,12 @@ def main():
     config = dict(model_type='disc_image_vae',
                   model_parameters=dict(embedding_dim=64,  # 64
                                         num_embedding=128,  # 1024
-                                        hidden_size=32
+                                        hidden_size=32,
+                                        num_channels=1
                                         ),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
-    kwargs = dict(num_channels=1,
-                  num_token_samples=4,
+    kwargs = dict(num_token_samples=4,
                   temperature=1.,
                   beta=1.)
     train_discrete_image_vae(config, kwargs)
