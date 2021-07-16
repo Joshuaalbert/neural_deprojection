@@ -221,7 +221,7 @@ class TransformerLayer(AbstractModule):
         in_degree = tf.math.unsorted_segment_sum(data=tf.ones_like(latent.receivers, dtype=node_queries.dtype),
                                                  segment_ids=latent.receivers,
                                                  num_segments=tf.reduce_sum(latent.n_node))  # n_node
-        node_queries /= tf.math.sqrt(in_degree)[:, None, None]  # n_node, F
+        node_queries /= tf.math.maximum(1.,tf.math.sqrt(in_degree)[:, None, None])  # n_node, F
         attended_latent = self.self_attention(node_values=node_values,
                                               node_keys=node_keys,
                                               node_queries=node_queries,
@@ -450,8 +450,7 @@ class AutoRegressivePrior(AbstractModule):
                                  kl_div=kl_div,
                                  mean_perplexity=mean_perplexity))
 
-    def compute_kl_term(self, latent_logits, latent_logits_2d, latent_logits_3d, token_samples_onehot_2d,
-                token_samples_onehot_3d):
+    def compute_kl_term(self, latent_logits, latent_logits_2d, latent_logits_3d, token_samples_onehot_2d, token_samples_onehot_3d):
         _, batch, H2, W2, _ = get_shape(token_samples_onehot_2d)
         _, batch, H3, W3, D3, _ = get_shape(token_samples_onehot_3d)
         log_prob_q_2d = self.discrete_image_vae.log_prob_q(latent_logits_2d,
@@ -460,7 +459,6 @@ class AutoRegressivePrior(AbstractModule):
         log_prob_q_3d = self.discrete_voxel_vae.log_prob_q(latent_logits_3d,
                                                            token_samples_onehot_3d)  # num_samples, batch, H, W, D
         log_prob_q_3d *= (H2 * W2)
-        prior_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
         # num_samples, batch, H2, W2, num_embedding2 + num_embedding3
         token_samples_onehot_2d = tf.concat([token_samples_onehot_2d,
                                              tf.zeros((self.num_token_samples, batch, H2, W2,
@@ -481,7 +479,8 @@ class AutoRegressivePrior(AbstractModule):
                                              (self.num_token_samples, batch, H3 * W3 * D3, self.num_embedding))
         # num_samples, batch, H2*W2 + H3 * W3*D3, num_embedding2 + num_embedding3
         latent_tokens_onehot = tf.concat([token_samples_onehot_2d, token_samples_onehot_3d], axis=-2)
-        log_prob_prior = prior_dist.log_prob(latent_tokens_onehot)  # num_samples, batch, H2*W2 + H3 * W3*D3
+        prior_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
+        log_prob_prior = prior_dist.log_prob(tf.math.maximum(latent_tokens_onehot, 1e-8))  # num_samples, batch, H2*W2 + H3 * W3*D3
         kl_term = tf.reduce_sum(log_prob_q_2d, axis=[-1, -2]) + tf.reduce_sum(log_prob_q_3d, axis=[-1, -2, -3]) \
                   - tf.reduce_sum(log_prob_prior, axis=-1)  # num_samples, batch
         return kl_term, log_prob_prior
