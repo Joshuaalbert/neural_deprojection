@@ -1267,7 +1267,6 @@ def temperature_schedule(num_embedding, num_epochs, S=100, t0=1., thresh=0.95):
         r = np.random.normal(size=(S, num_embedding))
         x = softmax(r, final_temp)
         _max = np.max(x, axis=-1)
-        print(final_temp, _max)
         if np.mean(_max) > thresh:
             break
         final_temp *= 0.95
