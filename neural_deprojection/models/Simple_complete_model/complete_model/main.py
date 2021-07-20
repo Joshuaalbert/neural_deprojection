@@ -2,7 +2,7 @@ from neural_deprojection.models.Simple_complete_model.autoencoder_3d import Disc
 from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
 from neural_deprojection.models.Simple_complete_model.autoregressive_prior import AutoRegressivePrior
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, build_example_dataset, \
-    grid_graphs, build_log_dir, build_checkpoint_dir
+    grid_graphs, build_log_dir, build_checkpoint_dir, temperature_schedule
 import os
 import tensorflow as tf
 import json
@@ -46,7 +46,7 @@ def train_discrete_image_vae(config, kwargs, num_epochs=100):
     # with strategy.scope():
     train_one_epoch = build_training(**config, **kwargs)
 
-    dataset = build_example_dataset(10, batch_size=2, num_blobs=3, num_nodes=64 ** 3, image_dim=256)
+    dataset = build_example_dataset(100, batch_size=2, num_blobs=3, num_nodes=64 ** 3, image_dim=256)
 
     # show example of image
     for graphs, image in iter(dataset):
@@ -88,7 +88,7 @@ def train_discrete_voxel_vae(config, kwargs, num_epochs=100):
     # with strategy.scope():
     train_one_epoch = build_training(**config, **kwargs)
 
-    dataset = build_example_dataset(100, batch_size=2, num_blobs=3, num_nodes=64 ** 3, image_dim=256)
+    dataset = build_example_dataset(1000, batch_size=2, num_blobs=3, num_nodes=64 ** 3, image_dim=256)
 
     # the model will call grid_graphs internally to learn the 3D autoencoder.
     # we show here what that produces from a batch of graphs.
@@ -182,30 +182,34 @@ def main():
     print("Training the discrete image VAE")
     config = dict(model_type='disc_image_vae',
                   model_parameters=dict(embedding_dim=64,  # 64
-                                        num_embedding=128,  # 1024
+                                        num_embedding=16,  # 1024
                                         hidden_size=32,
                                         num_channels=1
                                         ),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
-    kwargs = dict(num_token_samples=4,
-                  temperature=1.,
-                  beta=1.)
-    discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=100)
+    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
+    for epoch in range(0, 15):
+        kwargs = dict(num_token_samples=4,
+                      temperature=get_temp(epoch),
+                      beta=1.)
+        discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=1)
 
     print("Training the discrete voxel VAE.")
     config = dict(model_type='disc_voxel_vae',
                   model_parameters=dict(voxels_per_dimension=4 * 8,
                                         embedding_dim=64,  # 64
-                                        num_embedding=128,  # 1024
+                                        num_embedding=16,  # 1024
                                         hidden_size=4,
                                         num_channels=1),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
-    kwargs = dict(num_token_samples=4,
-                  temperature=2.,
-                  beta=1.)
-    discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=100)
+    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
+    for epoch in range(0, 15):
+        kwargs = dict(num_token_samples=4,
+                      temperature=get_temp(epoch),
+                      beta=1.)
+        discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=1)
 
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
@@ -218,13 +222,15 @@ def main():
     # can load checkpoints if desired.
     # discrete_image_vae, discrete_voxel_vae = load_checkpoints(discrete_image_vae_checkpoint, discrete_voxel_vae_checkpoint)
 
-    kwargs = dict(discrete_image_vae=discrete_image_vae,
-                  discrete_voxel_vae=discrete_voxel_vae,
-                  num_token_samples=4,
-                  temperature=1.,
-                  beta=1.)
+    get_temp = temperature_schedule(discrete_image_vae.num_embedding + discrete_voxel_vae.num_embedding, 10)
+    for epoch in range(0, 15):
+        kwargs = dict(discrete_image_vae=discrete_image_vae,
+                      discrete_voxel_vae=discrete_voxel_vae,
+                      num_token_samples=4,
+                      temperature=get_temp(epoch),
+                      beta=1.)
 
-    train_auto_regressive_prior(config, kwargs, num_epochs=100)
+        train_auto_regressive_prior(config, kwargs, num_epochs=1)
 
 
 def load_checkpoints(discrete_image_vae_checkpoint, discrete_voxel_vae_checkpoint):

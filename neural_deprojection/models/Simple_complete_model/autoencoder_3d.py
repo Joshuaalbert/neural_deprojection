@@ -24,8 +24,8 @@ class DiscreteVoxelsVAE(AbstractModule):
         self.num_token_samples = num_token_samples
         self.num_embedding = num_embedding
         self.embedding_dim = embedding_dim
-        self.temperature = tf.convert_to_tensor(temperature)
-        self.beta = tf.convert_to_tensor(beta)
+        self.temperature = tf.convert_to_tensor(temperature, dtype=tf.float32)
+        self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
 
         self._encoder = Encoder3D(hidden_size=hidden_size, num_embeddings=num_embedding, name='EncoderImage')
         self._decoder = Decoder3D(hidden_size=hidden_size, num_channels=num_channels, name='DecoderImage')
@@ -64,13 +64,14 @@ class DiscreteVoxelsVAE(AbstractModule):
             num_samples: int
 
         Returns:
-            token_samples_onehot: [num_samples, batch, W, H, D, num_embeddings]
+            log_token_samples_onehot, token_samples_onehot: [num_samples, batch, W, H, D, num_embeddings]
             latent_tokens: [num_samples, batch, W, H, D, embedding_size]
         """
-        token_distribution = tfp.distributions.RelaxedOneHotCategorical(temperature, logits=logits)
-        token_samples_onehot = token_distribution.sample((num_samples,), name='token_samples')  # [S, batch, W, H, D, num_embeddings]
+        token_distribution = tfp.distributions.ExpRelaxedOneHotCategorical(temperature, logits=logits)
+        log_token_samples_onehot = token_distribution.sample((num_samples,), name='token_samples')  # [S, batch, W, H, D, num_embeddings]
+        token_samples_onehot = tf.math.exp(log_token_samples_onehot)
         latent_tokens = tf.einsum("sbwhdn,nm->sbwhdm",token_samples_onehot, self.embeddings) # [S, batch, W, H, D, embedding_size]
-        return token_samples_onehot, latent_tokens
+        return log_token_samples_onehot, token_samples_onehot, latent_tokens
 
     def compute_likelihood_parameters(self, latent_tokens):
         """
@@ -181,21 +182,21 @@ class DiscreteVoxelsVAE(AbstractModule):
         #num_samples, batch
         return tf.reduce_sum(log_prob, axis=[-1, -2, -3, -4])
 
-    def log_prob_q(self,latent_logits, token_samples_onehot):
+    def log_prob_q(self,latent_logits, log_token_samples_onehot):
         """
         Args:
             latent_logits: [batch, H, W, D, num_embeddings] (normalised)
-            token_samples_onehot: [num_samples, batch, H, W, D, num_embeddings]
+            log_token_samples_onehot: [num_samples, batch, H, W, D, num_embeddings]
 
         Returns:
 
         """
         _, H, W, D, _ = get_shape(latent_logits)
-        q_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
-        log_prob_q = q_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
+        q_dist = tfp.distributions.ExpRelaxedOneHotCategorical(self.temperature, logits=latent_logits)
+        log_prob_q = q_dist.log_prob(log_token_samples_onehot)  # num_samples, batch, H, W, D
         return log_prob_q
 
-    def kl_term(self, latent_logits, token_samples_onehot):
+    def kl_term(self, latent_logits, log_token_samples_onehot):
         """
         Compute the term, which if marginalised over q(z) results in KL(q | prior).
 
@@ -208,10 +209,10 @@ class DiscreteVoxelsVAE(AbstractModule):
         Returns:
             kl_term: [num_samples, batch]
         """
-        log_prob_q = self.log_prob_q(latent_logits, token_samples_onehot)  # num_samples, batch, H, W, D
+        log_prob_q = self.log_prob_q(latent_logits, log_token_samples_onehot)  # num_samples, batch, H, W, D
 
-        prior_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=tf.zeros_like(latent_logits))
-        log_prob_prior = prior_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
+        prior_dist = tfp.distributions.ExpRelaxedOneHotCategorical(self.temperature, logits=tf.zeros_like(latent_logits))
+        log_prob_prior = prior_dist.log_prob(log_token_samples_onehot)  # num_samples, batch, H, W, D
         return tf.reduce_sum(log_prob_q - log_prob_prior, axis=[-1, -2, -3])  # num_samples, batch
 
     def _build(self, graphs, **kwargs) -> dict:
@@ -224,19 +225,19 @@ class DiscreteVoxelsVAE(AbstractModule):
 
         """
         latent_logits = self.compute_logits(graphs) # [batch, H, W, D, num_embeddings]
-        token_samples_onehot, latent_tokens = self.sample_latent(latent_logits, self.temperature, self.num_token_samples) # [num_samples, batch, H, W, D, num_embeddings], [num_samples, batch, H, W, D, embedding_size]
+        log_token_samples_onehot, token_samples_onehot, latent_tokens = self.sample_latent(latent_logits, self.temperature, self.num_token_samples) # [num_samples, batch, H, W, D, num_embeddings], [num_samples, batch, H, W, D, embedding_size]
         mu, logb = self.compute_likelihood_parameters(latent_tokens) # [num_samples, batch, H', W', D', C], [num_samples, batch, H', W', D', C]
         log_likelihood = self.log_likelihood(graphs, mu, logb) # [num_samples, batch]
-        kl_term = self.kl_term(latent_logits, token_samples_onehot) # [num_samples, batch]
+        kl_term = self.kl_term(latent_logits, log_token_samples_onehot) # [num_samples, batch]
 
         var_exp = tf.reduce_mean(log_likelihood, axis=0)  # [batch]
         kl_div = tf.reduce_mean(kl_term, axis=0)  # [batch]
         elbo = var_exp - self.beta * kl_div  # batch
         loss = - tf.reduce_mean(elbo)  # scalar
 
-        q_dist = tfp.distributions.RelaxedOneHotCategorical(self.temperature, logits=latent_logits)
-        log_prob_q = q_dist.log_prob(token_samples_onehot)  # num_samples, batch, H, W, D
-        entropy = -tf.reduce_sum(tf.math.exp(log_prob_q)*log_prob_q, axis=[-1,-2,-3])  # [S, batch]
+        q_dist = tfp.distributions.ExpRelaxedOneHotCategorical(self.temperature, logits=latent_logits)
+        log_prob_q = q_dist.log_prob(log_token_samples_onehot)  # num_samples, batch, H, W, D
+        entropy = -tf.reduce_sum(log_prob_q, axis=[-1,-2,-3])  # [S, batch]
         perplexity = 2. ** (entropy / tf.math.log(2.)) # [S, batch, H, W, D]
         mean_perplexity = tf.reduce_mean(perplexity)  # scalar
 
