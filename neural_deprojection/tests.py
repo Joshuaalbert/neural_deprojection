@@ -2,10 +2,11 @@ import numpy as np
 import tensorflow as tf
 from graph_nets import utils_tf
 from graph_nets.graphs import GraphsTuple
+from matplotlib import pyplot as plt
 
 from neural_deprojection.data.geometric_graph import find_screen_length, generate_example
 from neural_deprojection.graph_net_utils import AbstractModule, TrainOneEpoch, vanilla_training_loop, histogramdd, \
-    efficient_nn_index, graph_batch_reshape, graph_unbatch_reshape, map_coordinates
+    efficient_nn_index, graph_batch_reshape, graph_unbatch_reshape, map_coordinates, temperature_schedule
 
 
 class TestClass(object):
@@ -117,3 +118,12 @@ def test_map_coordinates():
     assert map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), ((0., 1., 2.), (0., 1., 3.)), 1).numpy().tolist() == [0., 6., 13.]
     assert tf.function(lambda coords: map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), coords, 1))((1., 1.)).numpy() == 6.
     assert tf.function(lambda coords: map_coordinates(tf.reshape(tf.cast(tf.range(4*5), tf.float32), (4,5)), coords, 1))(((0., 1., 2.), (0., 1., 3.))).numpy().tolist() == [0., 6., 13.]
+
+
+def test_choose_temperature_minmax():
+    get_temp = temperature_schedule(10, 20, S=10, thresh=0.95)
+
+    for step in range(30):
+        plt.scatter(step, get_temp(step), c='black')
+        assert get_temp(step) > 0
+    plt.show()

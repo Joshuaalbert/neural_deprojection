@@ -1,5 +1,3 @@
-import re
-
 import tensorflow as tf
 from graph_nets.graphs import GraphsTuple
 from graph_nets.modules import SelfAttention
@@ -1195,7 +1193,7 @@ def build_example_dataset(num_examples, batch_size, num_blobs=3, num_nodes=64**3
     dataset = dataset.map(lambda data_dict, image: (GraphsTuple(**data_dict,
                                                                 edges=None, receivers=None, senders=None, globals=None), image))
     dataset = dataset.map(lambda batched_graphs, image: (graph_unbatch_reshape(batched_graphs), image))
-    dataset = dataset.cache()
+    # dataset = dataset.cache()
     return dataset
 
 def batch_graph_data_dict(batched_data_dict):
@@ -1230,4 +1228,54 @@ def batch_graph_data_dict(batched_data_dict):
     if "n_edge" in batched_data_dict.keys():
         batched_data_dict['n_edge'] = batched_data_dict['n_edge'][:,0]
     return batched_data_dict
+
+
+def temperature_schedule(num_embedding, num_epochs, S=100, t0=1., thresh=0.95):
+    """
+    Returns callable for temperature schedule.
+    Assumes logits will be normalised, such that std(logits) = 1
+
+    then the schedule will be,
+
+    temp = max( final_temp, t0 * exp(alpha * i))
+    where
+    alpha = log(final_temp / t0) / num_epochs
+    and
+    final_temp is determined through a quick MC search.
+
+    Args:
+        num_embedding:
+        num_epochs: int number of epochs after which to be at final temp.
+        S: int number of samples to use in search
+        t0: float, initial temperature
+        thresh: float, mean maximum value when to consider one-hot
+
+    Returns:
+        callable(epoch: int) -> temperature:float
+        Callable that you epoch to (python int) and get the temperature (float)
+    """
+
+    temp_array = np.exp(np.linspace(np.log(0.001), np.log(1.), 1000))
+
+    def softmax(r, temp):
+        return np.exp(r/temp)/np.sum(np.exp(r/temp), axis=-1, keepdims=True)
+
+    _temp = np.min(temp_array)
+
+    final_temp = t0
+    while True:
+        r = np.random.normal(size=(S, num_embedding))
+        x = softmax(r, final_temp)
+        _max = np.max(x, axis=-1)
+        print(final_temp, _max)
+        if np.mean(_max) > thresh:
+            break
+        final_temp *= 0.95
+
+    alpha = np.log(final_temp / t0)/num_epochs
+    def _get_temperature(step):
+        return max(final_temp, t0 * np.exp(alpha * step))
+
+    return _get_temperature
+
 
