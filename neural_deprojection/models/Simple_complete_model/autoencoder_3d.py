@@ -239,10 +239,8 @@ class DiscreteVoxelsVAE(AbstractModule):
         elbo = var_exp - self.beta * kl_div  # batch
         loss = - tf.reduce_mean(elbo)  # scalar
 
-        q_dist = tfp.distributions.ExpRelaxedOneHotCategorical(self.temperature, logits=latent_logits)
-        log_prob_q = q_dist.log_prob(log_token_samples_onehot)  # num_samples, batch, H, W, D
-        entropy = -tf.reduce_sum(log_prob_q, axis=[-1,-2,-3])  # [S, batch]
-        perplexity = 2. ** (entropy / tf.math.log(2.)) # [S, batch, H, W, D]
+        entropy = -tf.reduce_sum(tf.math.exp(latent_logits) * latent_logits, axis=[-1])  # [batch, H, W, D]
+        perplexity = 2. ** (entropy / tf.math.log(2.))  # [batch, H, W, D]
         mean_perplexity = tf.reduce_mean(perplexity)  # scalar
 
         if self.step % 100 == 0:

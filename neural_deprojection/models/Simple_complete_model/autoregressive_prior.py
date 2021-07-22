@@ -62,7 +62,7 @@ def test_autoregressive_connect_graph_dynamic():
 def autoregressive_connect_graph_dynamic(graph,
                                          exclude_self_edges=False,
                                          name="autoregressive_connect_graph_dynamic"):
-    """Adds edges to a graph by fully-connecting the nodes.
+    """Adds edges to a graph by auto-regressively the nodes.
 
     This method does not require the number of nodes per graph to be constant,
     or to be known at graph building time.
@@ -410,7 +410,6 @@ class AutoRegressivePrior(AbstractModule):
                       token_samples_onehot_2d, token_samples_onehot_3d,
                       latent_tokens_2d, latent_tokens_3d,
                       prior_latent_logits_2d, prior_latent_logits_3d,
-                      log_prob_prior_2d, log_prob_prior_3d,
                       kl_term_2d, kl_term_3d):
 
         kl_div_2d = tf.reduce_mean(kl_term_2d, axis=0)  # [batch]
@@ -430,12 +429,12 @@ class AutoRegressivePrior(AbstractModule):
 
         var_exp = tf.reduce_mean(log_likelihood_2d + log_likelihood_3d, axis=0)
 
-        entropy_2d = -tf.reduce_mean(log_prob_prior_2d, axis=[0, -1, -2])  # [batch]
-        perplexity_2d = 2. ** (entropy_2d)  # [batch]
+        entropy_2d = -tf.reduce_mean(tf.math.exp(prior_latent_logits_2d) * prior_latent_logits_2d, axis=[-1])  #
+        perplexity_2d = 2. ** (entropy_2d/tf.math.log(2.))  #
         mean_perplexity_2d = tf.reduce_mean(perplexity_2d)  # scalar
 
-        entropy_3d = -tf.reduce_mean(log_prob_prior_3d, axis=[0, -1, -2, -3])  # [batch]
-        perplexity_3d = 2. ** (entropy_3d)  # [batch]
+        entropy_3d = -tf.reduce_mean(tf.math.exp(prior_latent_logits_3d) * prior_latent_logits_3d, axis=[-1])  #
+        perplexity_3d = 2. ** (entropy_3d / tf.math.log(2.))  #
         mean_perplexity_3d = tf.reduce_mean(perplexity_3d)  # scalar
 
         log_token_samples_onehot_2d_prior, token_samples_onehot_2d_prior, latent_tokens_2d_prior = self.discrete_image_vae.sample_latent(
@@ -452,8 +451,8 @@ class AutoRegressivePrior(AbstractModule):
         mu_3d_prior, logb_3d_prior = self.discrete_voxel_vae.compute_likelihood_parameters(
             latent_tokens_3d_prior)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
 
-        tf.summary.scalar('perplexity_2d', mean_perplexity_2d, step=self.step)
-        tf.summary.scalar('perplexity_3d', mean_perplexity_3d, step=self.step)
+        tf.summary.scalar('perplexity_2d_prior', mean_perplexity_2d, step=self.step)
+        tf.summary.scalar('perplexity_3d_prior', mean_perplexity_3d, step=self.step)
         tf.summary.scalar('var_exp_3d', tf.reduce_mean(var_exp_3d), step=self.step)
         tf.summary.scalar('var_exp_2d', tf.reduce_mean(var_exp_2d), step=self.step)
         tf.summary.scalar('kl_div_2d', tf.reduce_mean(kl_div_2d), step=self.step)
@@ -608,7 +607,6 @@ class AutoRegressivePrior(AbstractModule):
                       token_samples_onehot_2d, token_samples_onehot_3d,
                       latent_tokens_2d, latent_tokens_3d,
                       prior_latent_logits_2d, prior_latent_logits_3d,
-                      log_prob_prior_2d, log_prob_prior_3d,
                       kl_term_2d, kl_term_3d)
 
         return dict(loss=loss)
@@ -754,5 +752,5 @@ class AutoRegressivePrior(AbstractModule):
         concat_graphs = GraphsTuple(**data_dict)
         concat_graphs = graph_unbatch_reshape(concat_graphs)  # [n_graphs * (num_input + num_output), embedding_size]
         # nodes, senders, receivers, globals
-        concat_graphs = autoregressive_connect_graph_dynamic(concat_graphs)
+        concat_graphs = autoregressive_connect_graph_dynamic(concat_graphs, exclude_self_edges=True)
         return concat_graphs
