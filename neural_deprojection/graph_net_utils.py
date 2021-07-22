@@ -1166,7 +1166,9 @@ def build_example_dataset(num_examples, batch_size, num_blobs=3, num_nodes=64**3
         # all same weight
         weight = tf.random.uniform(shape=(), minval=1., maxval=1.)
         shift = tf.random.uniform(shape=(3,))
-        lengthscale = tf.random.uniform(shape=(), minval=0.05, maxval=0.15)
+        min_blob_size = 0.1*1./num_blobs
+        max_blob_size = 0.5*1./num_blobs
+        lengthscale = tf.random.uniform(shape=(), minval=min_blob_size, maxval=max_blob_size)
         density = weight * tf.math.exp(-0.5 * tf.linalg.norm(positions - shift, axis=-1) ** 2 / lengthscale ** 2)
         return density
 
