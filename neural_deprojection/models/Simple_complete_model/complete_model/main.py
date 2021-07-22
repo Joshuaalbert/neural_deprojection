@@ -49,12 +49,12 @@ def train_discrete_image_vae(config, kwargs, num_epochs=100):
     dataset = build_example_dataset(100, batch_size=2, num_blobs=3, num_nodes=64 ** 3, image_dim=256)
 
     # show example of image
-    for graphs, image in iter(dataset):
-        assert image.numpy().shape == (2, 256, 256, 1)
-        plt.imshow(image[0,...,0].numpy())
-        plt.colorbar()
-        plt.show()
-        break
+    # for graphs, image in iter(dataset):
+    #     assert image.numpy().shape == (2, 256, 256, 1)
+    #     plt.imshow(image[0,...,0].numpy())
+    #     plt.colorbar()
+    #     plt.show()
+    #     break
 
     # drop the graph as the model expects only images
     dataset = dataset.map(lambda graphs, images: (images,))
@@ -92,17 +92,17 @@ def train_discrete_voxel_vae(config, kwargs, num_epochs=100):
 
     # the model will call grid_graphs internally to learn the 3D autoencoder.
     # we show here what that produces from a batch of graphs.
-    for graphs, image in iter(dataset):
-        assert image.numpy().shape == (2, 256, 256, 1)
-        plt.imshow(image[0,...,0].numpy())
-        plt.colorbar()
-        plt.show()
-        voxels = grid_graphs(graphs, 64)
-        assert voxels.numpy().shape == (2, 64, 64, 64, 1)
-        plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
-        plt.colorbar()
-        plt.show()
-        break
+    # for graphs, image in iter(dataset):
+    #     assert image.numpy().shape == (2, 256, 256, 1)
+    #     plt.imshow(image[0,...,0].numpy())
+    #     plt.colorbar()
+    #     plt.show()
+    #     voxels = grid_graphs(graphs, 64)
+    #     assert voxels.numpy().shape == (2, 64, 64, 64, 1)
+    #     plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
+    #     plt.colorbar()
+    #     plt.show()
+    #     break
 
     # drop the image as the model expects only graphs
     dataset = dataset.map(lambda graphs, images: (graphs,))
@@ -138,17 +138,17 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
 
     # the model will call grid_graphs internally to learn the 3D autoencoder.
     # we show here what that produces from a batch of graphs.
-    for graphs, image in iter(dataset):
-        assert image.numpy().shape == (2, 256, 256, 1)
-        plt.imshow(image[0,...,0].numpy())
-        plt.colorbar()
-        plt.show()
-        voxels = grid_graphs(graphs, 64)
-        assert voxels.numpy().shape == (2, 64, 64, 64, 1)
-        plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
-        plt.colorbar()
-        plt.show()
-        break
+    # for graphs, image in iter(dataset):
+    #     assert image.numpy().shape == (2, 256, 256, 1)
+    #     plt.imshow(image[0,...,0].numpy())
+    #     plt.colorbar()
+    #     plt.show()
+    #     voxels = grid_graphs(graphs, 64)
+    #     assert voxels.numpy().shape == (2, 64, 64, 64, 1)
+    #     plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
+    #     plt.colorbar()
+    #     plt.show()
+    #     break
 
     # run on first input to set variable shapes
     for batch in iter(dataset):
@@ -189,11 +189,11 @@ def main():
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
     get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
-    for epoch in range(0, 15):
+    for epoch in range(0, 20):
         kwargs = dict(num_token_samples=4,
                       temperature=get_temp(epoch),
                       beta=1.)
-        discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=1)
+        discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=0)
 
     print("Training the discrete voxel VAE.")
     config = dict(model_type='disc_voxel_vae',
@@ -205,11 +205,11 @@ def main():
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
     get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
-    for epoch in range(0, 15):
+    for epoch in range(0, 20):
         kwargs = dict(num_token_samples=4,
                       temperature=get_temp(epoch),
                       beta=1.)
-        discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=1)
+        discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=0)
 
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
@@ -219,8 +219,9 @@ def main():
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
 
-    # can load checkpoints if desired.
-    # discrete_image_vae, discrete_voxel_vae = load_checkpoints(discrete_image_vae_checkpoint, discrete_voxel_vae_checkpoint)
+    # # can load checkpoints if desired.
+    # discrete_image_vae, discrete_voxel_vae = load_checkpoints('/home/albert/git/neural_deprojection/neural_deprojection/models/Simple_complete_model/complete_model/checkpointing/|disc_image_vae||embddngdm=64,hddnsz=32,nmchnnls=1,nmembddng=16||lrnngrt=1.0e-03,opttyp=adam|||',
+    #                                                           '/home/albert/git/neural_deprojection/neural_deprojection/models/Simple_complete_model/complete_model/checkpointing/|disc_voxel_vae||embddngdm=64,hddnsz=4,nmchnnls=1,nmembddng=16,vxlsprdmnsn=32||lrnngrt=1.0e-03,opttyp=adam|||')
 
     get_temp = temperature_schedule(discrete_image_vae.num_embedding + discrete_voxel_vae.num_embedding, 10)
     for epoch in range(0, 15):
