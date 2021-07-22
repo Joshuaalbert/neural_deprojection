@@ -193,7 +193,7 @@ def main():
         kwargs = dict(num_token_samples=4,
                       temperature=get_temp(epoch),
                       beta=1.)
-        discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=0)
+        discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=1)
 
     print("Training the discrete voxel VAE.")
     config = dict(model_type='disc_voxel_vae',
@@ -209,7 +209,7 @@ def main():
         kwargs = dict(num_token_samples=4,
                       temperature=get_temp(epoch),
                       beta=1.)
-        discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=0)
+        discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=1)
 
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
