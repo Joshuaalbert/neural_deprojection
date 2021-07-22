@@ -654,7 +654,7 @@ class AutoRegressivePrior(AbstractModule):
         prior_latent_logits_2d = tf.reshape(prior_latent_logits[:, :, :H2 * W2, :self.discrete_image_vae.num_embedding],
                                             (self.num_token_samples, batch, H2, W2,
                                              self.discrete_image_vae.num_embedding))
-        prior_latent_logits_3d = tf.reshape(prior_latent_logits[:, :, H2 * W2:, self.discrete_image_vae.num_embedding:],
+        prior_latent_logits_3d = tf.reshape(prior_latent_logits[:, :, H3 * W3 * D3:, self.discrete_voxel_vae.num_embedding:],
                                             (self.num_token_samples, batch, H3, W3, D3,
                                              self.discrete_voxel_vae.num_embedding))
         return prior_latent_logits_2d, prior_latent_logits_3d
