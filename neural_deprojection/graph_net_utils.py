@@ -1251,8 +1251,8 @@ def temperature_schedule(num_embedding, num_epochs, S=100, t0=1., thresh=0.95):
         thresh: float, mean maximum value when to consider one-hot
 
     Returns:
-        callable(epoch: int) -> temperature:float
-        Callable that you epoch to (python int) and get the temperature (float)
+        callable(epoch: tf.int32) -> temperature:tf.float32
+        Callable that takes epoch to (tf.int32) and get the temperature (tf.float32)
     """
 
     temp_array = np.exp(np.linspace(np.log(0.001), np.log(1.), 1000))
@@ -1271,9 +1271,12 @@ def temperature_schedule(num_embedding, num_epochs, S=100, t0=1., thresh=0.95):
             break
         final_temp *= 0.95
 
-    alpha = np.log(final_temp / t0)/num_epochs
+    t0 = tf.constant(t0, dtype=tf.float32)
+    final_temp = tf.constant(final_temp, dtype=tf.float32)
+    alpha = tf.constant(np.log(final_temp / t0)/num_epochs, dtype=tf.float32)
     def _get_temperature(step):
-        return max(final_temp, t0 * np.exp(alpha * step))
+        step = tf.cast(tf.convert_to_tensor(step), dtype=tf.float32)
+        return tf.math.maximum(final_temp, t0 * tf.math.exp(alpha * step))
 
     return _get_temperature
 

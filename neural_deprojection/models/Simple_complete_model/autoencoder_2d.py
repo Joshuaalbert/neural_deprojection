@@ -10,7 +10,7 @@ class DiscreteImageVAE(AbstractModule):
                  num_embedding: int = 1024,
                  num_token_samples: int = 4,
                  num_channels:int = 1,
-                 temperature:float = 1.,
+                 compute_temperature:callable = None,
                  beta:float = 1.,
                  name=None):
         super(DiscreteImageVAE, self).__init__(name=name)
@@ -20,11 +20,15 @@ class DiscreteImageVAE(AbstractModule):
         self.num_token_samples = num_token_samples
         self.num_embedding = num_embedding
         self.embedding_dim = embedding_dim
-        self.temperature = tf.convert_to_tensor(temperature, dtype=tf.float32)
+        self.compute_temperature = compute_temperature
         self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
 
         self._encoder = Encoder2D(hidden_size=hidden_size, num_embeddings=num_embedding, name='EncoderImage')
         self._decoder = Decoder2D(hidden_size=hidden_size, num_channels=num_channels, name='DecoderImage')
+
+    @property
+    def temperature(self):
+        return self.compute_temperature(self.epoch)
 
     def set_beta(self, beta):
         self.beta.assign(beta)

@@ -154,6 +154,7 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
     for batch in iter(dataset):
         train_one_epoch.model(*batch)
         break
+    exit(0)
 
     log_dir = build_log_dir('log_dir', config)
     checkpoint_dir = build_checkpoint_dir('checkpointing', config)
@@ -189,11 +190,10 @@ def main():
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
     get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
-    for epoch in range(0, 20):
-        kwargs = dict(num_token_samples=4,
-                      temperature=get_temp(epoch),
-                      beta=1.)
-        discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=1)
+    kwargs = dict(num_token_samples=4,
+                  compute_temperature=get_temp,
+                  beta=1.)
+    discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=0)
 
     print("Training the discrete voxel VAE.")
     config = dict(model_type='disc_voxel_vae',
@@ -205,11 +205,10 @@ def main():
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
     get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
-    for epoch in range(0, 20):
-        kwargs = dict(num_token_samples=4,
-                      temperature=get_temp(epoch),
-                      beta=1.)
-        discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=1)
+    kwargs = dict(num_token_samples=4,
+                  compute_temperature=get_temp,
+                  beta=1.)
+    discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=0)
 
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
@@ -224,14 +223,13 @@ def main():
     #                                                           '/home/albert/git/neural_deprojection/neural_deprojection/models/Simple_complete_model/complete_model/checkpointing/|disc_voxel_vae||embddngdm=64,hddnsz=4,nmchnnls=1,nmembddng=16,vxlsprdmnsn=32||lrnngrt=1.0e-03,opttyp=adam|||')
 
     get_temp = temperature_schedule(discrete_image_vae.num_embedding + discrete_voxel_vae.num_embedding, 10)
-    for epoch in range(0, 15):
-        kwargs = dict(discrete_image_vae=discrete_image_vae,
-                      discrete_voxel_vae=discrete_voxel_vae,
-                      num_token_samples=4,
-                      temperature=get_temp(epoch),
-                      beta=1.)
+    kwargs = dict(discrete_image_vae=discrete_image_vae,
+                  discrete_voxel_vae=discrete_voxel_vae,
+                  num_token_samples=4,
+                  compute_temperature=get_temp,
+                  beta=1.)
 
-        train_auto_regressive_prior(config, kwargs, num_epochs=1)
+    train_auto_regressive_prior(config, kwargs, num_epochs=1)
 
 
 def load_checkpoints(discrete_image_vae_checkpoint, discrete_voxel_vae_checkpoint):
