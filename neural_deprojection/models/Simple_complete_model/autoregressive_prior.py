@@ -405,24 +405,23 @@ class AutoRegressivePrior(AbstractModule):
 
         return latent_graphs
 
-    def _build(self, graphs, images):
+    def write_summary(self, images, graphs,
+                      latent_logits_2d, latent_logits_3d,
+                      token_samples_onehot_2d, token_samples_onehot_3d,
+                      latent_tokens_2d, latent_tokens_3d,
+                      prior_latent_logits_2d, prior_latent_logits_3d,
+                      log_prob_prior_2d, log_prob_prior_3d,
+                      kl_term_2d, kl_term_3d):
 
-        latent_logits_2d = self.discrete_image_vae.compute_logits(images)  # [batch, H, W, num_embeddings]
-        log_token_samples_onehot_2d, token_samples_onehot_2d, latent_tokens_2d = self.discrete_image_vae.sample_latent(
-            latent_logits_2d,
-            self.discrete_image_vae.temperature,
-            self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
+        kl_div_2d = tf.reduce_mean(kl_term_2d, axis=0)  # [batch]
+        kl_div_3d = tf.reduce_mean(kl_term_3d, axis=0)  # [batch]
+
         mu_2d, logb_2d = self.discrete_image_vae.compute_likelihood_parameters(
             latent_tokens_2d)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
         log_likelihood_2d = self.discrete_image_vae.log_likelihood(images, mu_2d, logb_2d)  # [num_samples, batch]
 
         var_exp_2d = tf.reduce_mean(log_likelihood_2d, axis=0)  # [batch]
 
-        latent_logits_3d = self.discrete_voxel_vae.compute_logits(graphs)  # [batch, H, W, D, num_embeddings]
-        log_token_samples_onehot_3d, token_samples_onehot_3d, latent_tokens_3d = self.discrete_voxel_vae.sample_latent(
-            latent_logits_3d,
-            self.discrete_voxel_vae.temperature,
-            self.num_token_samples)  # [num_samples, batch, H, W, D, num_embeddings], [num_samples, batch, H, W, D, embedding_size]
         mu_3d, logb_3d = self.discrete_voxel_vae.compute_likelihood_parameters(
             latent_tokens_3d)  # [num_samples, batch, H', W', D', C], [num_samples, batch, H', W', D', C]
         log_likelihood_3d = self.discrete_voxel_vae.log_likelihood(graphs, mu_3d, logb_3d)  # [num_samples, batch]
@@ -430,24 +429,6 @@ class AutoRegressivePrior(AbstractModule):
         var_exp_3d = tf.reduce_mean(log_likelihood_3d, axis=0)  # [batch]
 
         var_exp = tf.reduce_mean(log_likelihood_2d + log_likelihood_3d, axis=0)
-
-        prior_latent_logits_2d, prior_latent_logits_3d = self.compute_prior_logits(token_samples_onehot_2d,
-                                                                                   token_samples_onehot_3d)
-
-        kl_term_2d, kl_term_3d, log_prob_prior_2d, log_prob_prior_3d = self.compute_kl_term(latent_logits_2d,
-                                                                 latent_logits_3d,
-                                                                 log_token_samples_onehot_2d,
-                                                                 log_token_samples_onehot_3d,
-                                                                 prior_latent_logits_2d, 
-                                                                 prior_latent_logits_3d)
-
-        kl_term = kl_term_2d + kl_term_3d #[num_samples, batch]
-
-        kl_div_2d = tf.reduce_mean(kl_term_2d, axis=0)# [batch]
-        kl_div_3d = tf.reduce_mean(kl_term_3d, axis=0)# [batch]
-        kl_div = tf.reduce_mean(kl_term, axis=0)  # [batch]
-        elbo = tf.stop_gradient(var_exp) - self.beta * kl_div  # batch
-        loss = - tf.reduce_mean(elbo)  # scalar
 
         entropy_2d = -tf.reduce_mean(log_prob_prior_2d, axis=[0, -1, -2])  # [batch]
         perplexity_2d = 2. ** (entropy_2d)  # [batch]
@@ -457,146 +438,188 @@ class AutoRegressivePrior(AbstractModule):
         perplexity_3d = 2. ** (entropy_3d)  # [batch]
         mean_perplexity_3d = tf.reduce_mean(perplexity_3d)  # scalar
 
-        if self.step % 100 == 0:
-            log_token_samples_onehot_2d_prior, token_samples_onehot_2d_prior, latent_tokens_2d_prior = self.discrete_image_vae.sample_latent(
-                prior_latent_logits_2d[0],
-                self.temperature,
-                self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
-            mu_2d_prior, logb_2d_prior = self.discrete_image_vae.compute_likelihood_parameters(
-                latent_tokens_2d_prior)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
+        log_token_samples_onehot_2d_prior, token_samples_onehot_2d_prior, latent_tokens_2d_prior = self.discrete_image_vae.sample_latent(
+            prior_latent_logits_2d[0],
+            self.temperature,
+            self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
+        mu_2d_prior, logb_2d_prior = self.discrete_image_vae.compute_likelihood_parameters(
+            latent_tokens_2d_prior)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
 
-            log_token_samples_onehot_3d_prior, token_samples_onehot_3d_prior, latent_tokens_3d_prior = self.discrete_voxel_vae.sample_latent(
-                prior_latent_logits_3d[0],
-                self.temperature,
-                self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
-            mu_3d_prior, logb_3d_prior = self.discrete_voxel_vae.compute_likelihood_parameters(
-                latent_tokens_3d_prior)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
-            
-            tf.summary.scalar('perplexity_2d', mean_perplexity_2d, step=self.step)
-            tf.summary.scalar('perplexity_3d', mean_perplexity_3d, step=self.step)
-            tf.summary.scalar('var_exp_3d', tf.reduce_mean(var_exp_3d), step=self.step)
-            tf.summary.scalar('var_exp_2d', tf.reduce_mean(var_exp_2d), step=self.step)
-            tf.summary.scalar('kl_div_2d', tf.reduce_mean(kl_div_2d), step=self.step)
-            tf.summary.scalar('kl_div_3d', tf.reduce_mean(kl_div_3d), step=self.step)
-            tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
-            tf.summary.scalar('kl_div', tf.reduce_mean(kl_div), step=self.step)
-            tf.summary.scalar('temperature_2d', self.discrete_image_vae.temperature, step=self.step)
-            tf.summary.scalar('temperature_3d', self.discrete_voxel_vae.temperature, step=self.step)
-            tf.summary.scalar('temperature', self.temperature, step=self.step)
-            tf.summary.scalar('beta', self.beta, step=self.step)
+        log_token_samples_onehot_3d_prior, token_samples_onehot_3d_prior, latent_tokens_3d_prior = self.discrete_voxel_vae.sample_latent(
+            prior_latent_logits_3d[0],
+            self.temperature,
+            self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
+        mu_3d_prior, logb_3d_prior = self.discrete_voxel_vae.compute_likelihood_parameters(
+            latent_tokens_3d_prior)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
 
-            projected_mu = tf.reduce_sum(mu_3d[0], axis=-2)  # [batch, H', W', C]
-            projected_mu_prior = tf.reduce_sum(mu_3d_prior[0], axis=-2)  # [batch, H', W', C]
-            voxels = grid_graphs(graphs, self.discrete_voxel_vae.voxels_per_dimension)  # [batch, H', W', D', C]
-            projected_img = tf.reduce_sum(voxels, axis=-2)  # [batch, H', W', C]
-            for i in range(self.discrete_voxel_vae.num_channels):
-                vmin = tf.reduce_min(projected_mu[..., i])
-                vmax = tf.reduce_max(projected_mu[..., i])
-                _projected_mu = (projected_mu[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
-                _projected_mu = tf.clip_by_value(_projected_mu, 0., 1.)
+        tf.summary.scalar('perplexity_2d', mean_perplexity_2d, step=self.step)
+        tf.summary.scalar('perplexity_3d', mean_perplexity_3d, step=self.step)
+        tf.summary.scalar('var_exp_3d', tf.reduce_mean(var_exp_3d), step=self.step)
+        tf.summary.scalar('var_exp_2d', tf.reduce_mean(var_exp_2d), step=self.step)
+        tf.summary.scalar('kl_div_2d', tf.reduce_mean(kl_div_2d), step=self.step)
+        tf.summary.scalar('kl_div_3d', tf.reduce_mean(kl_div_3d), step=self.step)
+        tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
+        tf.summary.scalar('kl_div', tf.reduce_mean(kl_div_2d + kl_div_3d), step=self.step)
+        tf.summary.scalar('temperature_2d', self.discrete_image_vae.temperature, step=self.step)
+        tf.summary.scalar('temperature_3d', self.discrete_voxel_vae.temperature, step=self.step)
+        tf.summary.scalar('temperature', self.temperature, step=self.step)
+        tf.summary.scalar('beta', self.beta, step=self.step)
 
-                vmin = tf.reduce_min(projected_mu_prior[..., i])
-                vmax = tf.reduce_max(projected_mu_prior[..., i])
-                _projected_mu_prior = (projected_mu_prior[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
-                _projected_mu_prior = tf.clip_by_value(_projected_mu_prior, 0., 1.)
-                
-                vmin = tf.reduce_min(projected_img[..., i])
-                vmax = tf.reduce_max(projected_img[..., i])
-                _projected_img = (projected_img[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
-                _projected_img = tf.clip_by_value(_projected_img, 0., 1.)
+        projected_mu = tf.reduce_sum(mu_3d[0], axis=-2)  # [batch, H', W', C]
+        projected_mu_prior = tf.reduce_sum(mu_3d_prior[0], axis=-2)  # [batch, H', W', C]
+        voxels = grid_graphs(graphs, self.discrete_voxel_vae.voxels_per_dimension)  # [batch, H', W', D', C]
+        projected_img = tf.reduce_sum(voxels, axis=-2)  # [batch, H', W', C]
+        for i in range(self.discrete_voxel_vae.num_channels):
+            vmin = tf.reduce_min(projected_mu[..., i])
+            vmax = tf.reduce_max(projected_mu[..., i])
+            _projected_mu = (projected_mu[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
+            _projected_mu = tf.clip_by_value(_projected_mu, 0., 1.)
 
-                tf.summary.image(f'voxels_predict[{i}]', _projected_mu, step=self.step)
-                tf.summary.image(f'voxels_predict_prior[{i}]', _projected_mu_prior, step=self.step)
-                tf.summary.image(f'voxels_actual[{i}]', _projected_img, step=self.step)
+            vmin = tf.reduce_min(projected_mu_prior[..., i])
+            vmax = tf.reduce_max(projected_mu_prior[..., i])
+            _projected_mu_prior = (projected_mu_prior[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
+            _projected_mu_prior = tf.clip_by_value(_projected_mu_prior, 0., 1.)
 
-            batch, H3, W3, D3, _ = get_shape(latent_logits_3d)
-            _latent_logits_3d = latent_logits_3d  # [batch, H, W, D, num_embeddings]
-            _latent_logits_3d -= tf.reduce_min(_latent_logits_3d, axis=-1, keepdims=True)
-            _latent_logits_3d /= tf.reduce_max(_latent_logits_3d, axis=-1, keepdims=True)
-            _latent_logits_3d = tf.reshape(_latent_logits_3d,
-                                           [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
-                                            1])  # [batch, H*W*D, num_embedding, 1]
-            tf.summary.image('latent_logits_3d', _latent_logits_3d, step=self.step)
+            vmin = tf.reduce_min(projected_img[..., i])
+            vmax = tf.reduce_max(projected_img[..., i])
+            _projected_img = (projected_img[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
+            _projected_img = tf.clip_by_value(_projected_img, 0., 1.)
 
-            token_sample_onehot_3d = token_samples_onehot_3d[0]  # [batch, H, W, D, num_embeddings]
-            token_sample_onehot_3d = tf.reshape(token_sample_onehot_3d,
-                                                [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
-                                                 1])  # [batch, H*W*D, num_embedding, 1]
-            tf.summary.image('latent_samples_onehot_3d', token_sample_onehot_3d, step=self.step)
+            tf.summary.image(f'voxels_predict[{i}]', _projected_mu, step=self.step)
+            tf.summary.image(f'voxels_predict_prior[{i}]', _projected_mu_prior, step=self.step)
+            tf.summary.image(f'voxels_actual[{i}]', _projected_img, step=self.step)
 
-            _latent_logits_3d_prior = prior_latent_logits_3d[0]  # [batch, H, W, D, num_embeddings]
-            _latent_logits_3d_prior -= tf.reduce_min(_latent_logits_3d_prior, axis=-1, keepdims=True)
-            _latent_logits_3d_prior /= tf.reduce_max(_latent_logits_3d_prior, axis=-1, keepdims=True)
-            _latent_logits_3d_prior = tf.reshape(_latent_logits_3d_prior,
-                                           [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
-                                            1])  # [batch, H*W*D, num_embedding, 1]
-            tf.summary.image('latent_logits_3d_prior', _latent_logits_3d_prior, step=self.step)
+        batch, H3, W3, D3, _ = get_shape(latent_logits_3d)
+        _latent_logits_3d = latent_logits_3d  # [batch, H, W, D, num_embeddings]
+        _latent_logits_3d -= tf.reduce_min(_latent_logits_3d, axis=-1, keepdims=True)
+        _latent_logits_3d /= tf.reduce_max(_latent_logits_3d, axis=-1, keepdims=True)
+        _latent_logits_3d = tf.reshape(_latent_logits_3d,
+                                       [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
+                                        1])  # [batch, H*W*D, num_embedding, 1]
+        tf.summary.image('latent_logits_3d', _latent_logits_3d, step=self.step)
 
-            token_sample_onehot_3d_prior = token_samples_onehot_3d_prior[0]  # [batch, H, W, D, num_embeddings]
-            token_sample_onehot_3d_prior = tf.reshape(token_sample_onehot_3d_prior,
-                                                [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
-                                                 1])  # [batch, H*W*D, num_embedding, 1]
-            tf.summary.image('latent_samples_onehot_3d_prior', token_sample_onehot_3d_prior, step=self.step)
+        token_sample_onehot_3d = token_samples_onehot_3d[0]  # [batch, H, W, D, num_embeddings]
+        token_sample_onehot_3d = tf.reshape(token_sample_onehot_3d,
+                                            [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
+                                             1])  # [batch, H*W*D, num_embedding, 1]
+        tf.summary.image('latent_samples_onehot_3d', token_sample_onehot_3d, step=self.step)
 
-            _mu = mu_2d[0]  # [batch, H', W', C]
-            _mu_prior = mu_2d_prior[0]  # [batch, H', W', C]
-            _img = images  # [batch, H', W', C]
-            for i in range(self.discrete_image_vae.num_channels):
-                vmin = tf.reduce_min(_mu[..., i])
-                vmax = tf.reduce_max(_mu[..., i])
-                _projected_mu = (_mu[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
-                _projected_mu = tf.clip_by_value(_projected_mu, 0., 1.)
+        _latent_logits_3d_prior = prior_latent_logits_3d[0]  # [batch, H, W, D, num_embeddings]
+        _latent_logits_3d_prior -= tf.reduce_min(_latent_logits_3d_prior, axis=-1, keepdims=True)
+        _latent_logits_3d_prior /= tf.reduce_max(_latent_logits_3d_prior, axis=-1, keepdims=True)
+        _latent_logits_3d_prior = tf.reshape(_latent_logits_3d_prior,
+                                             [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
+                                              1])  # [batch, H*W*D, num_embedding, 1]
+        tf.summary.image('latent_logits_3d_prior', _latent_logits_3d_prior, step=self.step)
 
-                vmin = tf.reduce_min(_mu_prior[..., i])
-                vmax = tf.reduce_max(_mu_prior[..., i])
-                _projected_mu_prior = (_mu[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
-                _projected_mu_prior = tf.clip_by_value(_projected_mu_prior, 0., 1.)
-                
-                vmin = tf.reduce_min(_img[..., i])
-                vmax = tf.reduce_max(_img[..., i])
-                _projected_img = (_img[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
-                _projected_img = tf.clip_by_value(_projected_img, 0., 1.)
+        token_sample_onehot_3d_prior = token_samples_onehot_3d_prior[0]  # [batch, H, W, D, num_embeddings]
+        token_sample_onehot_3d_prior = tf.reshape(token_sample_onehot_3d_prior,
+                                                  [batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding,
+                                                   1])  # [batch, H*W*D, num_embedding, 1]
+        tf.summary.image('latent_samples_onehot_3d_prior', token_sample_onehot_3d_prior, step=self.step)
 
-                tf.summary.image(f'image_predict[{i}]', _projected_mu, step=self.step)
-                tf.summary.image(f'image_predict_prior[{i}]', _projected_mu_prior, step=self.step)
-                tf.summary.image(f'image_actual[{i}]', _projected_img, step=self.step)
+        _mu = mu_2d[0]  # [batch, H', W', C]
+        _mu_prior = mu_2d_prior[0]  # [batch, H', W', C]
+        _img = images  # [batch, H', W', C]
+        for i in range(self.discrete_image_vae.num_channels):
+            vmin = tf.reduce_min(_mu[..., i])
+            vmax = tf.reduce_max(_mu[..., i])
+            _projected_mu = (_mu[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
+            _projected_mu = tf.clip_by_value(_projected_mu, 0., 1.)
 
-            batch, H2, W2, _ = get_shape(latent_logits_2d)
-            _latent_logits_2d = latent_logits_2d  # [batch, H, W, num_embeddings]
-            _latent_logits_2d -= tf.reduce_min(_latent_logits_2d, axis=-1, keepdims=True)
-            _latent_logits_2d /= tf.reduce_max(_latent_logits_2d, axis=-1, keepdims=True)
-            _latent_logits_2d = tf.reshape(_latent_logits_2d,
-                                           [batch, H2 * W2, self.discrete_image_vae.num_embedding,
-                                            1])  # [batch, H*W, num_embedding, 1]
-            tf.summary.image('latent_logits_2d', _latent_logits_2d, step=self.step)
+            vmin = tf.reduce_min(_mu_prior[..., i])
+            vmax = tf.reduce_max(_mu_prior[..., i])
+            _projected_mu_prior = (_mu[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
+            _projected_mu_prior = tf.clip_by_value(_projected_mu_prior, 0., 1.)
 
-            token_sample_onehot = token_samples_onehot_2d[0]  # [batch, H, W, num_embeddings]
-            token_sample_onehot = tf.reshape(token_sample_onehot,
+            vmin = tf.reduce_min(_img[..., i])
+            vmax = tf.reduce_max(_img[..., i])
+            _projected_img = (_img[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
+            _projected_img = tf.clip_by_value(_projected_img, 0., 1.)
+
+            tf.summary.image(f'image_predict[{i}]', _projected_mu, step=self.step)
+            tf.summary.image(f'image_predict_prior[{i}]', _projected_mu_prior, step=self.step)
+            tf.summary.image(f'image_actual[{i}]', _projected_img, step=self.step)
+
+        batch, H2, W2, _ = get_shape(latent_logits_2d)
+        _latent_logits_2d = latent_logits_2d  # [batch, H, W, num_embeddings]
+        _latent_logits_2d -= tf.reduce_min(_latent_logits_2d, axis=-1, keepdims=True)
+        _latent_logits_2d /= tf.reduce_max(_latent_logits_2d, axis=-1, keepdims=True)
+        _latent_logits_2d = tf.reshape(_latent_logits_2d,
+                                       [batch, H2 * W2, self.discrete_image_vae.num_embedding,
+                                        1])  # [batch, H*W, num_embedding, 1]
+        tf.summary.image('latent_logits_2d', _latent_logits_2d, step=self.step)
+
+        token_sample_onehot = token_samples_onehot_2d[0]  # [batch, H, W, num_embeddings]
+        token_sample_onehot = tf.reshape(token_sample_onehot,
+                                         [batch, H2 * W2, self.discrete_image_vae.num_embedding,
+                                          1])  # [batch, H*W, num_embedding, 1]
+        tf.summary.image('latent_samples_onehot_2d', token_sample_onehot, step=self.step)
+
+        _latent_logits_2d_prior = prior_latent_logits_2d[0]  # [batch, H, W, num_embeddings]
+        _latent_logits_2d_prior -= tf.reduce_min(_latent_logits_2d_prior, axis=-1, keepdims=True)
+        _latent_logits_2d_prior /= tf.reduce_max(_latent_logits_2d_prior, axis=-1, keepdims=True)
+        _latent_logits_2d_prior = tf.reshape(_latent_logits_2d_prior,
                                              [batch, H2 * W2, self.discrete_image_vae.num_embedding,
                                               1])  # [batch, H*W, num_embedding, 1]
-            tf.summary.image('latent_samples_onehot_2d', token_sample_onehot, step=self.step)
+        tf.summary.image('latent_logits_2d_prior', _latent_logits_2d_prior, step=self.step)
 
-            _latent_logits_2d_prior = prior_latent_logits_2d[0]  # [batch, H, W, num_embeddings]
-            _latent_logits_2d_prior -= tf.reduce_min(_latent_logits_2d_prior, axis=-1, keepdims=True)
-            _latent_logits_2d_prior /= tf.reduce_max(_latent_logits_2d_prior, axis=-1, keepdims=True)
-            _latent_logits_2d_prior = tf.reshape(_latent_logits_2d_prior,
-                                           [batch, H2 * W2, self.discrete_image_vae.num_embedding,
-                                            1])  # [batch, H*W, num_embedding, 1]
-            tf.summary.image('latent_logits_2d_prior', _latent_logits_2d_prior, step=self.step)
+        token_sample_onehot = token_samples_onehot_2d_prior[0]  # [batch, H, W, num_embeddings]
+        token_sample_onehot = tf.reshape(token_sample_onehot,
+                                         [batch, H2 * W2, self.discrete_image_vae.num_embedding,
+                                          1])  # [batch, H*W, num_embedding, 1]
+        tf.summary.image('latent_samples_onehot_2d_prior', token_sample_onehot, step=self.step)
 
-            token_sample_onehot = token_samples_onehot_2d_prior[0]  # [batch, H, W, num_embeddings]
-            token_sample_onehot = tf.reshape(token_sample_onehot,
-                                             [batch, H2 * W2, self.discrete_image_vae.num_embedding,
-                                              1])  # [batch, H*W, num_embedding, 1]
-            tf.summary.image('latent_samples_onehot_2d_prior', token_sample_onehot, step=self.step)
+    def _build(self, graphs, images):
+
+        latent_logits_2d = self.discrete_image_vae.compute_logits(images)  # [batch, H, W, num_embeddings]
+        log_token_samples_onehot_2d, token_samples_onehot_2d, latent_tokens_2d = self.discrete_image_vae.sample_latent(
+            latent_logits_2d,
+            self.discrete_image_vae.temperature,
+            self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
+
+        latent_logits_3d = self.discrete_voxel_vae.compute_logits(graphs)  # [batch, H, W, D, num_embeddings]
+        log_token_samples_onehot_3d, token_samples_onehot_3d, latent_tokens_3d = self.discrete_voxel_vae.sample_latent(
+            latent_logits_3d,
+            self.discrete_voxel_vae.temperature,
+            self.num_token_samples)  # [num_samples, batch, H, W, D, num_embeddings], [num_samples, batch, H, W, D, embedding_size]
+
+        prior_latent_logits_2d, prior_latent_logits_3d = self.compute_prior_logits(token_samples_onehot_2d,
+                                                                                   token_samples_onehot_3d)
+
+        kl_term_2d, kl_term_3d, log_prob_prior_2d, log_prob_prior_3d = self.compute_kl_term(latent_logits_2d,
+                                                                                            latent_logits_3d,
+                                                                                            log_token_samples_onehot_2d,
+                                                                                            log_token_samples_onehot_3d,
+                                                                                            prior_latent_logits_2d,
+                                                                                            prior_latent_logits_3d)
+
+        kl_term = kl_term_2d + kl_term_3d  # [num_samples, batch]
+
+        kl_div = tf.reduce_mean(kl_term, axis=0)  # [batch]
+        # elbo = tf.stop_gradient(var_exp) - self.beta * kl_div  # batch
+        elbo = - kl_div  # batch
+
+        loss = - tf.reduce_mean(elbo)  # scalar
+
+        if self.step % 10 == 0:
+            self.write_summary(images, graphs,
+                      latent_logits_2d, latent_logits_3d,
+                      token_samples_onehot_2d, token_samples_onehot_3d,
+                      latent_tokens_2d, latent_tokens_3d,
+                      prior_latent_logits_2d, prior_latent_logits_3d,
+                      log_prob_prior_2d, log_prob_prior_3d,
+                      kl_term_2d, kl_term_3d)
 
         return dict(loss=loss)
 
     def compute_kl_term(self, latent_logits_2d, latent_logits_3d, log_token_samples_onehot_2d,
                         log_token_samples_onehot_3d, prior_latent_logits_2d, prior_latent_logits_3d):
-        q_dist_2d = tfp.distributions.ExpRelaxedOneHotCategorical(self.discrete_image_vae.temperature, logits=latent_logits_2d)
+        q_dist_2d = tfp.distributions.ExpRelaxedOneHotCategorical(self.discrete_image_vae.temperature,
+                                                                  logits=latent_logits_2d)
         log_prob_q_2d = q_dist_2d.log_prob(log_token_samples_onehot_2d)  # num_samples, batch, H2, W2
-        q_dist_3d = tfp.distributions.ExpRelaxedOneHotCategorical(self.discrete_voxel_vae.temperature, logits=latent_logits_3d)
+        q_dist_3d = tfp.distributions.ExpRelaxedOneHotCategorical(self.discrete_voxel_vae.temperature,
+                                                                  logits=latent_logits_3d)
         log_prob_q_3d = q_dist_3d.log_prob(log_token_samples_onehot_3d)  # num_samples, batch, H3, W3, D3
 
         prior_dist_2d = tfp.distributions.ExpRelaxedOneHotCategorical(self.temperature, logits=prior_latent_logits_2d)
@@ -604,8 +627,8 @@ class AutoRegressivePrior(AbstractModule):
         log_prob_prior_2d = prior_dist_2d.log_prob(log_token_samples_onehot_2d)
         log_prob_prior_3d = prior_dist_3d.log_prob(log_token_samples_onehot_3d)
 
-        kl_term_2d = tf.reduce_sum(log_prob_q_2d - log_prob_prior_2d, axis=[-1,-2])
-        kl_term_3d = tf.reduce_sum(log_prob_q_3d - log_prob_prior_3d, axis=[-1,-2,-3])
+        kl_term_2d = tf.reduce_sum(log_prob_q_2d - log_prob_prior_2d, axis=[-1, -2])
+        kl_term_3d = tf.reduce_sum(log_prob_q_3d - log_prob_prior_3d, axis=[-1, -2, -3])
 
         # log_token_samples_onehot_2d = tf.concat([log_token_samples_onehot_2d,
         #                                          tf.fill((self.num_token_samples, batch, H2, W2,

@@ -154,7 +154,6 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
     for batch in iter(dataset):
         train_one_epoch.model(*batch)
         break
-    exit(0)
 
     log_dir = build_log_dir('log_dir', config)
     checkpoint_dir = build_checkpoint_dir('checkpointing', config)
