@@ -647,23 +647,16 @@ class AutoRegressivePrior(AbstractModule):
         return kl_term_2d, kl_term_3d, log_prob_prior_2d, log_prob_prior_3d
 
     def compute_prior_logits(self, token_samples_onehot_2d, token_samples_onehot_3d):
-        print(token_samples_onehot_2d.shape, token_samples_onehot_3d.shape)
         prior_latent_logits = self.compute_logits(token_samples_onehot_2d,
                                                   token_samples_onehot_3d)  # num_samples, batch, H2*W2 + H3*W3*D3, num_embedding2+num_embedding3
-        print(prior_latent_logits.shape)
         _, batch, H2, W2, _ = get_shape(token_samples_onehot_2d)
         _, batch, H3, W3, D3, _ = get_shape(token_samples_onehot_3d)
-        print((self.num_token_samples, batch, H2, W2,
-                                             self.discrete_image_vae.num_embedding))
-        print((self.num_token_samples, batch, H3, W3, D3,
-                                             self.discrete_voxel_vae.num_embedding))
         prior_latent_logits_2d = tf.reshape(prior_latent_logits[:, :, :H2 * W2, :self.discrete_image_vae.num_embedding],
                                             (self.num_token_samples, batch, H2, W2,
                                              self.discrete_image_vae.num_embedding))
-        prior_latent_logits_3d = tf.reshape(prior_latent_logits[:, :, H3 * W3 * D3:, self.discrete_voxel_vae.num_embedding:],
+        prior_latent_logits_3d = tf.reshape(prior_latent_logits[:, :, H2 * W2:, self.discrete_image_vae.num_embedding:],
                                             (self.num_token_samples, batch, H3, W3, D3,
                                              self.discrete_voxel_vae.num_embedding))
-        exit(0)
         return prior_latent_logits_2d, prior_latent_logits_3d
 
     def compute_forced_teacher_logits(self, y_onehot, z_onehot):
