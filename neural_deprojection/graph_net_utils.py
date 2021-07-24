@@ -1144,7 +1144,15 @@ def grid_graphs(graphs, voxels_per_dimension):
     positions = batched_graphs.nodes[..., :3]#num_graphs, n_node_per_graph, 3
     properties = batched_graphs.nodes[..., 3:]#num_graphs, n_node_per_graph, num_properties
 
+    #[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
     gridded_graphs = tf.vectorized_map(lambda args: grid_properties(*args, voxels_per_dimension), (positions, properties))#[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
+    #smooth out
+    filter = tf.ones((3, 3, 3, 1, 1)) / (3.*3.*3.)
+    #[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
+    gridded_graphs = tf.nn.conv3d(gridded_graphs,
+                       filters=filter,
+                       strides=1,
+                       padding='SAME')
     return gridded_graphs
 
 
