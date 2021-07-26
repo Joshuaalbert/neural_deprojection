@@ -281,14 +281,7 @@ class AutoRegressivePrior(AbstractModule):
     """
     This models an auto-regressive joint distribution, which is typically for modelling a prior.
 
-    We model a joint distribution P(x,z) with a variational distribution Q(x,z) and minimize the KL diverenge,
 
-    Q = minimize_Q KL( Q(x,z) || P(x,z) )
-    = minimize_Q KL( Q(y,z) || P(y,z|x2,x3) P(x2,x3) / P(x2,x3|y,z) )
-
-    which is equivalent to
-
-    Q = minimize E_{y,z ~ Q} [ log q(y,z|x2,x3) - log p(x2,x3|y,z) - log Q(y,z) ]
 
     This autoregressive models the creation of a set of nodes based on some pre-existing set of tokens.
     This is done by adding a set of nodes to the set of tokens for each graph, and incrementally populating them.
@@ -315,18 +308,16 @@ class AutoRegressivePrior(AbstractModule):
         super(AutoRegressivePrior, self).__init__(name=name)
         self.discrete_image_vae = discrete_image_vae
         self.discrete_voxel_vae = discrete_voxel_vae
-        assert self.discrete_image_vae.embedding_dim == self.discrete_voxel_vae.embedding_dim, \
-            f'Embedding dimensions of prior spaces must be the same, got {self.discrete_image_vae.embedding_dim} and {self.discrete_voxel_vae.embedding_dim}'
+        self.embedding_dim = embedding_dim
 
         self.starting_node_variable = tf.Variable(
-            initial_value=tf.random.truncated_normal((self.discrete_voxel_vae.embedding_dim,)),
+            initial_value=tf.random.truncated_normal((self.embedding_dim,)),
             name='starting_token_node')
         self.compute_temperature = compute_temperature
         self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
         self.num_token_samples = num_token_samples
 
         self.num_embedding = self.discrete_voxel_vae.num_embedding + self.discrete_image_vae.num_embedding
-        self.embedding_dim = self.discrete_image_vae.embedding_dim
 
         self.embeddings = tf.Variable(
             initial_value=tf.random.truncated_normal((self.num_embedding, self.embedding_dim)),
@@ -353,29 +344,72 @@ class AutoRegressivePrior(AbstractModule):
             initial_value=tf.random.truncated_normal((n_node, self.embedding_dim)),
             name='positional_encodings')
 
-    def _incrementally_decode(self, latent_tokens_2d):
+    @tf.function(input_signature=[tf.TensorSpec((None, None, None, None), tf.float32)])
+    def deproject_images(self, images):
         """
+        For a batch of images samples a 3D medium consistent with the image.
+
         Args:
-            latent_tokens_2d: [batch, H2, W2, embedding_dim]
+            images: [batch, H2, W2, C2]
 
         Returns:
-            GraphsTuple
+            mu, b: mean, uncertainty of images [batch, H3, W2, D3, C3]
         """
-        batch, H2, W2, _ = get_shape(latent_tokens_2d)
-        H3 = W3 = D3 = self.discrete_voxel_vae.voxels_per_dimension // 8
-        latent_tokens_3d = tf.zeros((batch, H3, W3, D3, self.embedding_dim))
-        concat_graphs = self.construct_concat_graph(latent_tokens_2d, latent_tokens_3d)
+        logits_2d = self.discrete_image_vae.compute_logits(images)#[batch, W2, H2, num_embeddings2]
+        dist_2d = tfp.distributions.OneHotCategorical(logits=logits_2d, dtype=images.dtype)
+        token_samples_onehot_2d = dist_2d.sample(1)#[1, batch, W2, H2, num_embeddings2]
+        token_samples_onehot_2d = token_samples_onehot_2d[0]#batch, W2, H2, num_embeddings2
+        token_samples_onehot_3d = self._incrementally_decode(token_samples_onehot_2d)#batch, H3,W3,D3, num_embedding3
+        latent_token_samples_3d = tf.einsum("bwhdn,nm->bwhdm", token_samples_onehot_3d,
+                                  self.discrete_voxel_vae.embeddings)  # [batch, W3, H3, D3, embedding_size3]
+        mu_3d, logb_3d = self.discrete_voxel_vae.compute_likelihood_parameters(latent_token_samples_3d[None])# [1, batch, H', W', D' C], [1, batch, H', W', D' C]_
+        mu_3d = mu_3d[0]
+        logb_3d = logb_3d[0]
+        b_3d = tf.math.exp(logb_3d)
+        return mu_3d, b_3d
 
-        def _core(output_token_idx, latent_graphs):
+
+    def _incrementally_decode(self, token_samples_onehot_2d):
+        """
+        Args:
+            token_samples_onehot_2d: [batch, H2, W2, num_embedding2]
+
+        Returns:
+            token_samples_onehot_3d: [batch, H3,W3,D3, num_embedding3]
+        """
+
+        batch, H2, W2, _ = get_shape(token_samples_onehot_2d)
+        H3 = W3 = D3 = self.discrete_voxel_vae.voxels_per_dimension // self.discrete_voxel_vae.shrink_factor
+
+        token_samples_onehot_2d = tf.reshape(token_samples_onehot_2d,
+                                             (batch, H2 * W2, self.discrete_image_vae.num_embedding))
+
+        N, _ = get_shape(self.positional_encodings)
+
+        # num_samples*batch, H2*W2, num_embedding2
+        latent_tokens_2d = tf.einsum("bne,ed->bnd", token_samples_onehot_2d,
+                                     self.embeddings[:self.discrete_image_vae.num_embedding, :])
+        #batch, H3*W3*D3, num_embedding3
+        output_token_samples_onehot_3d = tf.zeros((batch, H3*W3*D3, self.discrete_voxel_vae.num_embedding))
+
+
+        latent_tokens_3d = tf.zeros((batch, H3*W3*D3, self.embedding_dim))
+        concat_graphs = self.construct_concat_graph(latent_tokens_2d, latent_tokens_3d)
+        concat_graphs_data_dict = {key: value for key, value in concat_graphs._asdict().items() if value is not None}
+
+        def _core(output_token_idx, latent_graphs_data_dict, output_token_samples_onehot_3d):
             """
 
             Args:
                 output_token_idx: which element is being replaced
                 latent_graphs: GraphsTuple, nodes are [n_graphs * (H2*W2 + H3*W3*D3), embedding_size]
+                output_token_samples_onehot_3d: [batch, H3*W3*D3, num_embedding3]
 
             Returns:
 
             """
+
+            latent_graphs = GraphsTuple(**latent_graphs_data_dict, edges=None, globals=None)
             batched_latent_graphs = graph_batch_reshape(latent_graphs)
 
             latent_graphs = self._core(latent_graphs)
@@ -386,24 +420,43 @@ class AutoRegressivePrior(AbstractModule):
 
             # [batch, H2*W2 + H3*W3*D3, embedding_dim]
             # [batch, H2*W2 + H3*W3*D3, num_embedding2 + num_embedding3]
-            latent_tokens, latent_tokens_onehot = self.sample_latent(latent_logits, S=1)
+            prior_dist = tfp.distributions.OneHotCategorical(logits=latent_logits, dtype=latent_logits.dtype)
+            prior_token_samples_onehot = prior_dist.sample(1)# 1, batch, H2*W2 + H3 * W3*D3, num_embedding
+            prior_token_samples_onehot = prior_token_samples_onehot[0]#batch, H2*W2 + H3 * W3*D3, num_embedding
+            prior_token_samples_onehot_3d = prior_token_samples_onehot[:, H2*W2:, self.discrete_image_vae.num_embedding:]#batch, H3*W3*D3, num_embedding3
 
-            _mask = tf.range(H2 * W2 + H3 * W3 * D3) == output_token_idx  # [n_node_per_graph]
+            _mask = tf.range(H3 * W3 * D3) == output_token_idx  # [H3*W3*D3]
+
+            output_token_samples_onehot_3d = tf.where(_mask[None, :, None],
+                                                      prior_token_samples_onehot_3d,
+                                                      output_token_samples_onehot_3d
+                                                      )
+
+            prior_token_samples = tf.einsum("bne,ed->bnd",prior_token_samples_onehot, self.embeddings)#batch, H2*W2 + H3 * W3*D3, embedding_dim
+
+            _mask = tf.range(H2*W2 + H3 * W3 * D3) == H2*W2 + output_token_idx  # [H2*W2 + H3*W3*D3]
 
             latent_nodes = tf.where(_mask[None, :, None],
-                                    latent_tokens,
+                                    prior_token_samples,
                                     batched_latent_graphs.nodes)
             batched_latent_graphs = batched_latent_graphs.replace(nodes=latent_nodes)
             latent_graphs = graph_unbatch_reshape(batched_latent_graphs)
+            latent_graphs_data_dict = {key: value for key, value in latent_graphs._asdict().items() if
+                                       value is not None}
+            return (output_token_idx + 1, latent_graphs_data_dict, output_token_samples_onehot_3d)
 
-            return (output_token_idx + 1, latent_graphs)
 
-        _, latent_graphs = tf.while_loop(
-            cond=lambda output_token_idx, state: output_token_idx < (H2 * W2 + H3 * W3 * D3),
-            body=lambda output_token_idx, state: _core(output_token_idx, state),
-            loop_vars=(tf.convert_to_tensor(H2 * W2), concat_graphs))
 
-        return latent_graphs
+        _, latent_graphs_data_dict, output_token_samples_onehot_3d = tf.while_loop(
+            cond=lambda output_token_idx, _1, _2: output_token_idx < (H3 * W3 * D3),
+            body=_core,
+            loop_vars=(tf.convert_to_tensor(0), concat_graphs_data_dict, output_token_samples_onehot_3d))
+
+        # latent_graphs = GraphsTuple(**latent_graphs_data_dict, edges=None, globals=None)
+
+        output_token_samples_onehot_3d = tf.reshape(output_token_samples_onehot_3d,
+                                                    (batch, H3,W3,D3, self.discrete_voxel_vae.num_embedding))
+        return output_token_samples_onehot_3d
 
     def write_summary(self, images, graphs,
                       latent_logits_2d, latent_logits_3d,
@@ -628,22 +681,6 @@ class AutoRegressivePrior(AbstractModule):
         kl_term_2d = tf.reduce_sum(log_prob_q_2d - log_prob_prior_2d, axis=[-1, -2])
         kl_term_3d = tf.reduce_sum(log_prob_q_3d - log_prob_prior_3d, axis=[-1, -2, -3])
 
-        # log_token_samples_onehot_2d = tf.concat([log_token_samples_onehot_2d,
-        #                                          tf.fill((self.num_token_samples, batch, H2, W2,
-        #                                                   self.discrete_voxel_vae.num_embedding), -1e30)],
-        #                                         axis=-1)
-        # log_token_samples_onehot_3d = tf.concat(
-        #     [tf.fill((self.num_token_samples, batch, H3, W3, D3, self.discrete_image_vae.num_embedding), -1e30),
-        #      log_token_samples_onehot_3d],
-        #     axis=-1)
-        # # num_samples, batch, H2*W2 + H3*W3*D3, num_embedding2+num_embedding3
-        # log_token_samples_onehot = tf.concat(
-        #     [tf.reshape(log_token_samples_onehot_2d, (self.num_token_samples, batch, H2 * W2, self.num_embedding)),
-        #      tf.reshape(log_token_samples_onehot_3d,
-        #                 (self.num_token_samples, batch, H3 * W3 * D3, self.num_embedding))],
-        #     axis=-2)
-        # log_prob_prior = prior_dist.log_prob(log_token_samples_onehot)  # num_samples, batch, H2*W2 + H3*W3*D3
-
         return kl_term_2d, kl_term_3d, log_prob_prior_2d, log_prob_prior_3d
 
     def compute_prior_logits(self, token_samples_onehot_2d, token_samples_onehot_3d):
@@ -658,20 +695,6 @@ class AutoRegressivePrior(AbstractModule):
                                             (self.num_token_samples, batch, H3, W3, D3,
                                              self.discrete_voxel_vae.num_embedding))
         return prior_latent_logits_2d, prior_latent_logits_3d
-
-    def compute_forced_teacher_logits(self, y_onehot, z_onehot):
-        # batch, H2, W2, embedding_dim
-        y_embedding = tf.einsum("bhwn,ne->bhwe",
-                                y_onehot,
-                                self.embeddings[:self.discrete_image_vae.num_embedding, :])
-        #  batch, H3, W3, D3, embedding_dim
-        z_embedding = tf.einsum("bhwdn,ne->bhwde",
-                                z_onehot,
-                                self.embeddings[self.discrete_image_vae.num_embedding:, :])
-        # auto-regressively model each draw from posterior
-        # [batch, H2*W2 + H3*W3*D3, num_embedding2 + num_embedding3]
-        joint_logits = self.compute_logits(y_embedding, z_embedding)
-        return joint_logits
 
     def compute_logits(self, token_samples_onehot_2d, token_samples_onehot_3d):
         """
@@ -698,10 +721,8 @@ class AutoRegressivePrior(AbstractModule):
         latent_tokens_3d = tf.einsum("bne,ed->bnd", token_samples_onehot_3d,
                                      self.embeddings[self.discrete_image_vae.num_embedding:, :])
 
-        if token_samples_onehot_3d is not None:
-            latent_graphs = self.forced_teacher_model(latent_tokens_2d, latent_tokens_3d)
-        else:
-            latent_graphs = self._incrementally_decode(latent_tokens_2d)
+        latent_graphs = self.forced_teacher_model(latent_tokens_2d, latent_tokens_3d)
+
         latent_graphs = graph_batch_reshape(latent_graphs)
         latent_logits = latent_graphs.nodes  # batch, H2*W2 + H3 * W3*D3, num_embedding
 

@@ -1151,7 +1151,7 @@ def grid_graphs(graphs, voxels_per_dimension):
     #[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
     gridded_graphs = tf.nn.conv3d(gridded_graphs,
                        filters=filter,
-                       strides=1,
+                       strides=[1,1,1,1,1],
                        padding='SAME')
     return gridded_graphs
 

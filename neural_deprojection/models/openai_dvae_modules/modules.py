@@ -27,9 +27,9 @@ class EncoderResBlock2D(AbstractModule):
 
 
 class Encoder2D(AbstractModule):
-    def __init__(self, hidden_size, num_embeddings, name=None):
+    def __init__(self, hidden_size, num_embeddings, num_groups=4, name=None):
         super(Encoder2D, self).__init__(name=name)
-        num_groups = 4
+        self.shrink_factor = 2 ** (num_groups - 1)
         num_blk_per_group = 1
         num_layers = num_groups * num_blk_per_group
         post_gain = 1. / num_layers ** 2
@@ -91,9 +91,9 @@ def upsample(x):
 
 
 class Decoder2D(AbstractModule):
-    def __init__(self, hidden_size, num_channels=1, name=None):
+    def __init__(self, hidden_size, num_channels=1, num_groups=4, name=None):
         super(Decoder2D, self).__init__(name=name)
-        num_groups = 4
+        self.shrink_factor = 2 ** (num_groups - 1)
         num_blk_per_group = 1
         num_layers = num_groups * num_blk_per_group
         post_gain = 1. / num_layers ** 2
@@ -140,9 +140,9 @@ class DecoderResBlock3D(AbstractModule):
         return output
 
 class Decoder3D(AbstractModule):
-    def __init__(self, hidden_size, num_channels=1, name=None):
+    def __init__(self, hidden_size, num_channels=1, num_groups=4, name=None):
         super(Decoder3D, self).__init__(name=name)
-        num_groups = 4
+        self.shrink_factor = 2**(num_groups-1)
         num_blk_per_group = 1
         num_layers = num_groups * num_blk_per_group
         post_gain = 1. / num_layers ** 2
@@ -195,9 +195,9 @@ class EncoderResBlock3D(AbstractModule):
 
 
 class Encoder3D(AbstractModule):
-    def __init__(self, hidden_size, num_embeddings, name=None):
+    def __init__(self, hidden_size, num_embeddings, num_groups=4, name=None):
         super(Encoder3D, self).__init__(name=name)
-        num_groups = 4
+        self.shrink_factor = 2**(num_groups-1)
         num_blk_per_group = 1
         num_layers = num_groups * num_blk_per_group
         post_gain = 1. / num_layers ** 2

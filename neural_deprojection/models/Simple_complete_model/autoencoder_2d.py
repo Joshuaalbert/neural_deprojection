@@ -26,6 +26,9 @@ class DiscreteImageVAE(AbstractModule):
         self._encoder = Encoder2D(hidden_size=hidden_size, num_embeddings=num_embedding, name='EncoderImage')
         self._decoder = Decoder2D(hidden_size=hidden_size, num_channels=num_channels, name='DecoderImage')
 
+        assert self._encoder.shrink_factor == self._decoder.shrink_factor, "Shrink factors should be same. Use same num_groups."
+        self.shrink_factor = self._decoder.shrink_factor
+
     @property
     def temperature(self):
         return self.compute_temperature(self.epoch)

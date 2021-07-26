@@ -7,6 +7,7 @@ import os
 import tensorflow as tf
 import json
 import pylab as plt
+import numpy as np
 import sonnet as snt
 
 MODEL_MAP = {'auto_regressive_prior': AutoRegressivePrior,
@@ -176,6 +177,7 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
                           save_model_dir=checkpoint_dir,
                           variables=trainable_variables,
                           debug=False)
+    return train_one_epoch.model, checkpoint_dir
 
 
 def main():
@@ -192,6 +194,7 @@ def main():
     kwargs = dict(num_token_samples=4,
                   compute_temperature=get_temp,
                   beta=1.)
+    # set num_epochs=0 to load but not train
     discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(config, kwargs, num_epochs=0)
 
     print("Training the discrete voxel VAE.")
@@ -207,6 +210,7 @@ def main():
     kwargs = dict(num_token_samples=4,
                   compute_temperature=get_temp,
                   beta=1.)
+    # set num_epochs=0 to load but not train
     discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(config, kwargs, num_epochs=0)
 
     print("Training auto-regressive prior.")
@@ -217,18 +221,51 @@ def main():
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
 
-    # # can load checkpoints if desired.
-    # discrete_image_vae, discrete_voxel_vae = load_checkpoints('/home/albert/git/neural_deprojection/neural_deprojection/models/Simple_complete_model/complete_model/checkpointing/|disc_image_vae||embddngdm=64,hddnsz=32,nmchnnls=1,nmembddng=16||lrnngrt=1.0e-03,opttyp=adam|||',
-    #                                                           '/home/albert/git/neural_deprojection/neural_deprojection/models/Simple_complete_model/complete_model/checkpointing/|disc_voxel_vae||embddngdm=64,hddnsz=4,nmchnnls=1,nmembddng=16,vxlsprdmnsn=32||lrnngrt=1.0e-03,opttyp=adam|||')
-
     get_temp = temperature_schedule(discrete_image_vae.num_embedding + discrete_voxel_vae.num_embedding, 15)
     kwargs = dict(discrete_image_vae=discrete_image_vae,
                   discrete_voxel_vae=discrete_voxel_vae,
                   num_token_samples=4,
                   compute_temperature=get_temp,
                   beta=1.)
+    # set num_epochs=0 to load but not train
+    autoregressive_prior, autoregressive_prior_checkpoint = train_auto_regressive_prior(config, kwargs, num_epochs=0)
 
-    train_auto_regressive_prior(config, kwargs, num_epochs=25)
+    print("Evaluating auto-regressive prior")
+    evaluate_auto_regressive_prior(autoregressive_prior, 'eval_dir')
+
+
+def evaluate_auto_regressive_prior(autoregressive_prior: AutoRegressivePrior, output_dir):
+    dataset = build_example_dataset(10, batch_size=1, num_blobs=5, num_nodes=64 ** 3, image_dim=256)
+    tf_grid_graphs = tf.function(
+        lambda graphs: grid_graphs(graphs, autoregressive_prior.discrete_voxel_vae.voxels_per_dimension))
+    fig_dir = os.path.join(output_dir, 'evaluated_pairs')
+    os.makedirs(fig_dir, exist_ok=True)
+    pair_idx = 0
+    for (graphs, images) in iter(dataset):
+        actual_voxels = tf_grid_graphs(graphs)
+        actual_voxels = actual_voxels.numpy()
+
+        plt.imshow(images.numpy()[0,:,:,0])
+        plt.show()
+
+        # batch, H,W,D,C
+        mu_3d, b_3d = autoregressive_prior.deproject_images(images)
+        mu_3d = mu_3d.numpy()
+        b_3d = b_3d.numpy()
+
+        plt.imshow(mu_3d[0, :, :, 16, 0:1])
+        plt.show()
+        plt.imshow(b_3d[0, :, :, 16, 0:1])
+        plt.show()
+
+        for _actual_voxels, _mu_3d, _b_3d, _image in zip(actual_voxels, mu_3d, b_3d, images):
+            np.savez(os.path.join(fig_dir, "evaluation_{:05}.npz".format(pair_idx)),
+                     actual_voxels=_actual_voxels,
+                     mu_3d=_mu_3d,
+                     b_3d=_b_3d,
+                     image=_image)
+            pair_idx += 1
+        break
 
 
 def load_checkpoints(discrete_image_vae_checkpoint, discrete_voxel_vae_checkpoint):
