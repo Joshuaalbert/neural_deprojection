@@ -14,6 +14,10 @@ MODEL_MAP = {'auto_regressive_prior': AutoRegressivePrior,
              'disc_image_vae': DiscreteImageVAE,
              'disc_voxel_vae': DiscreteVoxelsVAE}
 
+def build_dataset():
+    dataset = build_example_dataset(1000, batch_size=2, num_blobs=20, num_nodes=64 ** 3, image_dim=256)
+    return dataset
+
 
 def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters, strategy=None,
                    **kwargs) -> TrainOneEpoch:
@@ -47,7 +51,7 @@ def train_discrete_image_vae(config, kwargs, num_epochs=100):
     # with strategy.scope():
     train_one_epoch = build_training(**config, **kwargs)
 
-    dataset = build_example_dataset(1000, batch_size=2, num_blobs=5, num_nodes=64 ** 3, image_dim=256)
+    dataset = build_dataset()
 
     # show example of image
     # for graphs, image in iter(dataset):
@@ -89,7 +93,7 @@ def train_discrete_voxel_vae(config, kwargs, num_epochs=100):
     # with strategy.scope():
     train_one_epoch = build_training(**config, **kwargs)
 
-    dataset = build_example_dataset(1000, batch_size=2, num_blobs=5, num_nodes=64 ** 3, image_dim=256)
+    dataset = build_dataset()
 
     # the model will call grid_graphs internally to learn the 3D autoencoder.
     # we show here what that produces from a batch of graphs.
@@ -135,7 +139,7 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
     # with strategy.scope():
     train_one_epoch = build_training(**config, **kwargs)
 
-    dataset = build_example_dataset(1000, batch_size=2, num_blobs=5, num_nodes=64 ** 3, image_dim=256)
+    dataset = build_dataset()
 
     # the model will call grid_graphs internally to learn the 3D autoencoder.
     # we show here what that produces from a batch of graphs.
@@ -183,7 +187,7 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
 def main():
     print("Training the discrete image VAE")
     config = dict(model_type='disc_image_vae',
-                  model_parameters=dict(embedding_dim=64,  # 64
+                  model_parameters=dict(embedding_dim=16,  # 64
                                         num_embedding=16,  # 1024
                                         hidden_size=32,
                                         num_channels=1
@@ -199,8 +203,8 @@ def main():
 
     print("Training the discrete voxel VAE.")
     config = dict(model_type='disc_voxel_vae',
-                  model_parameters=dict(voxels_per_dimension=4 * 8,
-                                        embedding_dim=64,  # 64
+                  model_parameters=dict(voxels_per_dimension=8 * 8,
+                                        embedding_dim=16,  # 64
                                         num_embedding=16,  # 1024
                                         hidden_size=4,
                                         num_channels=1),
@@ -216,7 +220,8 @@ def main():
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
                   model_parameters=dict(num_heads=1,
-                                        num_layers=1
+                                        num_layers=1,
+                                        embedding_dim=24
                                         ),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
@@ -224,7 +229,7 @@ def main():
     get_temp = temperature_schedule(discrete_image_vae.num_embedding + discrete_voxel_vae.num_embedding, 15)
     kwargs = dict(discrete_image_vae=discrete_image_vae,
                   discrete_voxel_vae=discrete_voxel_vae,
-                  num_token_samples=4,
+                  num_token_samples=1,
                   compute_temperature=get_temp,
                   beta=1.)
     # set num_epochs=0 to load but not train
@@ -235,7 +240,8 @@ def main():
 
 
 def evaluate_auto_regressive_prior(autoregressive_prior: AutoRegressivePrior, output_dir):
-    dataset = build_example_dataset(10, batch_size=1, num_blobs=5, num_nodes=64 ** 3, image_dim=256)
+    dataset = dataset = build_dataset()
+
     tf_grid_graphs = tf.function(
         lambda graphs: grid_graphs(graphs, autoregressive_prior.discrete_voxel_vae.voxels_per_dimension))
     fig_dir = os.path.join(output_dir, 'evaluated_pairs')
