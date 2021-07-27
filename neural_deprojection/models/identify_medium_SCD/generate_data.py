@@ -437,6 +437,7 @@ def decode_examples(record_bytes, node_shape=None, image_shape=None, k=None):
     """
     Decodes raw bytes as returned from tf.data.TFRecordDataset([example_path]) into a GraphTuple and image
     Args:
+        k: number of nearest neighbours
         record_bytes: raw bytes
         node_shape: shape of nodes if known.
         edge_shape: shape of edges if known.
@@ -459,7 +460,7 @@ def decode_examples(record_bytes, node_shape=None, image_shape=None, k=None):
             # **feature_to_graph_tuple('graph')
         )
     )
-    idx =  tf.io.parse_tensor(parsed_example['idx'], tf.int32)
+    idx = tf.io.parse_tensor(parsed_example['idx'], tf.int32)
     idx.set_shape([None] + [k + 1])
     graph_nodes = tf.io.parse_tensor(parsed_example['virtual_properties'], tf.float32)
     graph_nodes.set_shape([None] + list(node_shape))
@@ -486,13 +487,37 @@ def decode_examples(record_bytes, node_shape=None, image_shape=None, k=None):
     n_node = tf.shape(graph_nodes)[0:1]
     n_edge = tf.shape(senders_both_directions)[0:1]
 
+    # property_names = ['x', 'y', 'z', 'velocity_x', 'velocity_y', 'velocity_z', 'gravitational_potential',
+    #                   'density', 'temperature', 'cell_mass', 'cell_volume']
+
+    print('before', graph_nodes.shape)
+
+    mask = tf.constant([True, True, True,   # mask for density
+                        False, False, False,
+                        False,
+                        True,
+                        False, False, False], dtype=tf.bool)
+
+    graph_nodes = tf.boolean_mask(graph_nodes, mask, axis=1)
+    graph_nodes.set_shape([None, 4])
+
+    print('after', graph_nodes.shape)
+
+    # graph_data_dict = dict(nodes=graph_nodes,
+    #                        edges=tf.zeros((n_edge[0], 1)),
+    #                        globals=tf.zeros([1, 1]),
+    #                        receivers=receivers_both_directions,
+    #                        senders=senders_both_directions,
+    #                        n_node=n_node,
+    #                        n_edge=n_edge)
+
     graph_data_dict = dict(nodes=graph_nodes,
-                           edges=tf.zeros((n_edge[0], 1)),
-                           globals=tf.zeros([1]),
-                           receivers=receivers_both_directions,
-                           senders=senders_both_directions,
+                           # edges=tf.zeros((n_edge[0], 1)),
+                           # globals=tf.zeros([1, 1]),
+                           # receivers=receivers_both_directions,
+                           # senders=senders_both_directions,
                            n_node=n_node,
-                           n_edge=n_edge)
+                           n_edge=tf.zeros_like(n_node))
 
     return (graph_data_dict, image, snapshot, projection, extra_info)
 
