@@ -310,9 +310,6 @@ class AutoRegressivePrior(AbstractModule):
         self.discrete_voxel_vae = discrete_voxel_vae
         self.embedding_dim = embedding_dim
 
-        self.starting_node_variable = tf.Variable(
-            initial_value=tf.random.truncated_normal((self.embedding_dim,)),
-            name='starting_token_node')
         self.compute_temperature = compute_temperature
         self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
         self.num_token_samples = num_token_samples
@@ -338,7 +335,7 @@ class AutoRegressivePrior(AbstractModule):
         return self.compute_temperature(self.epoch)
 
     @once.once
-    def initialize(self, nodes):
+    def initialize_positional_encodings(self, nodes):
         _, n_node, _ = get_shape(nodes)
         self.positional_encodings = tf.Variable(
             initial_value=tf.random.truncated_normal((n_node, self.embedding_dim)),
@@ -433,6 +430,7 @@ class AutoRegressivePrior(AbstractModule):
                                                       )
 
             prior_token_samples = tf.einsum("bne,ed->bnd",prior_token_samples_onehot, self.embeddings)#batch, H2*W2 + H3 * W3*D3, embedding_dim
+            prior_token_samples += self.positional_encodings
 
             _mask = tf.range(H2*W2 + H3 * W3 * D3) == H2*W2 + output_token_idx  # [H2*W2 + H3*W3*D3]
 
@@ -764,7 +762,7 @@ class AutoRegressivePrior(AbstractModule):
                            # tf.tile(self.starting_node_variable[None, None, :], [G, 1, 1]),
                            latent_tokens_3d], axis=1)
 
-        self.initialize(nodes)
+        self.initialize_positional_encodings(nodes)
         nodes = nodes + self.positional_encodings
         n_node = tf.fill([G], N)
         n_edge = tf.zeros_like(n_node)
