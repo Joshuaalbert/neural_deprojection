@@ -440,7 +440,7 @@ class AutoRegressivePrior(AbstractModule):
 
 
         _, token_samples_onehot_3d = tf.while_loop(
-            cond=lambda output_token_idx, _1, _2: output_token_idx < (H3 * W3 * D3),
+            cond=lambda output_token_idx, _: output_token_idx < (H3 * W3 * D3),
             body=_core,
             loop_vars=(tf.convert_to_tensor(0), token_samples_onehot_3d))
 
