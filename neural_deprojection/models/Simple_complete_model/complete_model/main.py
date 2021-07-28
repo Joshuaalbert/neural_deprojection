@@ -187,8 +187,8 @@ def main():
 
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
-                  model_parameters=dict(num_heads=3,
-                                        num_layers=2,
+                  model_parameters=dict(num_heads=1,
+                                        num_layers=1,
                                         embedding_dim=64
                                         ),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
