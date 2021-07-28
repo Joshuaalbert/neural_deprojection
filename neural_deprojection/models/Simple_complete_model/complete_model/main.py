@@ -214,15 +214,15 @@ def evaluate_auto_regressive_prior(autoregressive_prior: AutoRegressivePrior, ou
     pair_idx = 0
     for (graphs, images) in iter(dataset):
         actual_voxels = tf_grid_graphs(graphs)
-        dvae_logits_3d = autoregressive_prior.discrete_voxel_vae.compute_logits(graphs)
-        dvae_logits_3d = tf.reshape(dvae_logits_3d,
-                                    (-1, 8**3, autoregressive_prior.discrete_voxel_vae.num_embedding))
-        plt.imshow(dvae_logits_3d[0], aspect='auto', interpolation='nearest')
-        plt.show()
+        # dvae_logits_3d = autoregressive_prior.discrete_voxel_vae.compute_logits(graphs)
+        # dvae_logits_3d = tf.reshape(dvae_logits_3d,
+        #                             (-1, 8**3, autoregressive_prior.discrete_voxel_vae.num_embedding))
+        # plt.imshow(dvae_logits_3d[0], aspect='auto', interpolation='nearest')
+        # plt.show()
         actual_voxels = actual_voxels.numpy()
 
         # batch, H,W,D,C
-        mu_3d, b_3d = autoregressive_prior._deproject_images(images)
+        mu_3d, b_3d = autoregressive_prior.deproject_images(images)
         mu_3d = mu_3d.numpy()
         b_3d = b_3d.numpy()
 

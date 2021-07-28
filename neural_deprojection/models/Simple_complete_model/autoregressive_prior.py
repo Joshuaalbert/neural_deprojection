@@ -216,6 +216,7 @@ class TransformerLayer(AbstractModule):
 
     def _build(self, latent):
         self.initialize(latent)
+        n_node, _ = get_shape(latent.nodes)
         node_values = self.v_linear(latent.nodes)
         node_keys = self.k_linear(latent.nodes)
         node_queries = self.q_linear(latent.nodes)  # n_node, num_head, F
@@ -230,7 +231,6 @@ class TransformerLayer(AbstractModule):
                                               node_queries=node_queries,
                                               attention_graph=latent)
         # n_nodes, heads, output_size -> n_nodes, heads*output_size
-        n_node, _, _ = get_shape(attended_latent.nodes)
         output_nodes = tf.reshape(attended_latent.nodes, (n_node, self.num_heads * self.input_node_size))
         output_nodes = self.ln1(self.output_linear(output_nodes) + latent.nodes)
         output_nodes = self.ln2(self.FFN(output_nodes))
@@ -247,8 +247,8 @@ class SelfAttentionMessagePassing(AbstractModule):
     def __init__(self, num_heads: int = 1, use_edges=False, use_globals=False, name=None):
         super(SelfAttentionMessagePassing, self).__init__(name=name)
         self.selfattention_core = TransformerLayer(num_heads=num_heads)
-        # self.layer_norm1 = snt.LayerNorm(-1, True, True, name='layer_norm_edges')
-        # self.layer_norm2 = snt.LayerNorm(-1, True, True, name='layer_norm_nodes')
+        self.layer_norm1 = snt.LayerNorm(-1, True, True, name='layer_norm_edges')
+        self.layer_norm2 = snt.LayerNorm(-1, True, True, name='layer_norm_nodes')
         self.use_globals = use_globals
         self.use_edges = use_edges
 
@@ -275,12 +275,12 @@ class SelfAttentionMessagePassing(AbstractModule):
                                            use_globals=self.use_globals)
 
     def _build(self, graphs: GraphsTuple):
-        # self.initialize(graphs)
+        self.initialize(graphs)
         latent_graphs = self.selfattention_core(graphs)
-        # latent_graphs = self.edge_block(latent_graphs)
-        # latent_graphs = latent_graphs.replace(edges=self.layer_norm1(latent_graphs.edges))
-        # latent_graphs = self.node_block(latent_graphs)
-        # latent_graphs = latent_graphs.replace(nodes=self.layer_norm2(latent_graphs.nodes))
+        latent_graphs = self.edge_block(latent_graphs)
+        latent_graphs = latent_graphs.replace(edges=self.layer_norm1(latent_graphs.edges))
+        latent_graphs = self.node_block(latent_graphs)
+        latent_graphs = latent_graphs.replace(nodes=self.layer_norm2(latent_graphs.nodes))
         return latent_graphs
 
 
