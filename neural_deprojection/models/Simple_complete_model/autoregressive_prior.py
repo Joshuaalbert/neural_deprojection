@@ -693,7 +693,7 @@ class AutoRegressivePrior(AbstractModule):
                                      self.embeddings[:self.discrete_image_vae.num_embedding, :])
         # num_samples*batch, H3*W3*D3, num_embedding3
         latent_tokens_3d = tf.einsum("bne,ed->bnd", token_samples_onehot_3d,
-                                     self.embeddings[self.discrete_image_vae.num_embedding, :])
+                                     self.embeddings[self.discrete_image_vae.num_embedding:, :])
 
         latent_graphs = self.forced_teacher_model(latent_tokens_2d, latent_tokens_3d)
 
