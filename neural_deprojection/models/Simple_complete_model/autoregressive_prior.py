@@ -734,7 +734,7 @@ class AutoRegressivePrior(AbstractModule):
         """
         G, N2, _ = get_shape(latent_tokens_2d)
         G, N3, _ = get_shape(latent_tokens_3d)
-        N = N2 + N3
+        N = N2 + N3 + 1
         # start_2d_token = self.embeddings[-3,:]
         # start_3d_token = self.embeddings[-2,:]
         # nodes = tf.concat([tf.tile(start_2d_token, (G, 1, 1)),
