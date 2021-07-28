@@ -424,9 +424,10 @@ class AutoRegressivePrior(AbstractModule):
             latent_graphs = self._core(latent_graphs)
             latent_graphs = graph_batch_reshape(latent_graphs)
             latent_logits = latent_graphs.nodes  # batch, H2*W2 + H3 * W3*D3, num_embedding2+num_embedding3
+            latent_logits /= 1e-6 + tf.math.reduce_std(latent_logits, axis=-1, keepdims=True)
+            latent_logits -= tf.reduce_logsumexp(latent_logits, axis=-1, keepdims=True)
+
             latent_logits_3d = latent_logits[:, H2*W2:, self.discrete_image_vae.num_embedding:] #batch, H3*W3*D3, num_embedding3
-            latent_logits_3d /= 1e-5 + tf.math.reduce_std(latent_logits_3d, axis=-1, keepdims=True)
-            latent_logits_3d -= tf.reduce_logsumexp(latent_logits_3d, axis=-1, keepdims=True)
 
             # [batch, H3*W3*D3, embedding_dim]
             # [batch, H3*W3*D3, num_embedding2 + num_embedding3]
@@ -739,7 +740,7 @@ class AutoRegressivePrior(AbstractModule):
 
         latent_logits = tf.reshape(latent_logits, (self.num_token_samples, batch, H2 * W2 + H3 * W3 * D3,
                                                    self.num_embedding))  # batch, H2*W2 + H3 * W3*D3, num_embedding
-        latent_logits /= 1e-5 + tf.math.reduce_std(latent_logits, axis=-1, keepdims=True)
+        latent_logits /= 1e-6 + tf.math.reduce_std(latent_logits, axis=-1, keepdims=True)
         latent_logits -= tf.reduce_logsumexp(latent_logits, axis=-1, keepdims=True)
         return latent_logits
 
