@@ -281,18 +281,7 @@ class AutoRegressivePrior(AbstractModule):
     """
     This models an auto-regressive joint distribution, which is typically for modelling a prior.
 
-
-
-    This autoregressive models the creation of a set of nodes based on some pre-existing set of tokens.
-    This is done by adding a set of nodes to the set of tokens for each graph, and incrementally populating them.
-    To do this, an artificial ordering must be imposed on the nodes.
-
-    Args:
-        num_output: number of new nodes to map to for each graph.
-        node_size: size of the nodes during computation. Input nodes will be projected to this size.
-        edge_size: size of edges during computation.
-        global_size: size of global during computation.
-
+    Minimizes KL(q(z_2d, z_3d | x_2d, x_3d) || p(z_2d, z_3d)) for p(z_2d, z_3d) which is an auto-regressive model.
     """
 
     def __init__(self,
@@ -300,7 +289,6 @@ class AutoRegressivePrior(AbstractModule):
                  discrete_voxel_vae: DiscreteVoxelsVAE,
                  num_heads: int = 1,
                  num_layers: int = 1,
-                 compute_temperature: callable = None,
                  embedding_dim: int = 16,
                  beta: float = 1.,
                  num_token_samples: int = 1,
@@ -309,11 +297,7 @@ class AutoRegressivePrior(AbstractModule):
         self.discrete_image_vae = discrete_image_vae
         self.discrete_voxel_vae = discrete_voxel_vae
         self.embedding_dim = embedding_dim
-
-        self.compute_temperature = compute_temperature
-        self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
         self.num_token_samples = num_token_samples
-
         self.num_embedding = self.discrete_voxel_vae.num_embedding + self.discrete_image_vae.num_embedding
 
         self.embeddings = tf.Variable(
@@ -473,12 +457,14 @@ class AutoRegressivePrior(AbstractModule):
     def write_summary(self, images, graphs,
                       latent_logits_2d, latent_logits_3d,
                       token_samples_onehot_2d, token_samples_onehot_3d,
-                      latent_tokens_2d, latent_tokens_3d,
                       prior_latent_logits_2d, prior_latent_logits_3d,
                       kl_term_2d, kl_term_3d):
 
         kl_div_2d = tf.reduce_mean(kl_term_2d, axis=0)  # [batch]
         kl_div_3d = tf.reduce_mean(kl_term_3d, axis=0)  # [batch]
+
+        latent_tokens_2d = tf.einsum('sbhwd,de->sbhwe', token_samples_onehot_2d, self.discrete_image_vae.embeddings)
+        latent_tokens_3d = tf.einsum('sbhwdn,ne->sbhwde', token_samples_onehot_3d, self.discrete_voxel_vae.embeddings)
 
         mu_2d, logb_2d = self.discrete_image_vae.compute_likelihood_parameters(
             latent_tokens_2d)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
@@ -502,17 +488,21 @@ class AutoRegressivePrior(AbstractModule):
         perplexity_3d = 2. ** (entropy_3d / tf.math.log(2.))  #
         mean_perplexity_3d = tf.reduce_mean(perplexity_3d)  # scalar
 
-        log_token_samples_onehot_2d_prior, token_samples_onehot_2d_prior, latent_tokens_2d_prior = self.discrete_image_vae.sample_latent(
-            prior_latent_logits_2d[0],
-            self.temperature,
-            self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
+        prior_dist_2d = tfp.distributions.OneHotCategorical(logits=prior_latent_logits_2d[0],
+                                                            dtype=prior_latent_logits_2d.dtype)
+        token_samples_onehot_2d_prior = prior_dist_2d.sample(1) #[num_samples, batch, H, W, num_embeddings]
+        latent_tokens_2d_prior = tf.einsum("sbhwe,ed->sbhwd",token_samples_onehot_2d_prior,
+                                           self.discrete_image_vae.embeddings)
+
+        prior_dist_3d = tfp.distributions.OneHotCategorical(logits=prior_latent_logits_3d[0],
+                                                            dtype=prior_latent_logits_3d.dtype)
+        token_samples_onehot_3d_prior = prior_dist_3d.sample(1)  # [num_samples, batch, H, W, num_embeddings]
+        latent_tokens_3d_prior = tf.einsum("sbhwde,en->sbhwdn", token_samples_onehot_3d_prior,
+                                           self.discrete_voxel_vae.embeddings)
+
         mu_2d_prior, logb_2d_prior = self.discrete_image_vae.compute_likelihood_parameters(
             latent_tokens_2d_prior)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
 
-        log_token_samples_onehot_3d_prior, token_samples_onehot_3d_prior, latent_tokens_3d_prior = self.discrete_voxel_vae.sample_latent(
-            prior_latent_logits_3d[0],
-            self.temperature,
-            self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
         mu_3d_prior, logb_3d_prior = self.discrete_voxel_vae.compute_likelihood_parameters(
             latent_tokens_3d_prior)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
 
@@ -524,10 +514,6 @@ class AutoRegressivePrior(AbstractModule):
         tf.summary.scalar('kl_div_3d', tf.reduce_mean(kl_div_3d), step=self.step)
         tf.summary.scalar('var_exp', tf.reduce_mean(var_exp), step=self.step)
         tf.summary.scalar('kl_div', tf.reduce_mean(kl_div_2d + kl_div_3d), step=self.step)
-        tf.summary.scalar('temperature_2d', self.discrete_image_vae.temperature, step=self.step)
-        tf.summary.scalar('temperature_3d', self.discrete_voxel_vae.temperature, step=self.step)
-        tf.summary.scalar('temperature', self.temperature, step=self.step)
-        tf.summary.scalar('beta', self.beta, step=self.step)
 
         projected_mu = tf.reduce_sum(mu_3d[0], axis=-2)  # [batch, H', W', C]
         projected_mu_prior = tf.reduce_sum(mu_3d_prior[0], axis=-2)  # [batch, H', W', C]
@@ -637,26 +623,23 @@ class AutoRegressivePrior(AbstractModule):
     def _build(self, graphs, images):
 
         latent_logits_2d = self.discrete_image_vae.compute_logits(images)  # [batch, H, W, num_embeddings]
-        log_token_samples_onehot_2d, token_samples_onehot_2d, latent_tokens_2d = self.discrete_image_vae.sample_latent(
-            latent_logits_2d,
-            self.discrete_image_vae.temperature,
-            self.num_token_samples)  # [num_samples, batch, H, W, num_embeddings], [num_samples, batch, H, W, embedding_size]
+        q_dist_2d = tfp.distributions.OneHotCategorical(logits=latent_logits_2d, dtype=latent_logits_2d.dtype)
+        token_samples_onehot_2d = q_dist_2d.sample(self.num_token_samples)# [num_samples, batch, H, W, num_embeddings]
+        entropy_2d = -tf.reduce_sum(token_samples_onehot_2d * latent_logits_2d, axis=-1)
 
         latent_logits_3d = self.discrete_voxel_vae.compute_logits(graphs)  # [batch, H, W, D, num_embeddings]
-        log_token_samples_onehot_3d, token_samples_onehot_3d, latent_tokens_3d = self.discrete_voxel_vae.sample_latent(
-            latent_logits_3d,
-            self.discrete_voxel_vae.temperature,
-            self.num_token_samples)  # [num_samples, batch, H, W, D, num_embeddings], [num_samples, batch, H, W, D, embedding_size]
+        q_dist_3d = tfp.distributions.OneHotCategorical(logits=latent_logits_3d, dtype=latent_logits_3d.dtype)
+        token_samples_onehot_3d = q_dist_3d.sample(self.num_token_samples)  # [num_samples, batch, H, W, D, num_embeddings]
+        entropy_3d = -tf.reduce_sum(token_samples_onehot_3d * latent_logits_3d, axis=-1)
+
 
         prior_latent_logits_2d, prior_latent_logits_3d = self.compute_prior_logits(token_samples_onehot_2d,
                                                                                    token_samples_onehot_3d)
+        cross_entropy_2d = -tf.reduce_sum(token_samples_onehot_2d * prior_latent_logits_2d, axis=-1)
+        cross_entropy_3d = -tf.reduce_sum(token_samples_onehot_3d * prior_latent_logits_3d, axis=-1)
 
-        kl_term_2d, kl_term_3d, log_prob_prior_2d, log_prob_prior_3d = self.compute_kl_term(latent_logits_2d,
-                                                                                            latent_logits_3d,
-                                                                                            log_token_samples_onehot_2d,
-                                                                                            log_token_samples_onehot_3d,
-                                                                                            prior_latent_logits_2d,
-                                                                                            prior_latent_logits_3d)
+        kl_term_2d = tf.reduce_sum(cross_entropy_2d - entropy_2d, axis=[-1,-2])
+        kl_term_3d = tf.reduce_sum(cross_entropy_3d - entropy_3d, axis=[-1,-2,-3])
 
         kl_term = kl_term_2d + kl_term_3d  # [num_samples, batch]
 
@@ -670,30 +653,10 @@ class AutoRegressivePrior(AbstractModule):
             self.write_summary(images, graphs,
                       latent_logits_2d, latent_logits_3d,
                       token_samples_onehot_2d, token_samples_onehot_3d,
-                      latent_tokens_2d, latent_tokens_3d,
                       prior_latent_logits_2d, prior_latent_logits_3d,
                       kl_term_2d, kl_term_3d)
 
         return dict(loss=loss)
-
-    def compute_kl_term(self, latent_logits_2d, latent_logits_3d, log_token_samples_onehot_2d,
-                        log_token_samples_onehot_3d, prior_latent_logits_2d, prior_latent_logits_3d):
-        q_dist_2d = tfp.distributions.ExpRelaxedOneHotCategorical(self.discrete_image_vae.temperature,
-                                                                  logits=latent_logits_2d)
-        log_prob_q_2d = q_dist_2d.log_prob(log_token_samples_onehot_2d)  # num_samples, batch, H2, W2
-        q_dist_3d = tfp.distributions.ExpRelaxedOneHotCategorical(self.discrete_voxel_vae.temperature,
-                                                                  logits=latent_logits_3d)
-        log_prob_q_3d = q_dist_3d.log_prob(log_token_samples_onehot_3d)  # num_samples, batch, H3, W3, D3
-
-        prior_dist_2d = tfp.distributions.ExpRelaxedOneHotCategorical(self.temperature, logits=prior_latent_logits_2d)
-        prior_dist_3d = tfp.distributions.ExpRelaxedOneHotCategorical(self.temperature, logits=prior_latent_logits_3d)
-        log_prob_prior_2d = prior_dist_2d.log_prob(log_token_samples_onehot_2d)
-        log_prob_prior_3d = prior_dist_3d.log_prob(log_token_samples_onehot_3d)
-
-        kl_term_2d = tf.reduce_sum(log_prob_q_2d - log_prob_prior_2d, axis=[-1, -2])
-        kl_term_3d = tf.reduce_sum(log_prob_q_3d - log_prob_prior_3d, axis=[-1, -2, -3])
-
-        return kl_term_2d, kl_term_3d, log_prob_prior_2d, log_prob_prior_3d
 
     def compute_prior_logits(self, token_samples_onehot_2d, token_samples_onehot_3d):
         prior_latent_logits = self.compute_logits(token_samples_onehot_2d,
