@@ -1,8 +1,12 @@
+import sys
+sys.path.insert(1, '/home/albertj/git/neural_deprojection/')
+
 from neural_deprojection.models.Simple_complete_model.autoencoder_3d import DiscreteVoxelsVAE
 from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
 from neural_deprojection.models.Simple_complete_model.autoregressive_prior import AutoRegressivePrior
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, build_example_dataset, \
     grid_graphs, build_log_dir, build_checkpoint_dir, temperature_schedule
+from neural_deprojection.models.Simple_complete_model.plot_evaluations import plot_voxel
 import os
 import tensorflow as tf
 import json
@@ -15,7 +19,7 @@ MODEL_MAP = {'auto_regressive_prior': AutoRegressivePrior,
              'disc_voxel_vae': DiscreteVoxelsVAE}
 
 def build_dataset():
-    dataset = build_example_dataset(1000, batch_size=2, num_blobs=20, num_nodes=64 ** 3, image_dim=256)
+    dataset = build_example_dataset(1000, batch_size=2, num_blobs=5, num_nodes=64 ** 3, image_dim=256)
     return dataset
 
 
@@ -53,14 +57,6 @@ def train_discrete_image_vae(config, kwargs, num_epochs=100):
 
     dataset = build_dataset()
 
-    # show example of image
-    # for graphs, image in iter(dataset):
-    #     assert image.numpy().shape == (2, 256, 256, 1)
-    #     plt.imshow(image[0,...,0].numpy())
-    #     plt.colorbar()
-    #     plt.show()
-    #     break
-
     # drop the graph as the model expects only images
     dataset = dataset.map(lambda graphs, images: (images,))
 
@@ -95,20 +91,6 @@ def train_discrete_voxel_vae(config, kwargs, num_epochs=100):
 
     dataset = build_dataset()
 
-    # the model will call grid_graphs internally to learn the 3D autoencoder.
-    # we show here what that produces from a batch of graphs.
-    # for graphs, image in iter(dataset):
-    #     assert image.numpy().shape == (2, 256, 256, 1)
-    #     plt.imshow(image[0,...,0].numpy())
-    #     plt.colorbar()
-    #     plt.show()
-    #     voxels = grid_graphs(graphs, 64)
-    #     assert voxels.numpy().shape == (2, 64, 64, 64, 1)
-    #     plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
-    #     plt.colorbar()
-    #     plt.show()
-    #     break
-
     # drop the image as the model expects only graphs
     dataset = dataset.map(lambda graphs, images: (graphs,))
 
@@ -140,20 +122,6 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
     train_one_epoch = build_training(**config, **kwargs)
 
     dataset = build_dataset()
-
-    # the model will call grid_graphs internally to learn the 3D autoencoder.
-    # we show here what that produces from a batch of graphs.
-    # for graphs, image in iter(dataset):
-    #     assert image.numpy().shape == (2, 256, 256, 1)
-    #     plt.imshow(image[0,...,0].numpy())
-    #     plt.colorbar()
-    #     plt.show()
-    #     voxels = grid_graphs(graphs, 64)
-    #     assert voxels.numpy().shape == (2, 64, 64, 64, 1)
-    #     plt.imshow(tf.reduce_mean(voxels[0,...,0], axis=-1))
-    #     plt.colorbar()
-    #     plt.show()
-    #     break
 
     # run on first input to set variable shapes
     for batch in iter(dataset):
@@ -187,14 +155,14 @@ def train_auto_regressive_prior(config, kwargs, num_epochs=100):
 def main():
     print("Training the discrete image VAE")
     config = dict(model_type='disc_image_vae',
-                  model_parameters=dict(embedding_dim=16,  # 64
-                                        num_embedding=16,  # 1024
+                  model_parameters=dict(embedding_dim=24,  # 64
+                                        num_embedding=24,  # 1024
                                         hidden_size=32,
                                         num_channels=1
                                         ),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
-    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
+    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 50)
     kwargs = dict(num_token_samples=4,
                   compute_temperature=get_temp,
                   beta=1.)
@@ -204,13 +172,13 @@ def main():
     print("Training the discrete voxel VAE.")
     config = dict(model_type='disc_voxel_vae',
                   model_parameters=dict(voxels_per_dimension=8 * 8,
-                                        embedding_dim=16,  # 64
-                                        num_embedding=16,  # 1024
-                                        hidden_size=4,
+                                        embedding_dim=24,  # 64
+                                        num_embedding=24,  # 1024
+                                        hidden_size=8,
                                         num_channels=1),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
-    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 10)
+    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], 50)
     kwargs = dict(num_token_samples=4,
                   compute_temperature=get_temp,
                   beta=1.)
@@ -219,28 +187,25 @@ def main():
 
     print("Training auto-regressive prior.")
     config = dict(model_type='auto_regressive_prior',
-                  model_parameters=dict(num_heads=1,
-                                        num_layers=1,
-                                        embedding_dim=24
+                  model_parameters=dict(num_heads=3,
+                                        num_layers=2,
+                                        embedding_dim=64
                                         ),
                   optimizer_parameters=dict(learning_rate=1e-3, opt_type='adam'),
                   loss_parameters=dict())
 
-    get_temp = temperature_schedule(discrete_image_vae.num_embedding + discrete_voxel_vae.num_embedding, 15)
     kwargs = dict(discrete_image_vae=discrete_image_vae,
                   discrete_voxel_vae=discrete_voxel_vae,
-                  num_token_samples=1,
-                  compute_temperature=get_temp,
-                  beta=1.)
+                  num_token_samples=1)
     # set num_epochs=0 to load but not train
-    autoregressive_prior, autoregressive_prior_checkpoint = train_auto_regressive_prior(config, kwargs, num_epochs=0)
+    autoregressive_prior, autoregressive_prior_checkpoint = train_auto_regressive_prior(config, kwargs, num_epochs=50)
 
     print("Evaluating auto-regressive prior")
     evaluate_auto_regressive_prior(autoregressive_prior, 'eval_dir')
 
 
 def evaluate_auto_regressive_prior(autoregressive_prior: AutoRegressivePrior, output_dir):
-    dataset = dataset = build_dataset()
+    dataset = build_dataset()
 
     tf_grid_graphs = tf.function(
         lambda graphs: grid_graphs(graphs, autoregressive_prior.discrete_voxel_vae.voxels_per_dimension))
@@ -249,20 +214,17 @@ def evaluate_auto_regressive_prior(autoregressive_prior: AutoRegressivePrior, ou
     pair_idx = 0
     for (graphs, images) in iter(dataset):
         actual_voxels = tf_grid_graphs(graphs)
+        dvae_logits_3d = autoregressive_prior.discrete_voxel_vae.compute_logits(graphs)
+        dvae_logits_3d = tf.reshape(dvae_logits_3d,
+                                    (-1, 8**3, autoregressive_prior.discrete_voxel_vae.num_embedding))
+        plt.imshow(dvae_logits_3d[0], aspect='auto', interpolation='nearest')
+        plt.show()
         actual_voxels = actual_voxels.numpy()
 
-        plt.imshow(images.numpy()[0,:,:,0])
-        plt.show()
-
         # batch, H,W,D,C
-        mu_3d, b_3d = autoregressive_prior.deproject_images(images)
+        mu_3d, b_3d = autoregressive_prior._deproject_images(images)
         mu_3d = mu_3d.numpy()
         b_3d = b_3d.numpy()
-
-        plt.imshow(mu_3d[0, :, :, 16, 0:1])
-        plt.show()
-        plt.imshow(b_3d[0, :, :, 16, 0:1])
-        plt.show()
 
         for _actual_voxels, _mu_3d, _b_3d, _image in zip(actual_voxels, mu_3d, b_3d, images):
             np.savez(os.path.join(fig_dir, "evaluation_{:05}.npz".format(pair_idx)),
@@ -270,6 +232,8 @@ def evaluate_auto_regressive_prior(autoregressive_prior: AutoRegressivePrior, ou
                      mu_3d=_mu_3d,
                      b_3d=_b_3d,
                      image=_image)
+            plot_voxel(_image, _mu_3d, _actual_voxels)
+
             pair_idx += 1
         break
 
