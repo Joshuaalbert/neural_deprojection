@@ -197,6 +197,8 @@ class TransformerLayer(AbstractModule):
         self.num_heads = num_heads
         self.ln1 = snt.LayerNorm(axis=-1, eps=1e-6, create_scale=True, create_offset=True, name='layer_norm1')
         self.ln2 = snt.LayerNorm(axis=-1, eps=1e-6, create_scale=True, create_offset=True, name='layer_norm2')
+        self.ln_keys = snt.LayerNorm(axis=-1, eps=1e-6, create_scale=True, create_offset=True,name='layer_norm_keys')
+        self.ln_queries = snt.LayerNorm(axis=-1, eps=1e-6, create_scale=True, create_offset=True,name='layer_norm_queries')
         self.self_attention = SelfAttention()
 
     @once.once
@@ -218,13 +220,18 @@ class TransformerLayer(AbstractModule):
         node_keys = self.k_linear(latent.nodes)
         node_queries = self.q_linear(latent.nodes)  # n_node, num_head, F
 
+        node_keys = self.ln_keys(node_keys)
+        node_queries = self.ln_queries(node_queries)
         _, _, d_k = get_shape(node_keys)
         node_queries /= tf.math.sqrt(tf.cast(d_k, node_queries.dtype))  # n_node, F
+
         attended_latent = self.self_attention(node_values=node_values,
                                               node_keys=node_keys,
                                               node_queries=node_queries,
                                               attention_graph=latent)
-        output_nodes = tf.reshape(attended_latent.nodes, (-1, self.num_heads * self.input_node_size))
+        # n_nodes, heads, output_size -> n_nodes, heads*output_size
+        n_node, _, _ = get_shape(attended_latent.nodes)
+        output_nodes = tf.reshape(attended_latent.nodes, (n_node, self.num_heads * self.input_node_size))
         output_nodes = self.ln1(self.output_linear(output_nodes) + latent.nodes)
         output_nodes = self.ln2(self.FFN(output_nodes))
         output_graph = latent.replace(nodes=output_nodes)
@@ -240,8 +247,8 @@ class SelfAttentionMessagePassing(AbstractModule):
     def __init__(self, num_heads: int = 1, use_edges=False, use_globals=False, name=None):
         super(SelfAttentionMessagePassing, self).__init__(name=name)
         self.selfattention_core = TransformerLayer(num_heads=num_heads)
-        self.layer_norm1 = snt.LayerNorm(1, True, True, name='layer_norm_edges')
-        self.layer_norm2 = snt.LayerNorm(1, True, True, name='layer_norm_nodes')
+        self.layer_norm1 = snt.LayerNorm(-1, True, True, name='layer_norm_edges')
+        self.layer_norm2 = snt.LayerNorm(-1, True, True, name='layer_norm_nodes')
         self.use_globals = use_globals
         self.use_edges = use_edges
 
@@ -290,7 +297,6 @@ class AutoRegressivePrior(AbstractModule):
                  num_heads: int = 1,
                  num_layers: int = 1,
                  embedding_dim: int = 16,
-                 beta: float = 1.,
                  num_token_samples: int = 1,
                  name=None):
         super(AutoRegressivePrior, self).__init__(name=name)
@@ -298,7 +304,11 @@ class AutoRegressivePrior(AbstractModule):
         self.discrete_voxel_vae = discrete_voxel_vae
         self.embedding_dim = embedding_dim
         self.num_token_samples = num_token_samples
-        self.num_embedding = self.discrete_voxel_vae.num_embedding + self.discrete_image_vae.num_embedding
+        # + 3 for {start_2d, start_3d, eos}
+        self.num_embedding = self.discrete_voxel_vae.num_embedding + self.discrete_image_vae.num_embedding + 3
+        self.start_2d_token_onehot = tf.range(self.num_embedding) == self.num_embedding - 3
+        self.start_3d_token_onehot = tf.range(self.num_embedding) == self.num_embedding - 2
+        self.eos_token_onehot = tf.range(self.num_embedding) == self.num_embedding - 1
 
         self.embeddings = tf.Variable(
             initial_value=tf.random.truncated_normal((self.num_embedding, self.embedding_dim)),
@@ -417,7 +427,7 @@ class AutoRegressivePrior(AbstractModule):
             # [batch, H3*W3*D3, num_embedding2 + num_embedding3]
             prior_dist = tfp.distributions.OneHotCategorical(logits=latent_logits_3d, dtype=latent_logits_3d.dtype)
             prior_token_samples_onehot_3d = prior_dist.sample(1)# 1, batch, H3 * W3*D3, num_embedding3
-            prior_token_samples_onehot_3d = prior_token_samples_onehot_3d[0]#batch,=H3 * W3*D3, num_embedding3
+            prior_token_samples_onehot_3d = prior_token_samples_onehot_3d[0]#batch,H3 * W3*D3, num_embedding3
 
             _mask = tf.range(H3 * W3 * D3) == output_token_idx  # [H3*W3*D3]
 
@@ -632,16 +642,20 @@ class AutoRegressivePrior(AbstractModule):
         token_samples_onehot_3d = q_dist_3d.sample(self.num_token_samples)  # [num_samples, batch, H, W, D, num_embeddings]
         entropy_3d = -tf.reduce_sum(token_samples_onehot_3d * latent_logits_3d, axis=-1)
 
+        # log P(z_i | z_<i)
+        prior_latent_logits_2d, prior_latent_logits_3d, prior_latent_logits_start_3d, prior_latent_logits_eos = \
+            self.compute_prior_logits(token_samples_onehot_2d, token_samples_onehot_3d)
 
-        prior_latent_logits_2d, prior_latent_logits_3d = self.compute_prior_logits(token_samples_onehot_2d,
-                                                                                   token_samples_onehot_3d)
+        cross_entropy_start_3d = -tf.reduce_sum(self.start_3d_token_onehot * prior_latent_logits_start_3d, axis=-1)
+        cross_entropy_eos = -tf.reduce_sum(self.eos_token_onehot * prior_latent_logits_eos, axis=-1)
+
         cross_entropy_2d = -tf.reduce_sum(token_samples_onehot_2d * prior_latent_logits_2d, axis=-1)
         cross_entropy_3d = -tf.reduce_sum(token_samples_onehot_3d * prior_latent_logits_3d, axis=-1)
 
         kl_term_2d = tf.reduce_sum(cross_entropy_2d - entropy_2d, axis=[-1,-2])
         kl_term_3d = tf.reduce_sum(cross_entropy_3d - entropy_3d, axis=[-1,-2,-3])
 
-        kl_term = kl_term_2d + kl_term_3d  # [num_samples, batch]
+        kl_term = kl_term_2d + kl_term_3d + cross_entropy_start_3d + cross_entropy_eos# [num_samples, batch]
 
         kl_div = tf.reduce_mean(kl_term, axis=0)  # [batch]
         # elbo = tf.stop_gradient(var_exp) - self.beta * kl_div  # batch
@@ -660,16 +674,22 @@ class AutoRegressivePrior(AbstractModule):
 
     def compute_prior_logits(self, token_samples_onehot_2d, token_samples_onehot_3d):
         prior_latent_logits = self.compute_logits(token_samples_onehot_2d,
-                                                  token_samples_onehot_3d)  # num_samples, batch, H2*W2 + H3*W3*D3, num_embedding2+num_embedding3
+                                                  token_samples_onehot_3d)  # num_samples, batch, H2*W2 + H3*W3*D3 + 2, num_embedding2+num_embedding3+3
         _, batch, H2, W2, _ = get_shape(token_samples_onehot_2d)
         _, batch, H3, W3, D3, _ = get_shape(token_samples_onehot_3d)
+        #p(2d_token_i|2d_tokes_<i)
         prior_latent_logits_2d = tf.reshape(prior_latent_logits[:, :, :H2 * W2, :self.discrete_image_vae.num_embedding],
                                             (self.num_token_samples, batch, H2, W2,
                                              self.discrete_image_vae.num_embedding))
-        prior_latent_logits_3d = tf.reshape(prior_latent_logits[:, :, H2 * W2:, self.discrete_image_vae.num_embedding:],
+        # p(start_3d_token|2d_tokens)
+        prior_latent_logits_start_3d = prior_latent_logits[:, :, H2 * W2, :self.discrete_image_vae.num_embedding]
+        prior_latent_logits_eos = prior_latent_logits[:, :, -1, :self.discrete_image_vae.num_embedding]
+
+        #p(3d_token_i|3d_tokes_<i)
+        prior_latent_logits_3d = tf.reshape(prior_latent_logits[:, :, H2 * W2+1:-1, self.discrete_image_vae.num_embedding:],
                                             (self.num_token_samples, batch, H3, W3, D3,
                                              self.discrete_voxel_vae.num_embedding))
-        return prior_latent_logits_2d, prior_latent_logits_3d
+        return prior_latent_logits_2d, prior_latent_logits_3d, prior_latent_logits_start_3d, prior_latent_logits_eos
 
     def compute_logits(self, token_samples_onehot_2d, token_samples_onehot_3d):
         """
@@ -699,10 +719,10 @@ class AutoRegressivePrior(AbstractModule):
         latent_graphs = self.forced_teacher_model(latent_tokens_2d, latent_tokens_3d)
 
         latent_graphs = graph_batch_reshape(latent_graphs)
-        latent_logits = latent_graphs.nodes  # batch, H2*W2 + H3 * W3*D3, num_embedding
+        latent_logits = latent_graphs.nodes  # batch, H2*W2 + H3 * W3*D3 + 2, num_embedding
 
-        latent_logits = tf.reshape(latent_logits, (self.num_token_samples, batch, H2 * W2 + H3 * W3 * D3,
-                                                   self.num_embedding))  # batch, H2*W2 + H3 * W3*D3, num_embedding
+        latent_logits = tf.reshape(latent_logits, (self.num_token_samples, batch, H2 * W2 + H3 * W3 * D3 + 2,
+                                                   self.num_embedding))  # batch, H2*W2 + H3 * W3*D3 + 2, num_embedding
         latent_logits /= 1e-6 + tf.math.reduce_std(latent_logits, axis=-1, keepdims=True)
         latent_logits -= tf.reduce_logsumexp(latent_logits, axis=-1, keepdims=True)
         return latent_logits
@@ -734,10 +754,14 @@ class AutoRegressivePrior(AbstractModule):
         """
         G, N2, _ = get_shape(latent_tokens_2d)
         G, N3, _ = get_shape(latent_tokens_3d)
-        N = N2 + N3
-        nodes = tf.concat([latent_tokens_2d,
-                           # tf.tile(self.starting_node_variable[None, None, :], [G, 1, 1]),
+        N = N2 + N3 + 2
+        start_2d_token = self.embeddings[-3,:]
+        start_3d_token = self.embeddings[-2,:]
+        nodes = tf.concat([tf.tile(start_2d_token, (G, 1, 1)),
+                           latent_tokens_2d,
+                           tf.tile(start_3d_token, (G, 1, 1)),
                            latent_tokens_3d], axis=1)
+
 
         self.initialize_positional_encodings(nodes)
         nodes = nodes + self.positional_encodings
