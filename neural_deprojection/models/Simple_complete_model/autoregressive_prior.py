@@ -275,12 +275,12 @@ class SelfAttentionMessagePassing(AbstractModule):
                                            use_globals=self.use_globals)
 
     def _build(self, graphs: GraphsTuple):
-        self.initialize(graphs)
+        # self.initialize(graphs)
         latent_graphs = self.selfattention_core(graphs)
-        latent_graphs = self.edge_block(latent_graphs)
-        latent_graphs = latent_graphs.replace(edges=self.layer_norm1(latent_graphs.edges))
-        latent_graphs = self.node_block(latent_graphs)
-        latent_graphs = latent_graphs.replace(nodes=self.layer_norm2(latent_graphs.nodes))
+        # latent_graphs = self.edge_block(latent_graphs)
+        # latent_graphs = latent_graphs.replace(edges=self.layer_norm1(latent_graphs.edges))
+        # latent_graphs = self.node_block(latent_graphs)
+        # latent_graphs = latent_graphs.replace(nodes=self.layer_norm2(latent_graphs.nodes))
         return latent_graphs
 
 
