@@ -411,16 +411,13 @@ class AutoRegressivePrior(AbstractModule):
             latent_graphs = graph_batch_reshape(latent_graphs)
             prior_latent_logits = latent_graphs.nodes  # batch, H2*W2 + H3 * W3*D3 + 1, num_embedding
 
-            prior_latent_logits = tf.reshape(prior_latent_logits, (self.num_token_samples, batch, H2 * W2 + H3 * W3 * D3 + 1,
+            prior_latent_logits = tf.reshape(prior_latent_logits, (batch, H2 * W2 + H3 * W3 * D3 + 1,
                                                        self.num_embedding))  # batch, H2*W2 + H3 * W3*D3 + 1, num_embedding
             prior_latent_logits /= 1e-6 + tf.math.reduce_std(prior_latent_logits, axis=-1, keepdims=True)
             prior_latent_logits -= tf.reduce_logsumexp(prior_latent_logits, axis=-1, keepdims=True)
 
             # p(3d_token_i|3d_tokes_<i)
-            prior_latent_logits_3d = tf.reshape(
-                prior_latent_logits[:, :, H2 * W2 + 1:, self.discrete_image_vae.num_embedding:],
-                (self.num_token_samples, batch, H3, W3, D3,
-                 self.discrete_voxel_vae.num_embedding))
+            prior_latent_logits_3d = prior_latent_logits[:, H2 * W2 + 1:, self.discrete_image_vae.num_embedding:]
 
             # [batch, H3*W3*D3, embedding_dim]
             # [batch, H3*W3*D3, num_embedding2 + num_embedding3]
