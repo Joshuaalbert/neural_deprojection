@@ -436,13 +436,13 @@ class AutoRegressivePrior(AbstractModule):
                                prior_latent_logits_2d,
                                prior_latent_logits_3d):
 
-        dist_2d = tfp.distributions.OneHotCategorical(logits=latent_logits_2d)
-        dist_3d = tfp.distributions.OneHotCategorical(logits=latent_logits_3d)
+        dist_2d = tfp.distributions.OneHotCategorical(logits=latent_logits_2d, dtype=latent_logits_2d.dtype)
+        dist_3d = tfp.distributions.OneHotCategorical(logits=latent_logits_3d, dtype=latent_logits_3d.dtype)
         token_samples_onehot_2d = dist_2d.sample(1)[0]
         token_samples_onehot_3d = dist_3d.sample(1)[0]
 
-        dist_2d_prior = tfp.distributions.OneHotCategorical(logits=prior_latent_logits_2d)
-        dist_3d_prior = tfp.distributions.OneHotCategorical(logits=prior_latent_logits_3d)
+        dist_2d_prior = tfp.distributions.OneHotCategorical(logits=prior_latent_logits_2d, dtype=prior_latent_logits_2d.dtype)
+        dist_3d_prior = tfp.distributions.OneHotCategorical(logits=prior_latent_logits_3d, dtype=prior_latent_logits_3d.dtype)
         prior_token_samples_onehot_2d = dist_2d_prior.sample(1)[0]
         prior_token_samples_onehot_3d = dist_3d_prior.sample(1)[0]
 
