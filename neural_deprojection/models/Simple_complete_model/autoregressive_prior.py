@@ -649,5 +649,5 @@ class AutoRegressivePrior(AbstractModule):
             del_token,
             token_samples_idx_3d + N2,  # shift to right
             eos_token
-        ])
+        ], axis=-1)
         return sequence
