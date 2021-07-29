@@ -461,8 +461,8 @@ class AutoRegressivePrior(AbstractModule):
         tf.summary.scalar('perplexity_2d_prior', mean_perplexity_2d, step=self.step)
         tf.summary.scalar('perplexity_3d_prior', mean_perplexity_3d, step=self.step)
 
-        prior_latent_tokens_2d = tf.einsum('sbhwd,de->sbhwe', prior_token_samples_onehot_2d, self.discrete_image_vae.embeddings)
-        prior_latent_tokens_3d = tf.einsum('sbhwdn,ne->sbhwde', prior_token_samples_onehot_3d, self.discrete_voxel_vae.embeddings)
+        prior_latent_tokens_2d = tf.einsum('sbhwd,de->sbhwe', prior_token_samples_onehot_2d[None], self.discrete_image_vae.embeddings)
+        prior_latent_tokens_3d = tf.einsum('sbhwdn,ne->sbhwde', prior_token_samples_onehot_3d[None], self.discrete_voxel_vae.embeddings)
         mu_2d, logb_2d = self.discrete_image_vae.compute_likelihood_parameters(
             prior_latent_tokens_2d)  # [num_samples, batch, H', W', C], [num_samples, batch, H', W', C]
         log_likelihood_2d = self.discrete_image_vae.log_likelihood(images, mu_2d, logb_2d)  # [num_samples, batch]
