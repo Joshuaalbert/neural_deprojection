@@ -321,6 +321,9 @@ class AutoRegressivePrior(AbstractModule):
                                                        name='project_block'))
         self.selfattention_core = snt.Sequential(message_passing_layers, name='selfattention_core')
 
+    def _core(self, graphs):
+        return self.selfattention_core(graphs)
+
     @once.once
     def initialize_positional_encodings(self, nodes):
         _, n_node, _ = get_shape(nodes)
