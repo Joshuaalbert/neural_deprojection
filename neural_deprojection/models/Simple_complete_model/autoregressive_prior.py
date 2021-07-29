@@ -551,15 +551,17 @@ class AutoRegressivePrior(AbstractModule):
         batch, H3, W3, D3, _ = get_shape(latent_logits_3d)
         G = self.num_token_samples * batch
 
-        latent_logits_2d = tf.reshape(latent_logits_2d, (G, H2 * W2, self.discrete_image_vae.num_embedding))
-        latent_logits_3d = tf.reshape(latent_logits_3d, (G, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding))
+        latent_logits_2d = tf.reshape(latent_logits_2d, (batch, H2 * W2, self.discrete_image_vae.num_embedding))
+        latent_logits_3d = tf.reshape(latent_logits_3d, (batch, H3 * W3 * D3, self.discrete_voxel_vae.num_embedding))
 
         q_dist_2d = tfp.distributions.Categorical(logits=latent_logits_2d, dtype=idx_dtype)
-        token_samples_idx_2d = q_dist_2d.sample(self.num_token_samples)  # [num_samples*batch, H2*W2]
+        token_samples_idx_2d = q_dist_2d.sample(self.num_token_samples)  # [num_samples, batch, H2*W2]
+        token_samples_idx_2d = tf.reshape(token_samples_idx_2d, (G, H2*W2))
 
         q_dist_3d = tfp.distributions.Categorical(logits=latent_logits_3d, dtype=idx_dtype)
         token_samples_idx_3d = q_dist_3d.sample(
-            self.num_token_samples)  # [num_samples*batch, H3*W3*D3]
+            self.num_token_samples)  # [num_samples, batch, H3*W3*D3]
+        token_samples_idx_3d = tf.reshape(token_samples_idx_3d, (G, H3*W3*D3))
 
         entropy_2d = tf.reduce_sum(q_dist_2d.entropy(), axis=-1)
         entropy_3d = tf.reduce_sum(q_dist_3d.entropy(), axis=-1)
