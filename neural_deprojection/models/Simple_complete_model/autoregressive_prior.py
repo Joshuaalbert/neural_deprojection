@@ -392,19 +392,16 @@ class AutoRegressivePrior(AbstractModule):
 
             Args:
                 output_token_idx: which element is being replaced
-                latent_graphs: GraphsTuple, nodes are [n_graphs * (H2*W2 + H3*W3*D3 + 1), embedding_size]
-                output_token_samples_onehot_3d: [batch, H3*W3*D3, num_embedding3]
-
-            Returns:
-
+                token_samples_idx_3d: [batch, H3*W3*D3]
             """
-
+            # [batch, 1 + H2*W2 + 1 + H3*W3*D3 + 1]
             sequence = self.construct_sequence(token_samples_idx_2d, token_samples_idx_3d)
             input_sequence = sequence[:, :-1]
             input_graphs = self.construct_input_graph(input_sequence)
             latent_logits = self.compute_logits(input_graphs)
 
-            prior_latent_logits_3d = latent_logits[:, H2 * W2 + 1:H2 * W2 + 1 + H3 * W3 * D3,
+            #batch, H3 * W3 * D3, num_embedding3
+            prior_latent_logits_3d = latent_logits[:, H2 * W2 + 1 : H2 * W2 + 1 + H3 * W3 * D3,
                                                 self.discrete_image_vae.num_embedding:self.discrete_image_vae.num_embedding + self.discrete_voxel_vae.num_embedding]
 
             prior_dist = tfp.distributions.Categorical(logits=prior_latent_logits_3d, dtype=idx_dtype)
@@ -412,7 +409,7 @@ class AutoRegressivePrior(AbstractModule):
 
             _mask = tf.range(H3 * W3 * D3) == output_token_idx  # [H3*W3*D3]
 
-            token_samples_idx_3d = tf.where(_mask[None, :, None],
+            token_samples_idx_3d = tf.where(_mask[None, :],
                                                       prior_latent_tokens_idx_3d,
                                                       token_samples_idx_3d
                                                       )
@@ -633,6 +630,15 @@ class AutoRegressivePrior(AbstractModule):
         return concat_graphs
 
     def construct_sequence(self, token_samples_idx_2d, token_samples_idx_3d):
+        """
+
+        Args:
+            token_samples_idx_2d: [G, H2*W2]
+            token_samples_idx_3d: [G, H3*W3*D3]
+
+        Returns:
+            sequence: G, 1 + H2*W2 + 1 + H3*W3*D3 + 1
+        """
         idx_dtype = token_samples_idx_2d.dtype
         G, N2 = get_shape(token_samples_idx_2d)
         G, N3 = get_shape(token_samples_idx_3d)
