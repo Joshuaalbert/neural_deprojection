@@ -265,13 +265,13 @@ class SelfAttentionMessagePassing(AbstractModule):
 
         self.edge_block = blocks.EdgeBlock(edge_model_fn,
                                            use_edges=self.use_edges,
-                                           use_receiver_nodes=True,
+                                           use_receiver_nodes=False,
                                            use_sender_nodes=True,
                                            use_globals=self.use_globals)
 
         self.node_block = blocks.NodeBlock(node_model_fn,
                                            use_received_edges=True,
-                                           use_sent_edges=True,
+                                           use_sent_edges=False,
                                            use_nodes=True,
                                            use_globals=self.use_globals)
 
@@ -401,20 +401,26 @@ class AutoRegressivePrior(AbstractModule):
             latent_logits = self.compute_logits(input_graphs)
 
             #batch, H3 * W3 * D3, num_embedding3
-            prior_latent_logits_3d = latent_logits[:, H2 * W2 + 1 : H2 * W2 + 1 + H3 * W3 * D3,
+            # . a b . c d
+            # a b . c d .
+            prior_latent_logits_3d = latent_logits[:, H2*W2+1:H2*W2+1+H3*W3*D3,
                                                 self.discrete_image_vae.num_embedding:self.discrete_image_vae.num_embedding + self.discrete_voxel_vae.num_embedding]
 
             prior_dist = tfp.distributions.Categorical(logits=prior_latent_logits_3d, dtype=idx_dtype)
             prior_latent_tokens_idx_3d = prior_dist.sample(1)[0] # batch, H3*W3*D3
+            # import pylab as plt
+            # # plt.imshow(tf.one_hot(prior_latent_tokens_idx_3d[0, :30], self.discrete_voxel_vae.num_embedding))
+            # plt.imshow(latent_logits[0, 1020:1050], aspect='auto', interpolation='nearest')
+            # plt.show()
 
             _mask = tf.range(H3 * W3 * D3) == output_token_idx  # [H3*W3*D3]
 
-            token_samples_idx_3d = tf.where(_mask[None, :],
+            output_token_samples_idx_3d = tf.where(_mask[None, :],
                                                       prior_latent_tokens_idx_3d,
                                                       token_samples_idx_3d
                                                       )
 
-            return (output_token_idx + 1, token_samples_idx_3d)
+            return (output_token_idx + 1, output_token_samples_idx_3d)
 
         _, token_samples_idx_3d = tf.while_loop(
             cond=lambda output_token_idx, _: output_token_idx < (H3 * W3 * D3),
