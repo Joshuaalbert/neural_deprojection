@@ -571,7 +571,7 @@ class AutoRegressivePrior(AbstractModule):
 
         entropy_2d = tf.reduce_sum(q_dist_2d.entropy(), axis=-1)
         entropy_3d = tf.reduce_sum(q_dist_3d.entropy(), axis=-1)
-        entropy = entropy_3d + entropy_2d  # [num_samples*batch]
+        entropy = entropy_3d + entropy_2d  # [batch]
         ## create sequence
 
         sequence = self.construct_sequence(token_samples_idx_2d, token_samples_idx_3d)
@@ -581,10 +581,10 @@ class AutoRegressivePrior(AbstractModule):
 
         prior_dist = tfp.distributions.Categorical(logits=latent_logits, dtype=idx_dtype)
         output_sequence = sequence[:, 1:]
-        cross_entropy = tf.reduce_sum(-prior_dist.log_prob(output_sequence), axis=-1)  # num_samples*batch
-        kl_term = cross_entropy + entropy  # [num_samples*batch]
+        cross_entropy = tf.reshape(tf.reduce_sum(-prior_dist.log_prob(output_sequence), axis=-1), (self.num_token_samples, batch))  # num_samples,batch
+        kl_term = cross_entropy + entropy  # [num_samples, batch]
 
-        kl_div = tf.reduce_mean(kl_term, axis=0)  # scalar
+        kl_div = tf.reduce_mean(kl_term)  # scalar
         # elbo = tf.stop_gradient(var_exp) - self.beta * kl_div
         elbo = - kl_div  # scalar
 
