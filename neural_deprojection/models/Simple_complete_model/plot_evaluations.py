@@ -19,15 +19,15 @@ def plot_voxel(image, rec_voxels, actual_voxels):
     axcolor = 'lightgoldenrodyellow'
     axfreq = plt.axes([0.25, 0.1, 0.65, 0.03], facecolor=axcolor)
 
-    sfreq = Slider(axfreq, 'z-axis slice', 0, actual_voxels.shape[-2]-1, valinit=0, valstep=1)
+    zaxis_idx = Slider(axfreq, 'z-axis slice', 0, actual_voxels.shape[-2]-1, valinit=0, valstep=1)
 
     def update(val):
-        idx = int(sfreq.val)
+        idx = int(zaxis_idx.val)
         img_actual.set_data(actual_voxels[:, :, idx, 0])
         img_rec.set_data(rec_voxels[:, :, idx, 0])
         fig.canvas.draw_idle()
 
-    sfreq.on_changed(update)
+    zaxis_idx.on_changed(update)
     plt.show()
 
 def main(eval_dir):

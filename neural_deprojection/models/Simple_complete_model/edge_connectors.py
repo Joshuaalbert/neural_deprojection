@@ -138,7 +138,7 @@ def _create_complete_2d_to_3dedges_from_nodes_dynamic(n_node, n_node_2d, n_node_
     Returns:
 
     """
-    is_edge_func = lambda sender, receiver: ((sender < n_node_2d) & (receiver > n_node_3d))
+    is_edge_func = lambda sender, receiver: ((sender < n_node_2d) & (receiver < n_node_2d)) | ((sender < n_node_2d) & (receiver >= n_node_2d))
 
     output = _create_functional_connect_edges_dynamic(n_node, is_edge_func)
     output['n_edge'] = tf.fill([1], n_node * (n_node - 1) // 2)

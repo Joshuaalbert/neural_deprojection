@@ -10,7 +10,7 @@ import tensorflow_probability as tfp
 from graph_nets.modules import SelfAttention
 from sonnet.src import utils, once
 
-from neural_deprojection.models.Simple_complete_model.edge_connectors import autoregressive_connect_graph_dynamic
+from neural_deprojection.models.Simple_complete_model.edge_connectors import connect_graph_dynamic
 
 
 class MultiHeadLinear(AbstractModule):
@@ -212,14 +212,20 @@ class AutoRegressivePrior(AbstractModule):
 
         message_passing_layers = [SelfAttentionMessagePassing(num_heads=num_heads, name=f"self_attn_mp_{i}")
                                   for i in range(num_layers)]
-        message_passing_layers.append(blocks.NodeBlock(lambda: snt.Linear(self.num_embedding, name='output_linear'),
-                                                       use_received_edges=False, use_nodes=True,
-                                                       use_globals=False, use_sent_edges=False,
-                                                       name='project_block'))
+        # don't need because we do X @ embeddings^T
+        # message_passing_layers.append(blocks.NodeBlock(lambda: snt.Linear(self.num_embedding, name='output_linear'),
+        #                                                use_received_edges=False, use_nodes=True,
+        #                                                use_globals=False, use_sent_edges=False,
+        #                                                name='project_block'))
         self.selfattention_core = snt.Sequential(message_passing_layers, name='selfattention_core')
 
     def _core(self, graphs):
-        return self.selfattention_core(graphs)
+        graphs = self.selfattention_core(graphs)
+        # logits = output @ embeddings^T
+        # decrease in logit entropy => embeddings and output orthogonal, thus well separated embeddings
+        output_nodes = tf.einsum("nd,ed->ne", graphs.nodes, self.embeddings)
+        graphs = graphs.replace(nodes=output_nodes)
+        return graphs
 
     @once.once
     def initialize_positional_encodings(self, nodes):
@@ -473,7 +479,7 @@ class AutoRegressivePrior(AbstractModule):
 
         sequence = self.construct_sequence(token_samples_idx_2d, token_samples_idx_3d)
         input_sequence = sequence[:, :-1]
-        input_graphs = self.construct_input_graph(input_sequence)
+        input_graphs = self.construct_input_graph(input_sequence, H2*W2)
         latent_logits = self.compute_logits(input_graphs)
 
         prior_dist = tfp.distributions.Categorical(logits=latent_logits, dtype=idx_dtype)
@@ -519,7 +525,7 @@ class AutoRegressivePrior(AbstractModule):
         latent_logits -= tf.reduce_logsumexp(latent_logits, axis=-1, keepdims=True)
         return latent_logits
 
-    def construct_input_graph(self, input_sequence):
+    def construct_input_graph(self, input_sequence, N2):
         G, N = get_shape(input_sequence)
         # num_samples*batch, 1 + H2*W2 + 1 + H3*W3*D3, embedding_dim
         input_tokens = tf.nn.embedding_lookup(self.embeddings, input_sequence)
@@ -533,7 +539,16 @@ class AutoRegressivePrior(AbstractModule):
         concat_graphs = GraphsTuple(**data_dict)
         concat_graphs = graph_unbatch_reshape(concat_graphs)  # [n_graphs * (num_input + num_output), embedding_size]
         # nodes, senders, receivers, globals
-        concat_graphs = autoregressive_connect_graph_dynamic(concat_graphs, exclude_self_edges=False)
+        def edge_connect_rule(sender, receiver):
+            # . a . b -> a . b .
+            complete_2d = (sender < N2 + 1) & (receiver < N2 + 1) & (
+                        sender + 1 != receiver)  # exclude senders from one-right, so it doesn't learn copy.
+            auto_regressive_3d = (sender <= receiver) & (
+                        receiver >= N2 + 1)  # auto-regressive (excluding 2d) with self-loops
+            return complete_2d | auto_regressive_3d
+
+        # nodes, senders, receivers, globals
+        concat_graphs = connect_graph_dynamic(concat_graphs, edge_connect_rule)
         return concat_graphs
 
     def construct_sequence(self, token_samples_idx_2d, token_samples_idx_3d):
