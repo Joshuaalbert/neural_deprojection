@@ -12,6 +12,7 @@ class DiscreteImageVAE(AbstractModule):
                  num_channels:int = 1,
                  compute_temperature:callable = None,
                  beta:float = 1.,
+                 num_groups=4,
                  name=None):
         super(DiscreteImageVAE, self).__init__(name=name)
         self.num_channels = num_channels
@@ -23,8 +24,8 @@ class DiscreteImageVAE(AbstractModule):
         self.compute_temperature = compute_temperature
         self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
 
-        self._encoder = Encoder2D(hidden_size=hidden_size, num_embeddings=num_embedding, name='EncoderImage')
-        self._decoder = Decoder2D(hidden_size=hidden_size, num_channels=num_channels, name='DecoderImage')
+        self._encoder = Encoder2D(hidden_size=hidden_size, num_embeddings=num_embedding, num_groups=num_groups,name='EncoderImage')
+        self._decoder = Decoder2D(hidden_size=hidden_size, num_channels=num_channels, num_groups=num_groups, name='DecoderImage')
 
         assert self._encoder.shrink_factor == self._decoder.shrink_factor, "Shrink factors should be same. Use same num_groups."
         self.shrink_factor = self._decoder.shrink_factor
@@ -51,7 +52,7 @@ class DiscreteImageVAE(AbstractModule):
         """
         #[batch, W, H, num_embeddings]
         logits = self._encoder(img)
-        logits /= 1e-5 + tf.math.reduce_std(logits, axis=-1, keepdims=True)
+        logits /= 1e-6 + tf.math.reduce_std(logits, axis=-1, keepdims=True)
         logits -= tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
 
         return logits

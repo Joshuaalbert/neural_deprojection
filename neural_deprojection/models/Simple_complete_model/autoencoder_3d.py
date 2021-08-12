@@ -15,6 +15,7 @@ class DiscreteVoxelsVAE(AbstractModule):
                  voxels_per_dimension:int = 64,
                  compute_temperature:callable = None,
                  beta: float = 1.,
+                 num_groups=4,
                  name=None):
         super(DiscreteVoxelsVAE, self).__init__(name=name)
         self.voxels_per_dimension = voxels_per_dimension
@@ -27,8 +28,8 @@ class DiscreteVoxelsVAE(AbstractModule):
         self.compute_temperature = compute_temperature
         self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
 
-        self._encoder = Encoder3D(hidden_size=hidden_size, num_embeddings=num_embedding, name='EncoderImage')
-        self._decoder = Decoder3D(hidden_size=hidden_size, num_channels=num_channels, name='DecoderImage')
+        self._encoder = Encoder3D(hidden_size=hidden_size, num_embeddings=num_embedding, num_groups=num_groups,name='EncoderVoxels')
+        self._decoder = Decoder3D(hidden_size=hidden_size, num_channels=num_channels, num_groups=num_groups,name='DecoderVoxels')
 
         assert self._encoder.shrink_factor == self._decoder.shrink_factor, "Shrink factors should be same. Use same num_groups."
         self.shrink_factor = self._decoder.shrink_factor
@@ -58,7 +59,7 @@ class DiscreteVoxelsVAE(AbstractModule):
         # number of channels must be known for conv3d
         img.set_shape([None, None, None, None, self.num_channels])
         logits = self._encoder(img)
-        logits /= 1e-5 + tf.math.reduce_std(logits, axis=-1, keepdims=True)
+        logits /= 1e-6 + tf.math.reduce_std(logits, axis=-1, keepdims=True)
         logits -= tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
         return logits
 
@@ -102,63 +103,6 @@ class DiscreteVoxelsVAE(AbstractModule):
         mu, logb = decoded_imgs[..., :self.num_channels], decoded_imgs[..., self.num_channels:]
         return mu, logb  # [S, batch, H', W', D' C], [S, batch, H', W', D' C]
 
-    def interpolate_field(self, field, positions):
-        """
-        Reconstruct the field at positions by interpolatin.
-
-        Args:
-            field: [batch, H', W', D', C]
-            positions: [batch, n_node, 3]
-
-        Returns:
-            [batch, n_node, C]
-        """
-        _, n_node, _ = get_shape(positions)
-        batch, H_2, W_2, D_2, C = get_shape(field)
-
-        def single_batch(field, positions):
-            """
-            Args:
-                field: [H', W', D', C]
-                positions: [n_node, 3]
-
-            Returns:
-                [n_node, C]
-
-            """
-            pmin = tf.reduce_min(positions, axis=0)
-            pmax = tf.reduce_max(positions, axis=0)
-
-            arrays = [
-                tf.linspace(pmin[0], pmax[0], H_2),
-                tf.linspace(pmin[1], pmax[1], W_2),
-                tf.linspace(pmin[2], pmax[2], D_2)
-                     ]
-
-            coords = [positions[:,0], positions[:,1], positions[:,2]]
-
-            def interp(x, xp, fp):
-                x.set_shape([64**3])
-                xp.set_shape([None])
-                fp.set_shape([None])
-                print(x.shape, xp.shape, fp.shape)
-                i = tf.clip_by_value(tf.searchsorted(xp, x, side='right'), 1, len(xp) - 1)[0]
-                df = fp[i] - fp[i - 1]
-                dx = xp[i] - xp[i - 1]
-                delta = x - xp[i - 1]
-                f = tf.where((dx == 0), tf.cast(fp[i], tf.float32),
-                             tf.cast(fp[i - 1], tf.float32) + (delta / dx) * tf.cast(df, tf.float32))
-                return f
-
-            fractional_coordinates = [interp(coord, array, tf.range(N))
-                                      for array, coord, N in zip(arrays, coords, (H_2, W_2, D_2))]
-            field = tf.transpose(field, (3,0,1,2))#c, H',W',D'
-            values_at_positions = tf.vectorized_map(lambda field: map_coordinates(field, fractional_coordinates, order=1), field)#C, n_node
-            values_at_positions = tf.transpose(values_at_positions, (1,0))#n_node, C
-            return values_at_positions
-
-        return tf.vectorized_map(lambda args: single_batch(*args), (field, positions))
-
     def log_likelihood(self, graphs: GraphsTuple, mu, logb):
         """
         Log-Laplace distribution.
@@ -175,14 +119,6 @@ class DiscreteVoxelsVAE(AbstractModule):
         Returns:
             log_prob [num_samples, batch]
         """
-        # batched_graphs = graph_batch_reshape(graphs)
-        # positions = batched_graphs.nodes[:,:,:3]#batch, n_node_per_graph, 3
-        # properties = batched_graphs.nodes[:,:,3:]#batch, n_node_per_graph, num_properties
-        # print(properties.shape, positions.shape, mu.shape)
-        # # interpolate onto positions (currently broken because of vectorized_map)
-        # mu = tf.vectorized_map(lambda mu: self.interpolate_field(mu, positions), mu) # [num_samples, batch, n_node_per_graph, num_properties]
-        # logb = tf.vectorized_map(lambda logb: self.interpolate_field(logb, positions), logb) # [num_samples, batch, n_node_per_graph, num_properties]
-
         properties = grid_graphs(graphs, self.voxels_per_dimension) # [num_samples, batch, H', W', D', num_properties]
         log_prob = - tf.math.abs(properties - mu) / tf.math.exp(logb) \
                    - tf.math.log(2.) - properties - logb # [num_samples, batch, H', W', D', num_properties]
