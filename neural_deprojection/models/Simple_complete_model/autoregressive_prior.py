@@ -2,7 +2,6 @@ from graph_nets import blocks
 import tensorflow as tf
 import sonnet as snt
 from graph_nets.graphs import GraphsTuple
-from graph_nets import utils_tf
 from neural_deprojection.graph_net_utils import AbstractModule, get_shape, graph_batch_reshape, graph_unbatch_reshape, \
     grid_graphs
 from neural_deprojection.models.Simple_complete_model.autoencoder_3d import DiscreteVoxelsVAE
@@ -11,109 +10,7 @@ import tensorflow_probability as tfp
 from graph_nets.modules import SelfAttention
 from sonnet.src import utils, once
 
-
-def _create_autogressive_edges_from_nodes_dynamic(n_node, exclude_self_edges):
-    """Creates complete edges for a graph with `n_node`.
-
-    Args:
-    n_node: (integer scalar `Tensor`) The number of nodes.
-    exclude_self_edges: (bool) Excludes self-connected edges.
-
-    Returns:
-    A dict of RECEIVERS, SENDERS and N_EDGE data (`Tensor`s of rank 1).
-    """
-
-    rng = tf.range(n_node)
-
-    if exclude_self_edges:
-        ind = rng[:, None] > rng
-        n_edge = n_node * (n_node - 1) // 2
-    else:
-        ind = rng[:, None] >= rng
-        n_edge = n_node * (n_node - 1) // 2 + n_node
-
-    indicies = tf.where(ind)
-    receivers = indicies[:, 0]
-    senders = indicies[:, 1]
-
-    receivers = tf.reshape(tf.cast(receivers, tf.int32), [n_edge])
-    senders = tf.reshape(tf.cast(senders, tf.int32), [n_edge])
-    n_edge = tf.reshape(n_edge, [1])
-
-    return {'receivers': receivers, 'senders': senders, 'n_edge': n_edge}
-
-
-def test_autoregressive_connect_graph_dynamic():
-    graphs = GraphsTuple(nodes=tf.range(12)[:, None], n_node=tf.constant([12]), n_edge=tf.constant([0]),
-                         edges=None, receivers=None, senders=None, globals=None)
-    graphs = autoregressive_connect_graph_dynamic(graphs, exclude_self_edges=True)
-    for s, r in zip(graphs.senders.numpy(), graphs.receivers.numpy()):
-        print(f"{s} -> {r}")
-    import networkx as nx
-    G = nx.MultiDiGraph()
-    for sender, receiver in zip(graphs.senders.numpy(), graphs.receivers.numpy()):
-        G.add_edge(sender, receiver)
-    nx.drawing.draw_circular(G, with_labels=True, node_color=(0, 0, 0), font_color=(1, 1, 1), font_size=25,
-                             node_size=1000, arrowsize=30, )
-    import pylab as plt
-    plt.show()
-
-
-def autoregressive_connect_graph_dynamic(graph,
-                                         exclude_self_edges=False,
-                                         name="autoregressive_connect_graph_dynamic"):
-    """Adds edges to a graph by auto-regressively the nodes.
-
-    This method does not require the number of nodes per graph to be constant,
-    or to be known at graph building time.
-
-    Args:
-    graph: A `graphs.GraphsTuple` with `None` values for the edges, senders and
-      receivers.
-    exclude_self_edges (default=False): Excludes self-connected edges.
-    name: (string, optional) A name for the operation.
-
-    Returns:
-    A `graphs.GraphsTuple` containing `Tensor`s with fully-connected edges.
-
-    Raises:
-    ValueError: if any of the `EDGES`, `RECEIVERS` or `SENDERS` field is not
-      `None` in `graph`.
-    """
-    utils_tf._validate_edge_fields_are_all_none(graph)
-
-    with tf.name_scope(name):
-        def body(i, senders, receivers, n_edge):
-            edges = _create_autogressive_edges_from_nodes_dynamic(graph.n_node[i],
-                                                                  exclude_self_edges)
-            return (i + 1, senders.write(i, edges['senders']),
-                    receivers.write(i, edges['receivers']),
-                    n_edge.write(i, edges['n_edge']))
-
-        num_graphs = utils_tf.get_num_graphs(graph)
-        loop_condition = lambda i, *_: tf.less(i, num_graphs)
-        initial_loop_vars = [0] + [
-            tf.TensorArray(dtype=tf.int32, size=num_graphs, infer_shape=False)
-            for _ in range(3)  # senders, receivers, n_edge
-        ]
-        _, senders_array, receivers_array, n_edge_array = tf.while_loop(loop_condition, body, initial_loop_vars)
-
-        n_edge = n_edge_array.concat()
-        offsets = utils_tf._compute_stacked_offsets(graph.n_node, n_edge)
-        senders = senders_array.concat() + offsets
-        receivers = receivers_array.concat() + offsets
-        senders.set_shape(offsets.shape)
-        receivers.set_shape(offsets.shape)
-
-        receivers.set_shape([None])
-        senders.set_shape([None])
-
-        num_graphs = graph.n_node.get_shape().as_list()[0]
-        n_edge.set_shape([num_graphs])
-
-        return graph.replace(senders=tf.stop_gradient(senders),
-                             receivers=tf.stop_gradient(receivers),
-                             n_edge=tf.stop_gradient(n_edge))
+from neural_deprojection.models.Simple_complete_model.edge_connectors import connect_graph_dynamic
 
 
 class MultiHeadLinear(AbstractModule):
@@ -315,14 +212,20 @@ class AutoRegressivePrior(AbstractModule):
 
         message_passing_layers = [SelfAttentionMessagePassing(num_heads=num_heads, name=f"self_attn_mp_{i}")
                                   for i in range(num_layers)]
-        message_passing_layers.append(blocks.NodeBlock(lambda: snt.Linear(self.num_embedding, name='output_linear'),
-                                                       use_received_edges=False, use_nodes=True,
-                                                       use_globals=False, use_sent_edges=False,
-                                                       name='project_block'))
+        # don't need because we do X @ embeddings^T
+        # message_passing_layers.append(blocks.NodeBlock(lambda: snt.Linear(self.num_embedding, name='output_linear'),
+        #                                                use_received_edges=False, use_nodes=True,
+        #                                                use_globals=False, use_sent_edges=False,
+        #                                                name='project_block'))
         self.selfattention_core = snt.Sequential(message_passing_layers, name='selfattention_core')
 
     def _core(self, graphs):
-        return self.selfattention_core(graphs)
+        graphs = self.selfattention_core(graphs)
+        # logits = output @ embeddings^T
+        # decrease in logit entropy => embeddings and output orthogonal, thus well separated embeddings
+        output_nodes = tf.einsum("nd,ed->ne", graphs.nodes, self.embeddings)
+        graphs = graphs.replace(nodes=output_nodes)
+        return graphs
 
     @once.once
     def initialize_positional_encodings(self, nodes):
@@ -571,20 +474,24 @@ class AutoRegressivePrior(AbstractModule):
 
         entropy_2d = tf.reduce_sum(q_dist_2d.entropy(), axis=-1)
         entropy_3d = tf.reduce_sum(q_dist_3d.entropy(), axis=-1)
-        entropy = entropy_3d + entropy_2d  # [num_samples*batch]
+        entropy = entropy_3d + entropy_2d  # [batch]
         ## create sequence
 
         sequence = self.construct_sequence(token_samples_idx_2d, token_samples_idx_3d)
         input_sequence = sequence[:, :-1]
-        input_graphs = self.construct_input_graph(input_sequence)
+        input_graphs = self.construct_input_graph(input_sequence, H2*W2)
         latent_logits = self.compute_logits(input_graphs)
 
         prior_dist = tfp.distributions.Categorical(logits=latent_logits, dtype=idx_dtype)
         output_sequence = sequence[:, 1:]
-        cross_entropy = tf.reduce_sum(-prior_dist.log_prob(output_sequence), axis=-1)  # num_samples*batch
-        kl_term = cross_entropy + entropy  # [num_samples*batch]
+        cross_entropy = -prior_dist.log_prob(output_sequence)#num_samples*batch, H2*W2+1+H3*W3*D3+1
+        # . a . b
+        # a . b .
+        cross_entropy = cross_entropy[:, H2*W2+1:-1]
+        cross_entropy = tf.reshape(tf.reduce_sum(cross_entropy, axis=-1), (self.num_token_samples, batch))  # num_samples,batch
+        kl_term = cross_entropy + entropy  # [num_samples, batch]
 
-        kl_div = tf.reduce_mean(kl_term, axis=0)  # scalar
+        kl_div = tf.reduce_mean(kl_term)  # scalar
         # elbo = tf.stop_gradient(var_exp) - self.beta * kl_div
         elbo = - kl_div  # scalar
 
@@ -618,7 +525,7 @@ class AutoRegressivePrior(AbstractModule):
         latent_logits -= tf.reduce_logsumexp(latent_logits, axis=-1, keepdims=True)
         return latent_logits
 
-    def construct_input_graph(self, input_sequence):
+    def construct_input_graph(self, input_sequence, N2):
         G, N = get_shape(input_sequence)
         # num_samples*batch, 1 + H2*W2 + 1 + H3*W3*D3, embedding_dim
         input_tokens = tf.nn.embedding_lookup(self.embeddings, input_sequence)
@@ -632,7 +539,16 @@ class AutoRegressivePrior(AbstractModule):
         concat_graphs = GraphsTuple(**data_dict)
         concat_graphs = graph_unbatch_reshape(concat_graphs)  # [n_graphs * (num_input + num_output), embedding_size]
         # nodes, senders, receivers, globals
-        concat_graphs = autoregressive_connect_graph_dynamic(concat_graphs, exclude_self_edges=False)
+        def edge_connect_rule(sender, receiver):
+            # . a . b -> a . b .
+            complete_2d = (sender < N2 + 1) & (receiver < N2 + 1) & (
+                        sender + 1 != receiver)  # exclude senders from one-right, so it doesn't learn copy.
+            auto_regressive_3d = (sender <= receiver) & (
+                        receiver >= N2 + 1)  # auto-regressive (excluding 2d) with self-loops
+            return complete_2d | auto_regressive_3d
+
+        # nodes, senders, receivers, globals
+        concat_graphs = connect_graph_dynamic(concat_graphs, edge_connect_rule)
         return concat_graphs
 
     def construct_sequence(self, token_samples_idx_2d, token_samples_idx_3d):

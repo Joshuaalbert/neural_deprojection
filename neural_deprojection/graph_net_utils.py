@@ -1239,6 +1239,16 @@ def batch_graph_data_dict(batched_data_dict):
         batched_data_dict['n_edge'] = batched_data_dict['n_edge'][:,0]
     return batched_data_dict
 
+def test_temperature_schedule():
+
+    # log(t_final) = -0.375 * log(n)
+    import pylab as plt
+    for log_n in np.linspace(0.5, 7, 20):
+        n = np.exp(log_n)
+        get_temp = temperature_schedule(int(n), 15)
+        tfinal = get_temp(15)
+        plt.scatter(np.log(n), tf.math.log(tfinal))
+    plt.show()
 
 def temperature_schedule(num_embedding, num_epochs, S=100, t0=1., thresh=0.95):
     """
