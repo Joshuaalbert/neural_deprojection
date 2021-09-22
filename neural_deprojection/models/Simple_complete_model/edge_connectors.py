@@ -3,12 +3,24 @@ from graph_nets import utils_tf
 from graph_nets.graphs import GraphsTuple
 
 
-def connect_graph_dynamic(graph, create_edges_func, name="connect_graph_dynamic"):
+def connect_graph_dynamic(graph: GraphsTuple, is_edge_func, name="connect_graph_dynamic"):
+    """
+    Connects a graph using a boolean edge mask to create edges.
+
+    Args:
+        graph: GraphsTuple
+        is_edge_func: callable(sender: int, receiver: int) -> bool, should broadcast
+        name:
+
+    Returns:
+        connected GraphsTuple
+    """
     utils_tf._validate_edge_fields_are_all_none(graph)
 
     with tf.name_scope(name):
         def body(i, senders, receivers, n_edge):
-            edges = create_edges_func(graph.n_node[i])
+            edges = _create_functional_connect_edges_dynamic(graph.n_node[i], is_edge_func)
+            # edges = create_edges_func(graph.n_node[i])
             return (i + 1, senders.write(i, edges['senders']),
                     receivers.write(i, edges['receivers']),
                     n_edge.write(i, edges['n_edge']))
@@ -122,32 +134,12 @@ def autoregressive_connect_graph_dynamic(graph, exclude_self_edges=False):
     ValueError: if any of the `EDGES`, `RECEIVERS` or `SENDERS` field is not
       `None` in `graph`.
     """
-    create_edges_func = lambda n_node: _create_autogressive_edges_from_nodes_dynamic(n_node, exclude_self_edges=exclude_self_edges)
-    return connect_graph_dynamic(graph, create_edges_func, name="autoregressive_connect_graph_dynamic")
 
+    if exclude_self_edges:
+        is_edge_func = lambda sender, receiver: receiver > sender
+        # output['n_edge'] = tf.fill([1], n_node * (n_node - 1) // 2)
+    else:
+        is_edge_func = lambda sender, receiver: receiver >= sender
+        # output['n_edge'] = tf.fill([1], n_node * (n_node - 1) // 2 + n_node)
 
-def _create_complete_2d_to_3dedges_from_nodes_dynamic(n_node, n_node_2d, n_node_3d):
-    """
-    Fully connects 2d nodes.
-
-    Args:
-        n_node:
-        n_node_2d:
-        n_node_3d:
-
-    Returns:
-
-    """
-    is_edge_func = lambda sender, receiver: ((sender < n_node_2d) & (receiver < n_node_2d)) | ((sender < n_node_2d) & (receiver >= n_node_2d))
-
-    output = _create_functional_connect_edges_dynamic(n_node, is_edge_func)
-    output['n_edge'] = tf.fill([1], n_node * (n_node - 1) // 2)
-
-    return output
-
-
-def complete_2d_to_3d_connect_graph_dynamic(graph, n_node_2d, n_node_3d):
-    """Adds edges to a graph from all 2d nodes to each 3d node
-    """
-    create_edges_func = lambda n_node: _create_complete_2d_to_3dedges_from_nodes_dynamic(n_node, n_node_2d, n_node_3d)
-    return connect_graph_dynamic(graph, create_edges_func, name="complete_2d_to_3d_connect_graph_dynamic")
+    return connect_graph_dynamic(graph, is_edge_func, name="autoregressive_connect_graph_dynamic")
