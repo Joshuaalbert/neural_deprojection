@@ -300,7 +300,7 @@ class AutoRegressivePrior(AbstractModule):
             # [batch, 1 + H2*W2 + 1 + H3*W3*D3 + 1]
             sequence = self.construct_sequence(token_samples_idx_2d, token_samples_idx_3d)
             input_sequence = sequence[:, :-1]
-            input_graphs = self.construct_input_graph(input_sequence)
+            input_graphs = self.construct_input_graph(input_sequence, H2*W2)
             latent_logits = self.compute_logits(input_graphs)
 
             #batch, H3 * W3 * D3, num_embedding3
