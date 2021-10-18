@@ -497,7 +497,7 @@ class AutoRegressivePrior(AbstractModule):
 
         loss = - elbo  # scalar
 
-        if self.step % 100 == 0:
+        if self.log_counter % int(128 / G) == 0:
             prior_latent_logits_2d = tf.reshape(latent_logits[:, :H2*W2, :self.discrete_image_vae.num_embedding],
                                                 (self.num_token_samples, batch, H2, W2, self.discrete_image_vae.num_embedding))
             prior_latent_logits_3d = tf.reshape(latent_logits[:, H2*W2+1:H2*W2+1+H3*W3*D3,

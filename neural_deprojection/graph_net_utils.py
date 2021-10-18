@@ -273,10 +273,12 @@ class TrainOneEpoch(Module):
         super(TrainOneEpoch, self).__init__(name=name)
         self.epoch = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.minibatch = tf.Variable(0, dtype=tf.int64, trainable=False)
+        self.log_counter = tf.Variable(0, dtype=tf.int64, trainable=False)
         self._model = model
         self._learn_variables = None
         self._model.epoch = self.epoch
         self._model.step = self.minibatch
+        self._model.log_counter = self.log_counter
         self._opt = opt
         self._loss = loss
         self._strategy = strategy
@@ -348,6 +350,7 @@ class TrainOneEpoch(Module):
         num_batches = 0.
         for train_batch in train_dataset:
             self.minibatch.assign_add(1)
+            self.log_counter.assign_add(1)
             if self.strategy is not None:
                 _loss = self.strategy.run(self.train_step, args=(train_batch,))
                 _loss = self.strategy.reduce("sum", _loss, axis=None)
@@ -363,6 +366,7 @@ class TrainOneEpoch(Module):
         loss = 0.
         num_batches = 0.
         for test_batch in test_dataset:
+            self.log_counter.assign_add(1)
             if not isinstance(test_batch, (list, tuple)):
                 test_batch = (test_batch,)
             if self.strategy is not None:
@@ -1130,6 +1134,14 @@ def grid_properties(positions, properties, voxels_per_dimension):
     binned_properties = tf.where(bin_count[..., None] > 0, binned_properties/bin_count[..., None], 0.)
     return binned_properties
 
+@tf.function
+def grid_graph_smoothing(gridded_graphs):
+    filter = tf.ones((3, 3, 3, 1, 1)) / (3.*3.*3.)
+    return tf.nn.conv3d(gridded_graphs[..., None],
+                       filters=filter,
+                       strides=[1, 1, 1, 1, 1],
+                       padding='SAME')[..., 0]
+
 def grid_graphs(graphs, voxels_per_dimension):
     """
     Grid the nodes onto a voxel 3D meshgrid.
@@ -1140,20 +1152,16 @@ def grid_graphs(graphs, voxels_per_dimension):
     Returns:
         [batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
     """
-    batched_graphs = graph_batch_reshape(graphs)
+    batched_graphs = graphs
     positions = batched_graphs.nodes[..., :3]#num_graphs, n_node_per_graph, 3
     properties = batched_graphs.nodes[..., 3:]#num_graphs, n_node_per_graph, num_properties
 
     #[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
     gridded_graphs = tf.vectorized_map(lambda args: grid_properties(*args, voxels_per_dimension), (positions, properties))#[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
-    #smooth out
-    filter = tf.ones((3, 3, 3, 1, 1)) / (3.*3.*3.)
-    #[batch, voxels_per_dimension, voxels_per_dimension, voxels_per_dimension, num_properties]
-    gridded_graphs = tf.nn.conv3d(gridded_graphs,
-                       filters=filter,
-                       strides=[1,1,1,1,1],
-                       padding='SAME')
-    return gridded_graphs
+    # #smooth out
+    smooth_gridded_graphs = tf.vectorized_map(lambda graph: grid_graph_smoothing(graph), tf.transpose(gridded_graphs, (4, 0, 1, 2, 3)))
+    smooth_gridded_graphs = tf.transpose(smooth_gridded_graphs, (1, 2, 3, 4, 0))
+    return smooth_gridded_graphs
 
 
 def build_example_dataset(num_examples, batch_size, num_blobs=3, num_nodes=64**3, image_dim=256):
@@ -1275,12 +1283,8 @@ def temperature_schedule(num_embedding, num_epochs, S=100, t0=1., thresh=0.95):
         Callable that takes epoch to (tf.int32) and get the temperature (tf.float32)
     """
 
-    temp_array = np.exp(np.linspace(np.log(0.001), np.log(1.), 1000))
-
     def softmax(r, temp):
         return np.exp(r/temp)/np.sum(np.exp(r/temp), axis=-1, keepdims=True)
-
-    _temp = np.min(temp_array)
 
     final_temp = t0
     while True:
