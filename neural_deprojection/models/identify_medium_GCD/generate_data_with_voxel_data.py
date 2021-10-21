@@ -11,24 +11,30 @@ import soxs
 import pyxsim
 import tensorflow as tf
 import numpy as np
-import networkx as nx
 
 import matplotlib.pyplot as plt
 import neural_deprojection.models.identify_medium_GCD.gadget as g
-from networkx.drawing import draw
 from tqdm import tqdm
 from astropy.io import fits
-from scipy import interpolate
 from multiprocessing import Pool, Lock
-from neural_deprojection.graph_net_utils import grid_properties
-
-if os.getcwd().split('/')[2] == 'matthijs':
-    from mayavi import mlab
-else:
-    import matplotlib
-    matplotlib.use('agg')
 
 mp_lock = Lock()
+
+
+def grid_properties(positions, properties, n=128):
+    # positions.shape = (N,D)
+    # properties.shape = (N,P)
+    voxels = []
+    # bins are n+1 equally spaced edges
+    bins = [np.linspace(positions[:, d].min(), positions[:, d].max(), n+1) for d in range(positions.shape[1])]
+    for p in range(properties.shape[1]):
+        sum_properties, _ = np.histogramdd(positions, bins=bins, weights=properties[:, p])
+        count, _ = np.histogramdd(positions, bins=bins)
+        mean_properties = np.where(count == 0, 0, sum_properties/count)
+        voxels.append(mean_properties)
+    # central point of bins is grid point center
+    center_points = [(b[:-1] + b[1:]) / 2. for b in bins]
+    return np.stack(voxels, axis=-1), center_points
 
 
 def _random_ortho_matrix(n):
@@ -66,6 +72,7 @@ def _random_special_ortho_matrix(n):
 
 
 # Finds the center of the gas particles in the snapshot by taking the average of the position extrema
+# Check if a cluster is split by a periodic boundary
 def check_split(dataset, position):
     max_pos = np.max(position.T, axis=1)
     min_pos = np.min(position.T, axis=1)
@@ -75,8 +82,6 @@ def check_split(dataset, position):
     split_cluster = False
 
     for coord, side in enumerate(box_size):
-        # print(side)
-        # print(dataset.domain_width[coord].in_cgs())
         if side > 0.5 * dataset.domain_width[coord].in_cgs():
             split_cluster = True
 
@@ -120,7 +125,7 @@ def existing_clusters(record_bytes):
     cluster_idx = tf.io.parse_tensor(parsed_example['cluster_idx'], tf.int32)
     projection_idx = tf.io.parse_tensor(parsed_example['projection_idx'], tf.int32)
     image = tf.io.parse_tensor(parsed_example['image'], tf.float32)
-    return (cluster_idx, projection_idx, image)
+    return cluster_idx, projection_idx, image
 
 
 @tf.function
@@ -147,6 +152,7 @@ def save_examples(generator,
         examples_per_file: int, max number examples per file
         num_examples: number of examples
         exp_time: exposure time (used in filename)
+        prefix: string, prefix for the tf record file name
 
     Returns: list of tfrecord files.
     """
@@ -261,7 +267,8 @@ def decode_examples(record_bytes, voxels_shape=None, image_shape=None):
 
     return voxels, image, cluster_idx, projection_idx, vprime
 
-def load_data_bahamas(cluster, centers, base_data_dir):
+
+def load_data_bahamas(cluster, centers, data_dir):
     with h5py.File(os.path.join(cluster, os.path.basename(cluster) + '.hdf5'), 'r') as ds:
         positions = np.array(ds['PartType0']['Coordinates'])
         velocities = np.array(ds['PartType0']['Velocity'])
@@ -272,15 +279,12 @@ def load_data_bahamas(cluster, centers, base_data_dir):
 
     # For some reason the Bahamas snapshots are structured so that when you load one part of the snapshot,
     # you load the entire simulation box, so there is not a specific reason to choose the first element of filenames
-    filenames = glob.glob(os.path.join(base_data_dir, cluster.split('/')[-2], 'data/snapshot_032/*.hdf5'))
+    filenames = glob.glob(os.path.join(data_dir, cluster.split('/')[-2], 'data/snapshot_032/*.hdf5'))
     snap_file = filenames[0]
     ds = yt.load(snap_file)
 
     # Create a sphere around the center of the snapshot, which captures the photons
     c = centers[get_index(cluster)]
-
-    # c[0] -= 1.0
-    # c[1] += 1.0
 
     properties = np.stack((positions.T[0],
                            positions.T[1],
@@ -309,8 +313,6 @@ def load_data_magneticum(cluster, snap_dir):
 
     # Create a sphere around the center of the snapshot, which captures the photons
     c = np.mean(ds.all_data()['Gas', 'Coordinates'].d.T, axis=1)
-    # c[0] += 500
-    # c[1] -= 0
 
     properties = np.stack((positions.T[0],
                            positions.T[1],
@@ -328,16 +330,13 @@ def load_data_magneticum(cluster, snap_dir):
 
 def generate_data(cluster,
                   tfrecord_dir,
-                  base_data_dir,
+                  data_dir,
                   cluster_dirs,
                   snap_dir,
-                  centers,
                   number_of_projections=26,
                   exp_time=1000.,
                   redshift=0.20,
-                  number_of_virtual_nodes=1000,
                   number_of_voxels_per_dimension=64,
-                  number_of_neighbours=26,
                   plotting=0):
     cluster_idx = get_index(cluster)
     good_cluster = True
@@ -359,7 +358,6 @@ def generate_data(cluster,
     hydrogen_dens = 0.04  # The foreground column density in units of 10^22 cm^{-2}. Only used if absorption is applied.
     radius = (4.0, "Mpc")  # Radius of the sphere which captures photons
     sky_center = [0., 0.]  # Ra and dec coordinates of the cluster (which are currently dummy values)
-    hot_gas_temp = 10 ** 5.4
 
     units = np.array([Mpc,
                       Mpc,
@@ -374,9 +372,18 @@ def generate_data(cluster,
 
     # Load in particle data and prepare for making an xray image.
     if get_simulation_name(cluster) == 'Bahamas':
+        gdata = g.Gadget(os.path.join(data_dir, snap_dir), 'subh', snapnum=32, sim='BAHAMAS')
+
+        subhalo_ids = [int(id) for id in gdata.read_var('FOF/FirstSubhaloID', verbose=False)]
+
+        centers = gdata.read_var('Subhalo/CentreOfPotential', verbose=False)
+        centers = centers[subhalo_ids[:-1]]
+        # Convert to codelength by going from cm to Mpc and from Mpc to codelength
+        centers /= gdata.cm_per_mpc / 0.7
+
         properties, c, ds = load_data_bahamas(cluster=cluster,
                                               centers=centers,
-                                              base_data_dir=base_data_dir)
+                                              data_dir=data_dir)
     else:
         properties, c, ds = load_data_magneticum(cluster=cluster, snap_dir=snap_dir)
 
@@ -393,14 +400,14 @@ def generate_data(cluster,
               f'is to leave the cluster out of the dataset.')
         good_cluster = False
 
-    if properties.shape[0] < number_of_virtual_nodes:
+    if properties.shape[0] < 10000:
         print(f'\nThe cluster contains {properties.shape[0]} particles '
-              f'which is not enough to make {number_of_virtual_nodes} virtual nodes.')
+              f'which is less than the threshold of 10000.')
         good_cluster = False
 
     # Set a minimum temperature to leave out that shouldn't be X-ray emitting,
-    # set metallicity to 0.3 Zsolar (should maybe fix later)
-    # The source model determines the distribution of photons that are emitted
+    # set metallicity to 0.3 * Zsolar (should maybe fix later)
+    # The source model determines the photon energy distribution and which photon energies to look at
     source_model = pyxsim.ThermalSourceModel(spectral_model="apec",
                                              emin=emin,
                                              emax=emax,
@@ -408,7 +415,8 @@ def generate_data(cluster,
                                              Zmet=metallicty,
                                              kT_min=kt_min)
 
-    # Create the photonlist
+    # Simulate the photons from the source located at a certain redshift,
+    # that pass through a certain area, during a certain exposure time
     photons = pyxsim.PhotonList.from_data_source(data_source=sp,
                                                  redshift=redshift,
                                                  area=area,
@@ -425,18 +433,6 @@ def generate_data(cluster,
               f'so cluster {cluster_idx} is skipped.')
         good_cluster = False
 
-    if plotting > 0:
-        # This is a filter which creates a new particle type (in memory), which
-        # makes a cut on gas temperature to only consider gas that will really be
-        # X-ray emitting
-        def hot_gas(pfilter, data):
-            temp = data[pfilter.filtered_type, "temperature"]
-            return temp > hot_gas_temp
-
-        yt.add_particle_filter("hot_gas", function=hot_gas,
-                               filtered_type='gas', requires=["temperature"])
-        ds.add_particle_filter("hot_gas")
-
     def data_generator():
         for projection_idx in tqdm(np.arange(number_of_projections)):
             print(f'\n\nCluster file: {cluster}')
@@ -448,18 +444,17 @@ def generate_data(cluster,
 
             # Rotate variables
             rot_mat = _random_special_ortho_matrix(3)
-            # rot_mat = np.eye(3)
             _properties[:, :3] = (rot_mat @ _properties[:, :3].T).T
             _properties[:, 3:6] = (rot_mat @ _properties[:, 3:6].T).T
             center = (rot_mat @ np.array(sp.center.in_cgs()).T).T
 
-            # Cut out box in 3D space
+            # Cut out box in 3D space based on diameter of the xray image
             lower_lim = center - 0.5 * cutout_box_size * np.array([1, 1, 1])
             upper_lim = center + 0.5 * cutout_box_size * np.array([1, 1, 1])
             indices = np.where((_properties[:, 0:3] < lower_lim) | (_properties[:, 0:3] > upper_lim))[0]
             _properties = np.delete(_properties, indices, axis=0)
 
-            # Scale the variables
+            # Scale the variables to neural network friendly values
             _properties[:, 0:3] = (_properties[:, 0:3] - center) / units[0:3]
             _properties[:, 3:6] = _properties[:, 3:6] / units[3:6]
             _properties[:, 6:] = np.log10(_properties[:, 6:] / units[6:])
@@ -468,13 +463,6 @@ def generate_data(cluster,
             print(f'Properties :', _properties[0])
             print('Properties shape: ', _properties.shape)
 
-            if plotting > 0:
-                hot_gas_pos = ds.all_data()['hot_gas', 'position'].in_cgs().d
-                hot_gas_pos = (rot_mat @ hot_gas_pos.T).T
-                hot_gas_pos = (hot_gas_pos / units[0:3]) - center
-            else:
-                hot_gas_pos = None
-
             v = np.eye(3)
             vprime = rot_mat.T @ v
 
@@ -482,10 +470,11 @@ def generate_data(cluster,
             viewing_vec = vprime[:, 2]
 
             # Finds the events along a certain line of sight
-            cluster_projection_identity = number_of_projections * cluster_idx + projection_idx
             events_z = photons.project_photons(viewing_vec, sky_center, absorb_model="tbabs", nH=hydrogen_dens,
                                                north_vector=north_vector)
 
+            # Write the events to a simput file
+            cluster_projection_identity = number_of_projections * cluster_idx + projection_idx
             events_z.write_simput_file(f'snap_{cluster_projection_identity}', overwrite=True)
 
             # Determine which events get detected by the AcisI instrument of Chandra
@@ -499,42 +488,72 @@ def generate_data(cluster,
                                       foreground=False,
                                       instr_bkgnd=False)
 
+            # Soxs creates fits files to store the Chandra mock xray image
             soxs.write_image(f'snap_{cluster_projection_identity}_evt.fits',
                              f'snap_{cluster_projection_identity}_img.fits',
                              emin=emin,
                              emax=emax,
                              overwrite=True)
 
+            # Crop the xray image to 2048x2048 and store it in a numpy array
             with fits.open(f'snap_{cluster_projection_identity}_img.fits') as hdu:
                 xray_image = np.array(hdu[0].data, dtype='float32')[1358:3406, 1329:3377]  # [2048,2048]
 
+            # Remove the fits files created by soxs (now that we have the array, the fits files are no longer needed)
             temp_fits_files = glob.glob(os.path.join(os.getcwd(), f'snap_{cluster_projection_identity}_*.fits'))
             for file in temp_fits_files:
                 print(f'Removing : {os.path.basename(file)}')
                 os.remove(file)
 
+            # Downsample xray image from 2048x2048 to 256x256
             xray_image = downsample(xray_image)
             xray_image = downsample(xray_image)
             xray_image = downsample(xray_image)[:, :, None]
+
+            # Take the log (base 10) and enforce a minimum value of 1e-5
             xray_image = np.log10(np.where(xray_image < 1e-5, 1e-5, xray_image))
 
-            voxels = grid_properties(positions=tf.convert_to_tensor(_properties[:, 0:3], tf.float32),
-                                     properties=tf.convert_to_tensor(_properties[:, 3:], tf.float32),
-                                     voxels_per_dimension=number_of_voxels_per_dimension)
+            # Create voxels from the sph particle properties
+            voxels, center_points = grid_properties(positions=_properties[:, 0:3],
+                                                    properties=_properties[:, 6:8],
+                                                    n=number_of_voxels_per_dimension)
 
-            # projected_img = tf.reduce_sum(voxels, axis=-2)  # [batch, H', W', C]
-            # i = 4  # 3=density, 4=temperature
-            # vmin = tf.reduce_min(projected_img[..., i])
-            # vmax = tf.reduce_max(projected_img[..., i])
-            # _projected_img = (projected_img[..., i:i + 1] - vmin) / (vmax - vmin)  # batch, H', W', 1
-            # _projected_img = tf.clip_by_value(_projected_img, 0., 1.)
-            #
-            # fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-            # ax.imshow(_projected_img)
-            # plt.show()
+            # Calculate gradients and laplacians for the voxel properties
+            voxels_grads = []
+            voxels_laplacians = []
+            for p in range(voxels.shape[-1]):
+                _voxels_grads = np.gradient(voxels[:, :, :, p],
+                                            *center_points)  # tuple of three arrays of shape (n,n,n)
+                voxels_grads.append(np.stack(_voxels_grads, axis=-1))  # stack into shape (n,n,n,3)
+                _voxels_laplacian = [np.gradient(_voxels_grads[i], center_points[i], axis=i) for i in range(3)]
+                voxels_laplacians.append(sum(_voxels_laplacian))
+
+            # Add the gradients and laplacians as channels to the voxels
+            voxels_grads = np.concatenate(voxels_grads, axis=-1)  # (n,n,n,3*P)
+            voxels_laplacians = np.stack(voxels_laplacians, axis=-1)  # (n,n,n,P)
+            voxels_all = np.concatenate([voxels, voxels_grads, voxels_laplacians], axis=-1)  # (n,n,n,P+3*P+P)
+            voxels_all = tf.convert_to_tensor(voxels_all, tf.float32)
+
+            # Plot voxel properties
+            if plotting > 0:
+                plot_titles = ['rho', 'U',
+                               'rho gradient x', 'rho gradient y', 'rho gradient z',
+                               'U gradient x', 'U gradient y', 'U gradient z',
+                               'rho laplacian', 'U laplacian']
+
+                for i in range(voxels_all.shape[-1]):
+                    # project the voxels along the z-axis (we take the mean value along the z-axis)
+                    projected_img = tf.reduce_sum(voxels_all, axis=-2) / number_of_voxels_per_dimension
+
+                    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+                    prop_plot = ax.imshow(projected_img[..., i])
+                    fig.colorbar(prop_plot, ax=ax)
+                    ax.set_title(f'{plot_titles[i]}')
+                    plt.savefig(f'{plot_titles[i]}.png')
+                    plt.show()
 
             # This function is a generator, which has the advantage of not keeping used and upcoming data in memory.
-            yield (voxels, xray_image, cluster_idx, projection_idx, vprime)
+            yield voxels_all, xray_image, cluster_idx, projection_idx, vprime
 
     if good_cluster:
         # Save the data as tfrecords and return the filenames of the tfrecords
@@ -546,39 +565,32 @@ def generate_data(cluster,
                       prefix='train')
 
 
-def main(magneticum_snap_directories,
+def main(data_dir,
+         magneticum_snap_directories,
          bahamas_snap_directories,
          multi_processing=False,
-         addition=False,
-         check_clusters=False,
-         number_of_virtual_nodes=500,
          number_of_voxels_per_dimension=64,
          number_of_projections=26,
          exposure_time=5000.,
          redshift=0.20,
          plotting=0,
-         cores=16,
-         number_of_neighbours=6,
-         move_to_front=None):
+         cores=16):
     yt.funcs.mylog.setLevel(40)  # Suppresses yt status output.
     soxs.utils.soxsLogger.setLevel(40)  # Suppresses soxs status output.
     pyxsim.utils.pyxsimLogger.setLevel(40)  # Suppresses pyxsim status output.
 
-    # Define the directories containing the data
-    if os.getcwd().split('/')[2] == 's2675544':
-        base_data_dir = '/home/s2675544/data'
-        print('Running on ALICE')
-    else:
-        base_data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data'
-        print('Running at home')
+    # Define the data directories of each simulation
+    magneticum_data_dir = os.path.join(data_dir, 'Magneticum/Box2_hr')
+    bahamas_data_dir = os.path.join(data_dir, 'Bahamas')
 
-    my_magneticum_data_dir = os.path.join(base_data_dir, 'Magneticum/Box2_hr')
-    my_bahamas_data_dir = os.path.join(base_data_dir, 'Bahamas')
-    my_tf_records_dir = os.path.join(base_data_dir, 'tf_records')
+    # Directory where tf records will be saved
+    my_tf_records_dir = os.path.join(data_dir, 'tf_records')
 
-    magneticum_snap_paths = [os.path.join(my_magneticum_data_dir, snap_dir) for snap_dir in magneticum_snap_directories]
-    bahamas_snap_paths = [os.path.join(my_bahamas_data_dir, snap_dir) for snap_dir in bahamas_snap_directories]
+    # Define the full paths of the snapshots in each simulation
+    magneticum_snap_paths = [os.path.join(magneticum_data_dir, snap_dir) for snap_dir in magneticum_snap_directories]
+    bahamas_snap_paths = [os.path.join(bahamas_data_dir, snap_dir) for snap_dir in bahamas_snap_directories]
 
+    # Per snapshot, define the indices of cluster that are excluded from generating the tf records
     defect_clusters = {'snap_128': {'split': [109, 16, 72, 48],
                                     'photon_max': [53, 78],
                                     'too_small': []},
@@ -596,173 +608,95 @@ def main(magneticum_snap_directories,
                                                          'photon_max': [],
                                                          'too_small': []}}
 
-    for snap_idx, snap_path in enumerate(magneticum_snap_paths + bahamas_snap_paths):
-        print(f'Snapshot path : {snap_path}')
+    # Iterate over the cosmological simulation snapshots
+    for snap_path in magneticum_snap_paths + bahamas_snap_paths:
+        print(f'\nSnapshot path : {snap_path}')
         snap_dir = os.path.basename(snap_path)
 
+        # Make a list of clusters in the snapshot
         if snap_dir[0:3] == 'AGN':
             cluster_dirs = glob.glob(os.path.join(snap_path, '*'))
-
-            gdata = g.Gadget(os.path.join(base_data_dir, snap_dir), 'subh', snapnum=32, sim='BAHAMAS')
-
-            subhalo_ids = [int(id) for id in gdata.read_var('FOF/FirstSubhaloID', verbose=False)]
-
-            centers = gdata.read_var('Subhalo/CentreOfPotential', verbose=False)
-            centers = centers[subhalo_ids[:-1]]
-            # Convert to codelength by going from cm to Mpc and from Mpc to codelength
-            centers /= gdata.cm_per_mpc / 0.7
         else:
             cluster_dirs = glob.glob(os.path.join(snap_path, '*/*/*'))
-            centers = []
 
+        # Directory where the tf records for the specific snapshot will be saved
         tfrecord_dir = os.path.join(my_tf_records_dir, snap_dir + '_tf_records')
-
         print(f'Tensorflow records will be saved in : {tfrecord_dir}')
-        print(f'Number of clusters : {len(cluster_dirs)}')
 
+        # List the indices of bad clusters
+        print(f'\nNumber of clusters : {len(cluster_dirs)}')
         bad_cluster_idx = defect_clusters[snap_dir]['split'] + \
                           defect_clusters[snap_dir]['too_small'] + \
                           defect_clusters[snap_dir]['photon_max']
-
         print(f'Number of viable clusters : {len(cluster_dirs) - len(bad_cluster_idx)}')
 
-        if check_clusters:
-            if os.path.isdir(tfrecord_dir):
-                tfrecords = glob.glob(os.path.join(tfrecord_dir, '*'))
+        # Remove bad clusters from cluster list
+        bad_cluster_dirs = []
+        for cluster_dir in cluster_dirs:
+            if get_index(cluster_dir) in bad_cluster_idx:
+                bad_cluster_dirs.append(cluster_dir)
+        for bad_cluster_dir in bad_cluster_dirs:
+            cluster_dirs.remove(bad_cluster_dir)
 
-                if os.path.isdir(tfrecords[0]):
-                    tfrecords = glob.glob(os.path.join(tfrecord_dir, 'train', '*')) + \
-                                glob.glob(os.path.join(tfrecord_dir, 'test', '*'))
+        # Generate tf records from the cluster files
+        if multi_processing:
+            params = [(cluster,
+                       tfrecord_dir,
+                       data_dir,
+                       cluster_dirs,
+                       snap_dir,
+                       number_of_projections,
+                       exposure_time,
+                       redshift,
+                       number_of_voxels_per_dimension,
+                       plotting) for cluster in cluster_dirs]
 
-                processed_cluster_idxs = []
-
-                # Why does the downsample function not run if this is executed AND multiprocessing is on????
-                existing_cluster_datasets = tf.data.TFRecordDataset(tfrecords).map(
-                    lambda record_bytes: existing_clusters(record_bytes))
-
-                os.makedirs(os.path.join(base_data_dir, 'images', snap_dir), exist_ok=True)
-
-                for cluster_idx, projection_idx, image in tqdm(iter(existing_cluster_datasets)):
-                    processed_cluster_idxs.append(cluster_idx.numpy())
-                    if projection_idx.numpy() < 3:
-                        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
-                        ax.imshow(image.numpy()[:, :, 0])
-                        plt.savefig(os.path.join(base_data_dir, 'images', snap_dir, 'xray_' +
-                                                 '{:03d}'.format(cluster_idx.numpy()) + '_' +
-                                                 '{:02d}'.format(projection_idx.numpy()) + '.png'))
-                        plt.close(fig=fig)
-
-                bad_cluster_dirs = []
-
-                for cluster_dir in cluster_dirs:
-                    if get_index(cluster_dir) in bad_cluster_idx:
-                        bad_cluster_dirs.append(cluster_dir)
-
-                for bad_cluster_dir in bad_cluster_dirs:
-                    cluster_dirs.remove(bad_cluster_dir)
-
-                for cluster_dir in sorted(cluster_dirs):
-                    if processed_cluster_idxs.count(get_index(cluster_dir)) != 26:
-                        print('Unfinished cluster ', cluster_dir, ' : ', processed_cluster_idxs.count(get_index(cluster_dir)), ' images')
-
-                print(f'Number of bad clusters: {len(bad_cluster_dirs)}')
-                print(f'Already processed : {len(set(processed_cluster_idxs))}')
-                print(f'Remaining cluster indices : {list(set([get_index(cluster) for cluster in cluster_dirs]) - set(processed_cluster_idxs))}')
-            else:
-                print('Can not check clusters because the cluster directory does not yet exist!')
+            pool = Pool(cores)
+            pool.starmap(generate_data, params)
         else:
-            bad_cluster_dirs = []
-
-            # print(f'All cluster indices : {[get_index(cluster) for cluster in cluster_dirs]}')
-
-            if move_to_front is not None:
-                cluster_dirs.insert(0, cluster_dirs.pop([get_index(cluster)
-                                                         for cluster in cluster_dirs].index(move_to_front)))
-            if addition:
-                # Remove clusters which are already processed, lie on a periodic boundary
-                # or will take too long to process
-                # good_cluster_idxs = [53, 78]  # snap_128
-                # good_cluster_idxs = [139, 289, 1]  # snap_132
-                # good_cluster_idxs = [0, 7, 28, 59, 2, 53, 46, 152]  # snap_132
-                # AGN 400 remaining big clusters [0, 1, 2, 3, 4, 40]
-                good_cluster_idxs = [0, 1, 2, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26,
-                                     27, 28, 29, 30, 31, 33, 34, 36, 37, 38, 39, 40, 41, 43, 44, 46, 47, 48, 50, 53, 54,
-                                     58, 59, 60, 61, 62, 63, 64, 66, 67, 68, 69, 70, 71, 74, 76, 77, 78, 79, 81, 82, 83,
-                                     84, 85, 86, 87, 88, 89, 90, 92, 93, 94, 95, 99, 100, 103, 104, 105, 108, 109, 110,
-                                     111, 112, 113, 115, 116, 117, 118, 120, 125, 126, 127, 129, 130, 132, 133, 135, 138,
-                                     139, 140, 141, 143, 144, 145, 147, 150, 151, 152, 154, 155, 156, 161, 163, 165, 168,
-                                     169, 170, 171, 172, 175, 176, 177, 178, 182, 185, 187, 188, 189, 190, 194, 195, 196,
-                                     197, 199, 200, 202, 204, 206, 207, 208, 209, 210, 211, 212, 217, 218, 224, 225, 227,
-                                     228, 230, 234, 235, 239, 240, 241, 242, 244, 245, 258, 266, 271, 280, 292, 295, 298,
-                                     300, 302, 307, 313, 314, 322, 329, 332, 344, 349, 351, 364, 445, 459]
-
-
-                for cluster_dir in cluster_dirs:
-                    if get_index(cluster_dir) not in good_cluster_idxs:
-                        bad_cluster_dirs.append(cluster_dir)
-            else:
-                for cluster_dir in cluster_dirs:
-                    if get_index(cluster_dir) in bad_cluster_idx:
-                        bad_cluster_dirs.append(cluster_dir)
-
-            for bad_cluster_dir in bad_cluster_dirs:
-                cluster_dirs.remove(bad_cluster_dir)
-
-            # print(f'Remaining cluster indices : {[get_index(cluster) for cluster in cluster_dirs]}')
-
-            if multi_processing:
-                params = [(cluster,
-                           tfrecord_dir,
-                           base_data_dir,
-                           cluster_dirs,
-                           snap_dir,
-                           centers,
-                           number_of_projections,
-                           exposure_time,
-                           redshift,
-                           number_of_virtual_nodes,
-                           number_of_voxels_per_dimension,
-                           number_of_neighbours,
-                           plotting) for cluster in cluster_dirs]
-
-                pool = Pool(cores)
-                pool.starmap(generate_data, params)
-            else:
-                for cluster in cluster_dirs:
-                    generate_data(cluster=cluster,
-                                  tfrecord_dir=tfrecord_dir,
-                                  base_data_dir=base_data_dir,
-                                  cluster_dirs=cluster_dirs,
-                                  snap_dir=snap_dir,
-                                  centers=centers,
-                                  number_of_projections=number_of_projections,
-                                  exp_time=exposure_time,
-                                  redshift=redshift,
-                                  number_of_virtual_nodes=number_of_virtual_nodes,
-                                  number_of_voxels_per_dimension=number_of_voxels_per_dimension,
-                                  number_of_neighbours=number_of_neighbours,
-                                  plotting=plotting)
+            for cluster in cluster_dirs:
+                generate_data(cluster=cluster,
+                              tfrecord_dir=tfrecord_dir,
+                              data_dir=data_dir,
+                              cluster_dirs=cluster_dirs,
+                              snap_dir=snap_dir,
+                              number_of_projections=number_of_projections,
+                              exp_time=exposure_time,
+                              redshift=redshift,
+                              number_of_voxels_per_dimension=number_of_voxels_per_dimension,
+                              plotting=plotting)
 
 
 if __name__ == '__main__':
-    # Determine which snapshots to use
-    magneticum_snap_dirs = ['snap_128', 'snap_136']
-    # Possible Magneticum dirs ['snap_128', 'snap_132', 'snap_136']
+    # Define the directories containing the data
+    if os.getcwd().split('/')[2] == 's2675544':
+        print('Running on ALICE')
+        data_dir = '/home/s2675544/data'
 
-    bahamas_snap_dirs = ['AGN_TUNED_nu0_L400N1024_WMAP9']
-    # Possible Bahamas dirs : ['AGN_TUNED_nu0_L100N256_WMAP9', 'AGN_TUNED_nu0_L400N1024_WMAP9']
+        # Determine which snapshots to use on ALICE
+        magneticum_snap_dirs = ['snap_128', 'snap_132', 'snap_136']
+        bahamas_snap_dirs = ['AGN_TUNED_nu0_L400N1024_WMAP9']
 
-    main(magneticum_snap_directories=magneticum_snap_dirs,
+        # Possible Magneticum dirs ['snap_128', 'snap_132', 'snap_136']
+        # Possible Bahamas dirs : ['AGN_TUNED_nu0_L100N256_WMAP9', 'AGN_TUNED_nu0_L400N1024_WMAP9']
+
+        multi_proc = True
+    else:
+        data_dir = '/home/matthijs/Documents/Studie/Master_Astronomy/1st_Research_Project/Data'
+        print('Running at home')
+
+        # Determine which snapshots to use at home
+        magneticum_snap_dirs = ['snap_132']
+        bahamas_snap_dirs = []
+        multi_proc = False
+
+    main(data_dir=data_dir,
+         magneticum_snap_directories=magneticum_snap_dirs,
          bahamas_snap_directories=bahamas_snap_dirs,
-         multi_processing=True,
-         addition=False,
-         check_clusters=False,
-         number_of_virtual_nodes=10000,
-         number_of_voxels_per_dimension=64,
+         multi_processing=multi_proc,
+         number_of_voxels_per_dimension=128,
          number_of_projections=26,
          exposure_time=1000.,
          redshift=0.20,
-         plotting=0,
-         cores=8,
-         number_of_neighbours=6,
-         move_to_front=None)
+         plotting=1,
+         cores=8)
