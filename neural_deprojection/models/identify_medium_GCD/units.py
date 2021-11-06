@@ -3,7 +3,6 @@ README
 
 This script stores the rho and U data of all particles in all clusters and
 calculates the the unit and number for scaling these properties.
-See the function calculate_unit_and_scaling() for how the units and numbers are calculated.
 """
 import sys
 
@@ -19,6 +18,7 @@ import pyxsim
 import numpy as np
 
 import neural_deprojection.models.identify_medium_GCD.gadget as g
+from neural_deprojection.models.identify_medium_GCD.generate_data_with_voxel_data import grid_properties
 
 
 def get_box_size(positions):
@@ -58,6 +58,7 @@ def unsplit_positions(positions, simulation_box):
                                                positions[:, coord] + half_sim_box)
     return new_positions
 
+
 def get_index(cluster_dirname):
     if 'AGN' in cluster_dirname:
         index = int(cluster_dirname.split('/')[-1][-3:])
@@ -84,8 +85,7 @@ def get_clusters(snap_path, defect_clusters):
 
     # List the indices of bad clusters
     print(f'\nNumber of clusters : {len(cluster_dirs)}')
-    bad_cluster_idx = defect_clusters[snap_dir]['too_small'] + \
-                      defect_clusters[snap_dir]['photon_max']
+    bad_cluster_idx = defect_clusters[snap_dir]['too_small'] + defect_clusters[snap_dir]['photon_max']
     print(f'Number of viable clusters : {len(cluster_dirs) - len(bad_cluster_idx)}')
 
     # Remove bad clusters from cluster list
@@ -243,27 +243,55 @@ def load_data(cluster):
     return properties, cluster_center, unsplit_positions_center,  dataset, sim_box
 
 
-def calculate_unit_and_scaling(quantity_array):
-    log_quantity = np.log10(quantity_array)
-    unit = 10 ** np.mean(log_quantity)
-    number = np.sqrt(np.mean(np.square(log_quantity - np.log10(unit))))
-    return unit, number
+def global_std(means, stds):
+    """
+    Given the mean and std of property for a number of subsets (i.e. clusters),
+    calculate the global mean of property and the global std of property from the complete set,
+    so that property / global_std has a std of 1
+
+    This function assumes that all subsets have the same length (for us, it is 128x128x128)
+
+    means: array, array with the mean of property, size [number of subsets/clusters]
+    stds: array, array with the std of property, size [number of subsets/clusters]
+    """
+    total_mean = np.mean(means)
+    _global_std = np.sqrt(np.mean(stds**2 + (means - total_mean)**2))
+    return _global_std
 
 
-def main(data_dir,
+def global_mean_and_std_of_logs(means_of_logs, stds_of_logs):
+    """
+    Given the mean and std of log(property) for a number of subsets (i.e. clusters),
+    calculate the global mean of property and the global std of log(property) from the complete set,
+    so that log(property / global_mean) / global_std_of_logs has a mean of 0 and a std of 1
+
+    This function assumes that all subsets have the same length (for us, it is 128x128x128)
+
+    means_of_logs: array, array with the mean of log(property), size [number of subsets/clusters]
+    stds_of_logs: array, array with the std of log(property), size [number of subsets/clusters]
+    """
+    global_mean_of_logs = np.mean(means_of_logs)
+    global_std_of_logs = np.sqrt(np.mean(stds_of_logs**2 + (means_of_logs - global_mean_of_logs)**2))
+    global_mean = 10**global_mean_of_logs
+    return global_mean, global_std_of_logs
+
+
+def main(data_path,
          magneticum_snap_directories,
-         bahamas_snap_directories):
+         bahamas_snap_directories,
+         number_of_voxels_per_dimension,
+         n_properties):
     yt.funcs.mylog.setLevel(40)  # Suppresses yt status output.
     soxs.utils.soxsLogger.setLevel(40)  # Suppresses soxs status output.
     pyxsim.utils.pyxsimLogger.setLevel(40)  # Suppresses pyxsim status output.
 
     # Define the data directories of each simulation
-    magneticum_data_dir = os.path.join(data_dir, 'Magneticum/Box2_hr')
-    bahamas_data_dir = os.path.join(data_dir, 'Bahamas')
+    magneticum_data_path = os.path.join(data_path, 'Magneticum/Box2_hr')
+    bahamas_data_path = os.path.join(data_path, 'Bahamas')
 
     # Define the full paths of the snapshots in each simulation
-    magneticum_snap_paths = [os.path.join(magneticum_data_dir, snap_dir) for snap_dir in magneticum_snap_directories]
-    bahamas_snap_paths = [os.path.join(bahamas_data_dir, snap_dir) for snap_dir in bahamas_snap_directories]
+    magneticum_snap_paths = [os.path.join(magneticum_data_path, snap_dir) for snap_dir in magneticum_snap_directories]
+    bahamas_snap_paths = [os.path.join(bahamas_data_path, snap_dir) for snap_dir in bahamas_snap_directories]
 
     # Per snapshot, define the indices of cluster that are excluded from generating the tf records
     defect_clusters = {'snap_128': {'photon_max': [53, 78],
@@ -277,40 +305,67 @@ def main(data_dir,
                                                             set(np.arange(20, 200)) - {20, 21, 22, 28})},
                        'AGN_TUNED_nu0_L400N1024_WMAP9': {'photon_max': [],
                                                          'too_small': []}}
-    rhos = np.array([])
-    Us = np.array([])
+
+    n_channels = 5 * n_properties
+    channel_means_and_stds_per_cluster = np.empty((n_channels, 2, 0))
 
     # Iterate over the cosmological simulation snapshots
     for snap_path in magneticum_snap_paths + bahamas_snap_paths:
         clusters = get_clusters(snap_path, defect_clusters)
-        for cluster in clusters:
+        for cluster in clusters[:3]:
             properties, _, _, _, _ = load_data(cluster)
 
-            rho = properties[:, 6]
-            U = properties[:, 7]
+            # Create voxels from the sph particle properties
+            voxels, center_points = grid_properties(positions=properties[:, 0:3],
+                                                    properties=properties[:, 6:8],
+                                                    n=number_of_voxels_per_dimension)
 
-            print(rho.shape)
+            # Calculate gradients and laplacians for the voxel properties
+            voxels_grads = []
+            voxels_laplacians = []
+            for p in range(voxels.shape[-1]):
+                _voxels_grads = np.gradient(voxels[:, :, :, p],
+                                            *center_points)  # tuple of three arrays of shape (n,n,n)
+                voxels_grads.append(np.stack(_voxels_grads, axis=-1))  # stack into shape (n,n,n,3)
+                _voxels_laplacian = [np.gradient(_voxels_grads[i], center_points[i], axis=i) for i in range(3)]
+                voxels_laplacians.append(sum(_voxels_laplacian))
 
-            # Store the rhos and Us of all particles in all clusters
-            rhos = np.concatenate((rhos, rho), axis=0)
-            Us = np.concatenate((Us, U), axis=0)
+            # Add the gradients and laplacians as channels to the voxels
+            voxels_grads = np.concatenate(voxels_grads, axis=-1)  # (n,n,n,3*P)
+            voxels_laplacians = np.stack(voxels_laplacians, axis=-1)  # (n,n,n,P)
 
-    yr = 3.15576e7  # in seconds
-    pc = 3.085678e18  # in cm
-    M_sun = 1.989e33  # in gram
+            voxels_all = np.concatenate([voxels, voxels_grads, voxels_laplacians], axis=-1)  # (n,n,n,P+3*P+P)
 
-    rho_unit = 1e-7 * M_sun / pc ** 3
-    U_unit = 1e-7 * (pc / yr) ** 2
+            channel_means_and_stds = np.zeros((n_channels, 2))
 
-    for quantity_array, original_unit in zip([rhos, Us], [rho_unit, U_unit]):
-        new_unit, number = calculate_unit_and_scaling(quantity_array)
-        data = np.log10(quantity_array / new_unit) / number
+            for i in np.arange(n_channels):
+                if i >= n_properties:
+                    # gradient or laplacian
+                    channel = voxels_all[:, :, :, i].flatten()
+                else:
+                    # property
+                    channel = voxels_all[:, :, :, i].flatten()
+                    minimum = np.min(channel[np.nonzero(channel)])
+                    channel = np.where(channel == 0., 1e-5 * minimum, channel)
+                    channel = np.log10(channel)
+                channel_means_and_stds[i][0] = np.mean(channel)
+                channel_means_and_stds[i][1] = np.std(channel)
 
-        print('\nnew unit ', new_unit)
+            channel_means_and_stds_per_cluster = np.append(channel_means_and_stds_per_cluster,
+                                                           channel_means_and_stds[..., None], axis=-1)
+
+    for i in np.arange(channel_means_and_stds_per_cluster.shape[0]):
+        print('\nchannel index ', i)
+        if n_properties <= i < 4 * n_properties:
+            # gradient or laplacian
+            number = global_std(channel_means_and_stds_per_cluster[i][0],
+                                channel_means_and_stds_per_cluster[i][1])
+        else:
+            # property
+            new_unit, number = global_mean_and_std_of_logs(channel_means_and_stds_per_cluster[i][0],
+                                                           channel_means_and_stds_per_cluster[i][1])
+            print('new unit ', new_unit)
         print('number ', number)
-        print('mean (should be 0)', np.mean(data))
-        print('std (should be 1)', np.std(data))
-        print('unit factor ', new_unit / original_unit)
 
 
 if __name__ == '__main__':
@@ -333,6 +388,8 @@ if __name__ == '__main__':
         magneticum_snap_dirs = ['snap_132']
         bahamas_snap_dirs = []
 
-    main(data_dir=data_dir,
+    main(data_path=data_dir,
          magneticum_snap_directories=magneticum_snap_dirs,
-         bahamas_snap_directories=bahamas_snap_dirs)
+         bahamas_snap_directories=bahamas_snap_dirs,
+         number_of_voxels_per_dimension=128,
+         n_properties=2)
