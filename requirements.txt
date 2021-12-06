@@ -19,5 +19,5 @@ tqdm
 yt
 astropy
 soxs
-pyxsim
+pyxsim==3.0.1
 dask
