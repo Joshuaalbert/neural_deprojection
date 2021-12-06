@@ -16,6 +16,7 @@ pysph
 graph_nets
 dm_sonnet
 tqdm
+h5py>=3.0
 yt
 astropy
 soxs
