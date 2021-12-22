@@ -50,12 +50,15 @@ def build_training(model_type, model_parameters, optimizer_parameters, loss_para
 
     return training
 
-def build_dataset(tfrecords_dirs, batch_size, type='train'):
+
+def build_dataset(tfrecords_dirs, batch_size, train_test_dir='train'):
     """
     Build data set from a directory of tfrecords. With graph batching
 
     Args:
-        data_dir: str, path to *.tfrecords
+        tfrecords_dirs: str, path to *.tfrecords
+        batch_size: size of the batch
+        train_test_dir: whether to load 'train' or 'test' data
 
     Returns: Dataset obj.
     """
@@ -63,32 +66,28 @@ def build_dataset(tfrecords_dirs, batch_size, type='train'):
     tfrecords = []
 
     for tfrecords_dir in tfrecords_dirs:
-        tfrecords += glob.glob(os.path.join(tfrecords_dir, type, '*.tfrecords'))
+        tfrecords += glob.glob(os.path.join(tfrecords_dir, train_test_dir, '*.tfrecords'))
 
     random.shuffle(tfrecords)
 
-    print(f'Number of {type} tfrecord files : {len(tfrecords)}')
+    print(f'Number of {train_test_dir} tfrecord files : {len(tfrecords)}')
 
     dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
-                                                             voxels_shape=(64, 64, 64, 7),
+                                                             voxels_shape=(64, 64, 64, 10),
                                                              image_shape=(256, 256, 1)))  # (voxels, image, idx)
 
-    dataset = dataset.map(lambda voxels,
-                                 img,
-                                 cluster_idx,
-                                 projection_idx,
-                                 vprime: (voxels[:, :, :, 3:5],
-                                          gaussian_filter2d(img))).shuffle(buffer_size=52).batch(batch_size=batch_size)
+    dataset = dataset.map(lambda voxels, img, cluster_idx, projection_idx, vprime: (voxels, gaussian_filter2d(img)))
+    dataset = dataset.shuffle(buffer_size=52).batch(batch_size=batch_size)
 
     return dataset
 
 
-def train_discrete_image_vae(data_dirs, config, kwargs, batch_size=1, num_epochs=100):
+def train_discrete_image_vae(data_dirs, config, model_kwargs, batch_size=1, num_epochs=100):
     print('\n')
 
-    train_one_epoch = build_training(**config, **kwargs)
-    train_dataset = build_dataset(data_dirs, batch_size=batch_size, type='train')
-    test_dataset = build_dataset(data_dirs, batch_size=batch_size, type='test')
+    train_one_epoch = build_training(**config, **model_kwargs)
+    train_dataset = build_dataset(data_dirs, batch_size=batch_size, train_test_dir='train')
+    test_dataset = build_dataset(data_dirs, batch_size=batch_size, train_test_dir='test')
 
     print(f'Number of epochs: {num_epochs}')
     print('Training discrete image VAE\n')
@@ -123,12 +122,12 @@ def train_discrete_image_vae(data_dirs, config, kwargs, batch_size=1, num_epochs
     return train_one_epoch.model, checkpoint_dir
 
 
-def train_discrete_voxel_vae(data_dirs, config, kwargs, batch_size=1, num_epochs=100):
+def train_discrete_voxel_vae(data_dirs, config, model_kwargs, batch_size=1, num_epochs=100):
     print('\n')
 
-    train_one_epoch = build_training(**config, **kwargs)
-    train_dataset = build_dataset(data_dirs, batch_size=batch_size, type='train')
-    test_dataset = build_dataset(data_dirs, batch_size=batch_size, type='test')
+    train_one_epoch = build_training(**config, **model_kwargs)
+    train_dataset = build_dataset(data_dirs, batch_size=batch_size, train_test_dir='train')
+    test_dataset = build_dataset(data_dirs, batch_size=batch_size, train_test_dir='test')
 
     print(f'Number of epochs: {num_epochs}')
     print('Training discrete voxel VAE\n')
@@ -161,12 +160,12 @@ def train_discrete_voxel_vae(data_dirs, config, kwargs, batch_size=1, num_epochs
     return train_one_epoch.model, checkpoint_dir
 
 
-def train_auto_regressive_prior(data_dirs, config, kwargs, batch_size=1, num_epochs=100):
+def train_auto_regressive_prior(data_dirs, config, model_kwargs, batch_size=1, num_epochs=100):
     print('\n')
 
-    train_one_epoch = build_training(**config, **kwargs)
-    train_dataset = build_dataset(data_dirs, batch_size=batch_size, type='train')
-    test_dataset = build_dataset(data_dirs, batch_size=batch_size, type='test')
+    train_one_epoch = build_training(**config, **model_kwargs)
+    train_dataset = build_dataset(data_dirs, batch_size=batch_size, train_test_dir='train')
+    test_dataset = build_dataset(data_dirs, batch_size=batch_size, train_test_dir='test')
 
     print(f'Number of epochs: {num_epochs}')
     print('Training autoregressive prior\n')
@@ -183,8 +182,8 @@ def train_auto_regressive_prior(data_dirs, config, kwargs, batch_size=1, num_epo
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
 
-    exclude_variables = [variable.name for variable in kwargs['discrete_image_vae'].trainable_variables] \
-                        + [variable.name for variable in kwargs['discrete_voxel_vae'].trainable_variables]
+    exclude_variables = [variable.name for variable in model_kwargs['discrete_image_vae'].trainable_variables] + \
+                        [variable.name for variable in model_kwargs['discrete_voxel_vae'].trainable_variables]
     trainable_variables = list(filter(lambda variable: (variable.name not in exclude_variables),
                                       train_one_epoch.model.trainable_variables))
 
@@ -210,26 +209,26 @@ def main():
 
     tfrec_dirs = glob.glob(os.path.join(tfrec_base_dir, '*tf_records'))
 
-    num_epochs_img = 30
-    num_epochs_vox = 30
-    num_epochs_auto = 30
+    num_epochs_img = 0
+    num_epochs_vox = 0
+    num_epochs_auto = 20
 
     config = dict(model_type='disc_image_vae',
                   model_parameters=dict(embedding_dim=64,  # 64
                                         num_embedding=32,  # 1024
-                                        hidden_size=32,
+                                        hidden_size=8,
                                         num_groups=5,
                                         num_channels=1
                                         ),
                   optimizer_parameters=dict(learning_rate=4e-4, opt_type='adam'),
                   loss_parameters=dict())
     get_temp = temperature_schedule(config['model_parameters']['num_embedding'], num_epochs_img)
-    kwargs = dict(num_token_samples=4,
-                  compute_temperature=get_temp,
-                  beta=1.)
+    model_kwargs = dict(num_token_samples=4,
+                        compute_temperature=get_temp,
+                        beta=1.)
     discrete_image_vae, discrete_image_vae_checkpoint = train_discrete_image_vae(tfrec_dirs,
                                                                                  config,
-                                                                                 kwargs,
+                                                                                 model_kwargs,
                                                                                  batch_size=4,
                                                                                  num_epochs=num_epochs_img)
 
@@ -237,19 +236,19 @@ def main():
                   model_parameters=dict(voxels_per_dimension=64,
                                         embedding_dim=64,  # 64
                                         num_embedding=32,  # 1024
-                                        hidden_size=32,
-                                        num_groups=4,
-                                        num_channels=2),
+                                        hidden_size=8,
+                                        num_groups=5,
+                                        num_channels=10),
                   optimizer_parameters=dict(learning_rate=4e-4, opt_type='adam'),
                   loss_parameters=dict())
     get_temp = temperature_schedule(config['model_parameters']['num_embedding'], num_epochs_vox)
-    kwargs = dict(num_token_samples=4,
-                  compute_temperature=get_temp,
-                  beta=1.)
+    model_kwargs = dict(num_token_samples=2,
+                        compute_temperature=get_temp,
+                        beta=1.)
     discrete_voxel_vae, discrete_voxel_vae_checkpoint = train_discrete_voxel_vae(tfrec_dirs,
                                                                                  config,
-                                                                                 kwargs,
-                                                                                 batch_size=4,
+                                                                                 model_kwargs,
+                                                                                 batch_size=3,
                                                                                  num_epochs=num_epochs_vox)
 
     config = dict(model_type='auto_regressive_prior',
@@ -259,14 +258,14 @@ def main():
                   optimizer_parameters=dict(learning_rate=4e-4, opt_type='adam'),
                   loss_parameters=dict())
 
-    kwargs = dict(discrete_image_vae=discrete_image_vae,
-                  discrete_voxel_vae=discrete_voxel_vae,
-                  embedding_dim=32,
-                  num_token_samples=1)
+    model_kwargs = dict(discrete_image_vae=discrete_image_vae,
+                        discrete_voxel_vae=discrete_voxel_vae,
+                        embedding_dim=32,
+                        num_token_samples=1)
 
     train_auto_regressive_prior(tfrec_dirs,
                                 config,
-                                kwargs,
+                                model_kwargs,
                                 batch_size=4,
                                 num_epochs=num_epochs_auto)
 
