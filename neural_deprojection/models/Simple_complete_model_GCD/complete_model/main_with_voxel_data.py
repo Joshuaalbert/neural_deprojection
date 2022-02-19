@@ -68,7 +68,7 @@ def build_dataset(tfrecords_dirs, batch_size, train_test_dir='train'):
     for tfrecords_dir in tfrecords_dirs:
         tfrecords += glob.glob(os.path.join(tfrecords_dir, train_test_dir, '*.tfrecords'))
 
-    random.shuffle(tfrecords)
+    # random.shuffle(tfrecords)
 
     print(f'Number of {train_test_dir} tfrecord files : {len(tfrecords)}')
 
@@ -77,7 +77,8 @@ def build_dataset(tfrecords_dirs, batch_size, train_test_dir='train'):
                                                              image_shape=(256, 256, 1)))  # (voxels, image, idx)
 
     dataset = dataset.map(lambda voxels, img, cluster_idx, projection_idx, vprime: (voxels, gaussian_filter2d(img)))
-    dataset = dataset.shuffle(buffer_size=52).batch(batch_size=batch_size)
+    # dataset = dataset.shuffle(buffer_size=52).batch(batch_size=batch_size)
+    dataset = dataset.batch(batch_size=batch_size)
 
     return dataset
 
@@ -210,19 +211,19 @@ def main():
     tfrec_dirs = glob.glob(os.path.join(tfrec_base_dir, '*tf_records'))
 
     num_epochs_img = 0
-    num_epochs_vox = 0
-    num_epochs_auto = 20
+    num_epochs_vox = 40
+    num_epochs_auto = 0
 
     config = dict(model_type='disc_image_vae',
-                  model_parameters=dict(embedding_dim=64,  # 64
-                                        num_embedding=32,  # 1024
-                                        hidden_size=8,
+                  model_parameters=dict(embedding_dim=96,  # 64
+                                        num_embedding=96,  # 1024
+                                        hidden_size=16,
                                         num_groups=5,
                                         num_channels=1
                                         ),
                   optimizer_parameters=dict(learning_rate=4e-4, opt_type='adam'),
                   loss_parameters=dict())
-    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], num_epochs_img)
+    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], int(num_epochs_img / 2))
     model_kwargs = dict(num_token_samples=4,
                         compute_temperature=get_temp,
                         beta=1.)
@@ -237,11 +238,12 @@ def main():
                                         embedding_dim=64,  # 64
                                         num_embedding=32,  # 1024
                                         hidden_size=8,
-                                        num_groups=5,
-                                        num_channels=10),
+                                        num_groups=4,
+                                        num_input_channels=10,
+                                        num_output_channels=2),
                   optimizer_parameters=dict(learning_rate=4e-4, opt_type='adam'),
                   loss_parameters=dict())
-    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], num_epochs_vox)
+    get_temp = temperature_schedule(config['model_parameters']['num_embedding'], int(num_epochs_vox / 2))
     model_kwargs = dict(num_token_samples=2,
                         compute_temperature=get_temp,
                         beta=1.)

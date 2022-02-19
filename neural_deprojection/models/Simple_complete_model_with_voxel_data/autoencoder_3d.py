@@ -10,7 +10,8 @@ class DiscreteVoxelsVAE(AbstractModule):
                  embedding_dim: int = 64,
                  num_embedding: int = 1024,
                  num_token_samples: int = 4,
-                 num_channels:int = 1,
+                 num_input_channels:int = 1,
+                 num_output_channels:int = 1,
                  voxels_per_dimension:int = 64,
                  compute_temperature:callable = None,
                  beta: float = 1.,
@@ -18,7 +19,8 @@ class DiscreteVoxelsVAE(AbstractModule):
                  name=None):
         super(DiscreteVoxelsVAE, self).__init__(name=name)
         self.voxels_per_dimension = voxels_per_dimension
-        self.num_channels = num_channels
+        self.num_input_channels = num_input_channels
+        self.num_output_channels = num_output_channels
         self.embeddings = tf.Variable(initial_value=tf.random.truncated_normal((num_embedding, embedding_dim)),
                                       name='embeddings')
         self.num_token_samples = num_token_samples
@@ -28,7 +30,7 @@ class DiscreteVoxelsVAE(AbstractModule):
         self.beta = tf.convert_to_tensor(beta, dtype=tf.float32)
 
         self._encoder = Encoder3D(hidden_size=hidden_size, num_embeddings=num_embedding, num_groups=num_groups,name='EncoderVoxels')
-        self._decoder = Decoder3D(hidden_size=hidden_size, num_channels=num_channels, num_groups=num_groups,name='DecoderVoxels')
+        self._decoder = Decoder3D(hidden_size=hidden_size, num_channels=num_output_channels, num_groups=num_groups,name='DecoderVoxels')
 
         assert self._encoder.shrink_factor == self._decoder.shrink_factor, "Shrink factors should be same. Use same num_groups."
         self.shrink_factor = self._decoder.shrink_factor
@@ -55,7 +57,7 @@ class DiscreteVoxelsVAE(AbstractModule):
         """
         #[batch, H', W', D', num_channels]
         # number of channels must be known for conv3d
-        img.set_shape([None, None, None, None, self.num_channels])
+        img.set_shape([None, None, None, None, self.num_input_channels])
         logits = self._encoder(img)
         logits /= 1e-6 + tf.math.reduce_std(logits, axis=-1, keepdims=True)
         logits -= tf.reduce_logsumexp(logits, axis=-1, keepdims=True)
@@ -95,10 +97,10 @@ class DiscreteVoxelsVAE(AbstractModule):
         decoded_imgs = self._decoder(latent_tokens)  # [num_samples * batch, H', W', D', C*2]
         decoded_imgs.set_shape([None,
                                 self.voxels_per_dimension, self.voxels_per_dimension, self.voxels_per_dimension,
-                                self.num_channels*2])
+                                self.num_output_channels*2])
         [_, H_2, W_2, D_2, _] = get_shape(decoded_imgs)
-        decoded_imgs = tf.reshape(decoded_imgs, [num_samples, batch, H_2, W_2, D_2, 2 * self.num_channels])  # [S, batch, H, W, D, embedding_dim]
-        mu, logb = decoded_imgs[..., :self.num_channels], decoded_imgs[..., self.num_channels:]
+        decoded_imgs = tf.reshape(decoded_imgs, [num_samples, batch, H_2, W_2, D_2, 2 * self.num_output_channels])  # [S, batch, H, W, D, embedding_dim]
+        mu, logb = decoded_imgs[..., :self.num_output_channels], decoded_imgs[..., self.num_output_channels:]
         return mu, logb  # [S, batch, H', W', D' C], [S, batch, H', W', D' C]
 
     def log_likelihood(self, voxels, mu, logb):
@@ -117,7 +119,7 @@ class DiscreteVoxelsVAE(AbstractModule):
         Returns:
             log_prob [num_samples, batch]
         """
-        properties = voxels  # [num_samples, batch, H', W', D', num_properties]
+        properties = voxels[..., :self.num_output_channels]  # [num_samples, batch, H', W', D', num_properties]
         log_prob = - tf.math.abs(properties - mu) / tf.math.exp(logb) \
                    - tf.math.log(2.) - properties - logb # [num_samples, batch, H', W', D', num_properties]
         #num_samples, batch
@@ -188,16 +190,16 @@ class DiscreteVoxelsVAE(AbstractModule):
             tf.summary.scalar('beta', self.beta, step=self.step)
 
             projected_mu = tf.reduce_sum(mu[0], axis=-2) #[batch, H', W', C]
-            projected_img = tf.reduce_sum(voxels, axis=-2) #[batch, H', W', C]
-            for i in range(self.num_channels):
+            projected_img = tf.reduce_sum(voxels[..., :self.num_output_channels], axis=-2) #[batch, H', W', C]
+            for i in range(self.num_output_channels):
                 vmin = tf.reduce_min(projected_mu[..., i])
                 vmax = tf.reduce_max(projected_mu[..., i])
                 _projected_mu = (projected_mu[..., i:i+1]-vmin)/(vmax-vmin)#batch, H', W', 1
-                _projected_mu = tf.clip_by_value(_projected_mu, 0., 1.)
+                _projected_mu = tf.math.square(tf.clip_by_value(_projected_mu, 0., 1.))
                 vmin = tf.reduce_min(projected_img[..., i])
                 vmax = tf.reduce_max(projected_img[..., i])
                 _projected_img = (projected_img[..., i:i+1]-vmin)/(vmax-vmin)#batch, H', W', 1
-                _projected_img = tf.clip_by_value(_projected_img, 0., 1.)
+                _projected_img = tf.math.square(tf.clip_by_value(_projected_img, 0., 1.))
 
                 tf.summary.image(f'voxels_predict[{i}]', _projected_mu, step=self.step)
                 tf.summary.image(f'voxels_actual[{i}]', _projected_img, step=self.step)
