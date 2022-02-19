@@ -21,14 +21,14 @@ from neural_deprojection.models.identify_medium_GCD.generate_data_with_voxel_dat
 
 def global_mean_and_std(means, stds):
     """
-    Given the mean and std of property for a number of subsets (i.e. clusters),
-    calculate the global mean of property and the global std of property from the complete set,
-    so that property / global_std has a std of 1
+    Given the mean and std of a property (rho or U) for a number of subsets (i.e. clusters),
+    calculate the global mean of property and the global std of property of the union of the sets,
+    so that (property - global_mean) / global_std has a mean of 0 and a std of 1
 
     This function assumes that all subsets have the same length (each cluster must have the same number of voxels)
 
-    means: array, array with the mean of property, size [number of subsets/clusters]
-    stds: array, array with the std of property, size [number of subsets/clusters]
+    means: array, array containing the subset means, size [number of subsets/clusters]
+    stds: array, array containing the subset stds, size [number of subsets/clusters]
     """
     global_mean = np.mean(means)
     global_std = np.sqrt(np.mean(stds**2 + (means - global_mean)**2))
@@ -37,8 +37,8 @@ def global_mean_and_std(means, stds):
 
 def global_mean_and_std_of_logs(means_of_logs, stds_of_logs):
     """
-    Given the mean and std of log(property) for a number of subsets (i.e. clusters),
-    calculate the global mean of property and the global std of log(property) from the complete set,
+    Given the mean and std of some log(property) for a number of subsets (i.e. clusters),
+    calculate the global mean of property and the global std of log(property) of the union of the sets,
     so that log(property / global_mean) / global_std_of_logs has a mean of 0 and a std of 1
 
     This function assumes that all subsets have the same length (each cluster must have the same number of voxels)
@@ -61,7 +61,7 @@ def store_means_and_stds(voxels, n_properties):
     n_properties: int, number of properties in voxels
     """
     n_channels = voxels.shape[-1]
-    channel_means_stds_sizes = np.zeros((n_channels, 2))
+    channel_means_stds = np.zeros((n_channels, 2))
     for i in np.arange(n_channels):
         if i >= n_properties:
             # gradient or laplacian
@@ -69,9 +69,9 @@ def store_means_and_stds(voxels, n_properties):
         else:
             # property
             channel = np.log10(voxels[:, :, :, i].flatten())
-        channel_means_stds_sizes[i][0] = np.mean(channel)
-        channel_means_stds_sizes[i][1] = np.std(channel)
-    return channel_means_stds_sizes
+        channel_means_stds[i][0] = np.mean(channel)
+        channel_means_stds[i][1] = np.std(channel)
+    return channel_means_stds
 
 
 def main(data_path,
@@ -126,10 +126,10 @@ def main(data_path,
             voxels_all = add_gradients_and_laplacians(voxels, center_points)
 
             # Store the mean and std of gradients, laplacian and log(property)
-            channel_means_stds_sizes = store_means_and_stds(voxels_all, n_properties)
+            channel_means_stds = store_means_and_stds(voxels_all, n_properties)
 
             channel_means_and_stds_per_cluster = np.append(channel_means_and_stds_per_cluster,
-                                                           channel_means_stds_sizes[..., None], axis=-1)
+                                                           channel_means_stds[..., None], axis=-1)
 
             print('time', time.time() - t0)
 
