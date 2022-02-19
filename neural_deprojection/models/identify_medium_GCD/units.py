@@ -1,7 +1,7 @@
 """
 README
 
-This script stores the mean and std of rho and U data of all particles in all clusters and
+This script stores the mean and std of rho and U of the union of all smoothed, voxelized clusters in the dataset and
 calculates the unit and number for scaling these properties.
 """
 import sys
