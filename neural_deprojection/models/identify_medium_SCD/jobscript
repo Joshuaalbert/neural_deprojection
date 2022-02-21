@@ -1,10 +1,11 @@
-#!/bin/bash
-
-qsub  /net/para33/data2/hendrix/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD/para_script.sh \
-    -N "data_maker" \
-    -q para \
-    -l nodes=1:ppn=32 \
-    -l walltime=1:00:00 \
-    -l mem=10GB \
-    -e ./ \
-    -o ./
+#!/bin/tcsh -f
+#PBS -S /bin/tcsh
+#PBS -j oe
+#PBS -q para
+#PBS -l nodes=1:ppn=5
+#PBS -l walltime=01:00:00
+#
+cd /net/para33/data2/hendrix/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD/
+setenv PATH /net/para33/data2/hendrix/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD/
+#
+/net/para33/data2/hendrix/git/neural_deprojection/neural_deprojection/models/identify_medium_SCD/para_script.sh

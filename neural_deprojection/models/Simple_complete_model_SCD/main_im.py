@@ -8,7 +8,7 @@ import sonnet as snt
 from graph_nets.graphs import GraphsTuple
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, \
     get_distribution_strategy, build_log_dir, build_checkpoint_dir
-from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
+from neural_deprojection.models.Simple_complete_model.autoencoder_2d_old import DiscreteImageVAE
 from neural_deprojection.models.identify_medium_SCD.generate_data import decode_examples, decode_examples_old
 
 import glob, os, json
@@ -67,16 +67,16 @@ def main(data_dir, config, kwargs):
     # strategy = get_distribution_strategy(use_cpus=False, logical_per_physical_factor=1,
     #                                      memory_limit=None)
 
-    train_dataset = build_dataset(os.path.join(data_dir, 'train'), batch_size=4)
-    test_dataset = build_dataset(os.path.join(data_dir, 'test'), batch_size=4)
+    train_dataset = build_dataset(os.path.join(data_dir, 'train'), batch_size=1)
+    test_dataset = build_dataset(os.path.join(data_dir, 'test'), batch_size=1)
 
     # with strategy.scope():
     train_one_epoch = build_training(**config, **kwargs)
     train_one_epoch.model.set_temperature(10.)
 
-    log_dir = build_log_dir('new_im_16_log_dir', config)
-    checkpoint_dir = build_checkpoint_dir('new_im_16_checkpointing', config)
-    save_model_dir = os.path.join('new_im_16_saved_models')
+    log_dir = build_log_dir('dVAE_log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('dVAE_checkpointing', config)
+    save_model_dir = os.path.join('dVAE_saved_models')
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
@@ -90,7 +90,7 @@ def main(data_dir, config, kwargs):
                           checkpoint_dir=checkpoint_dir,
                           log_dir=log_dir,
                           save_model_dir=save_model_dir,
-                          debug=False)
+                          debug=True)
 
 
 if __name__ == '__main__':
@@ -101,11 +101,11 @@ if __name__ == '__main__':
                   model_parameters=dict(hidden_size=64,
                                         embedding_dim=64,
                                         num_embedding=1024,
-                                        num_channels=1,
                                         name='discreteImageVAE'),
                   optimizer_parameters=dict(learning_rate=1e-4, opt_type='adam'),
                   loss_parameters=dict())
     kwargs = dict(
-        num_token_samples=4,
+        num_channels=1,
+        num_token_samples=1,
     )
     main(data_dir, config, kwargs)

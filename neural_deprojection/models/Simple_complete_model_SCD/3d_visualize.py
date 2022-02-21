@@ -8,7 +8,7 @@ from functools import partial
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, \
     build_log_dir, build_checkpoint_dir, get_distribution_strategy
 from neural_deprojection.models.Simple_complete_model.model_utils import SimpleCompleteModel, VoxelisedModel
-from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
+from neural_deprojection.models.Simple_complete_model.autoencoder_2d_old import DiscreteImageVAE
 from neural_deprojection.models.identify_medium_SCD.generate_data import decode_examples_old, decode_examples
 import glob, os, json
 from graph_nets.graphs import GraphsTuple
@@ -248,19 +248,23 @@ def main(scm_saved_model_dir,
     # plt.tight_layout()
     # plt.savefig('3d_vis.pdf')
 
-    fig, ax = plt.subplots(2, 2, figsize=(8, 8))
+    fig, ax = plt.subplots(1,2, figsize=(8,3.5))
 
     # image channel 1 is the image
-    image_before = ax[0, 0].imshow(image[0, :, :, 0], cmap='gray')
+
+    # image_before = ax[0, 0].imshow(image[0, :, :, 0], cmap='gray')
+
     # fig.colorbar(image_before, ax=ax[0, 0])
-    ax[0, 0].set_title('input projection')
-    ax[0, 0].axis('off')
-    # decoded_img [S, batch, H, W, channels]
-    # image channel 1 is decoded from the smoothed image
-    image_after = ax[1, 0].imshow(decoded_img[0, 0, :, :, 0].numpy(), cmap='gray')
-    # fig.colorbar(image_after, ax=ax[1, 0])
-    ax[1, 0].set_title('decoded image')
-    ax[1,0].axis('off')
+
+    # ax[0, 0].set_title('input projection')
+    # ax[0, 0].axis('off')
+    # # decoded_img [S, batch, H, W, channels]
+    # # image channel 1 is decoded from the smoothed image
+    # image_after = ax[1, 0].imshow(decoded_img[0, 0, :, :, 0].numpy(), cmap='gray')
+    # # fig.colorbar(image_after, ax=ax[1, 0])
+    # ax[1, 0].set_title('decoded projection')
+    # ax[1,0].axis('off')
+
     # graph_before = ax[0, 1].imshow(hist_before.numpy())
     # fig.colorbar(graph_before, ax=ax[0, 1])
     # ax[0, 1].set_title('property histogram')
@@ -287,40 +291,40 @@ def main(scm_saved_model_dir,
     # ax[1, 2].set_title('property value distributions')
     # ax[1, 2].legend()
 
-    interp_before = ax[0, 1].imshow(image_interp_before.numpy())
+    interp_before = ax[0].imshow(image_interp_before.numpy())
     # fig.colorbar(interp_before, ax=ax[0, 1], label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
-    divider = make_axes_locatable(ax[0,1])
+    divider = make_axes_locatable(ax[0])
     cax = divider.append_axes('right', size='5%', pad=0.05)
     fig.colorbar(interp_before, cax=cax, orientation='vertical', label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
 
-    ax[0, 1].set_title('density interpolated\nto grid points')
-    ax[0, 1].axis('off')
+    ax[0].set_title('density interpolated\nto grid points')
+    ax[0].axis('off')
 
-    interp_after = ax[1, 1].imshow(image_interp_after.numpy())
+    interp_after = ax[1].imshow(image_interp_after.numpy())
     # fig.colorbar(interp_after, ax=ax[1, 1], label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
-    divider = make_axes_locatable(ax[1,1])
+    divider = make_axes_locatable(ax[1])
     cax = divider.append_axes('right', size='5%', pad=0.05)
     fig.colorbar(interp_after, cax=cax, orientation='vertical', label=r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
 
-    ax[1, 1].set_title('reconstructed density\ninterpolated to grid points')
-    ax[1, 1].axis('off')
+    ax[1].set_title('reconstructed density\ninterpolated to grid points')
+    ax[1].axis('off')
     plt.tight_layout()
     plt.savefig('3d_vis.pdf')
 
     # histogram
-    plt.figure(figsize=(5,4))
-    plt.hist(prop, bins=32, histtype='step', label='input data', color='dodgerblue')
-    plt.hist(decoded_prop, bins=32, histtype='step', label='reconstructed', color='darkorange')
+    plt.figure(figsize=(9, 3))
+    plt.hist(prop, bins=32, histtype='step', label='input data', color='orange')
+    plt.hist(decoded_prop, bins=32, histtype='step', label='reconstructed', color='dodgerblue')
 
-    offset = (np.min(decoded_prop) * np.max(prop) - np.max(decoded_prop) * np.min(prop)) / (np.max(prop) - np.min(prop))
-    scale = np.max(prop) / np.max(decoded_prop - offset)
-
-    plt.hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled', color='violet')
+    # offset = (np.min(decoded_prop) * np.max(prop) - np.max(decoded_prop) * np.min(prop)) / (np.max(prop) - np.min(prop))
+    # scale = np.max(prop) / np.max(decoded_prop - offset)
+    #
+    # plt.hist((decoded_prop - offset) * scale, bins=32, histtype='step', label='reconstructed scaled', color='violet')
     plt.yscale('log')
     plt.xlabel(r'density [$\log_{10} \mathrm{M_\odot} / \mathrm{pc^3}$]')
     plt.ylabel('counts')
     plt.title('density distributions')
-    plt.legend()
+    plt.legend(bbox_to_anchor=(1.01, 1.0), loc='upper left')
 
     plt.tight_layout()
     plt.savefig('hist.pdf')
@@ -381,7 +385,7 @@ if __name__ == '__main__':
                                         voxel_per_dimension=4,
                                         decoder_3d_hidden_size=4,
                                         component_size=16,
-                                        num_embedding_3d=128,
+                                        num_embedding_3d=1024,
                                         edge_size=4,
                                         global_size=16,
                                         num_heads=2,
@@ -397,7 +401,7 @@ if __name__ == '__main__':
                                       name='voxelised_model')
 
     dataset = build_dataset(data_dir, batch_size=global_batch_size)
-    cluster = 7
+    cluster = 3
     iter_ds = iter(dataset)
 
     for i in range(20):
@@ -421,6 +425,6 @@ if __name__ == '__main__':
                  component=None,
                  decode_on_interp_pos=False,
                  saved_model=False,
-                 debug=True,
+                 debug=False,
                  width=width)
             break

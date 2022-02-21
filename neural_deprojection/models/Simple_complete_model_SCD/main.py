@@ -7,14 +7,15 @@ import sonnet as snt
 from functools import partial
 from neural_deprojection.graph_net_utils import vanilla_training_loop, TrainOneEpoch, \
     build_log_dir, build_checkpoint_dir, get_distribution_strategy
-from neural_deprojection.models.Simple_complete_model.model_utils import SimpleCompleteModel
-from neural_deprojection.models.Simple_complete_model.autoencoder_2d import DiscreteImageVAE
-from neural_deprojection.models.identify_medium_SCD.generate_data import decode_examples_old
+from neural_deprojection.models.Simple_complete_model.model_utils import SimpleCompleteModel, VoxelisedModel
+from neural_deprojection.models.Simple_complete_model.autoencoder_2d_old import DiscreteImageVAE
+from neural_deprojection.models.identify_medium_SCD.generate_data import decode_examples_old, decode_examples
 import glob, os, json
 from graph_nets.graphs import GraphsTuple
 
 
-MODEL_MAP = dict(simple_complete_model=SimpleCompleteModel)
+MODEL_MAP = dict(simple_complete_model=SimpleCompleteModel,
+                 voxelised_model=VoxelisedModel)
 
 
 def build_training(model_type, model_parameters, optimizer_parameters, loss_parameters, strategy=None,
@@ -61,11 +62,12 @@ def build_dataset(data_dir, batch_size):
 def _build_dataset(data_dir):
     tfrecords = glob.glob(os.path.join(data_dir, '*.tfrecords'))
 
-    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples_old,
+    dataset = tf.data.TFRecordDataset(tfrecords).map(partial(decode_examples,
                                                              node_shape=(11,),
-                                                             image_shape=(256, 256, 1)))  # (graph, image, spsh, proj)
+                                                             image_shape=(256, 256, 1),
+                                                             k=6))  # (graph, image, spsh, proj)
 
-    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj: (GraphsTuple(**graph_data_dict), img))
+    dataset = dataset.map(lambda graph_data_dict, img, spsh, proj, e: (GraphsTuple(**graph_data_dict), img))
 
     return dataset
 
@@ -141,14 +143,14 @@ def main(data_dir, batch_size, config, kwargs):
     train_one_epoch.model.set_temperature(10.)
     train_one_epoch.model.set_beta(6.6)
 
-    log_dir = build_log_dir('simple_complete_log_dir', config)
-    checkpoint_dir = build_checkpoint_dir('simple_complete_checkpointing', config)
+    log_dir = build_log_dir('single_voxelised_log_dir', config)
+    checkpoint_dir = build_checkpoint_dir('single_voxelised_checkpointing', config)
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
 
-    save_model_dir = os.path.join('simple_complete_saved_models')
+    save_model_dir = os.path.join('single_voxelised_saved_models')
 
     vanilla_training_loop(train_one_epoch=train_one_epoch,
                           training_dataset=train_dataset,
@@ -162,29 +164,29 @@ def main(data_dir, batch_size, config, kwargs):
 
 
 if __name__ == '__main__':
-    data_dir = '/home/s1825216/data/train_data/ClaudeData/'
-    saved_model_dir = 'new_im_16_saved_models'
-    checkpoint_dir = 'im_16_checkpointing'
-    n_node_per_graph = 50000
+    data_dir = '/home/s1825216/data/dataset/'
+    saved_model_dir = 'second_im_16_saved_models'
 
-    batch_size = 4
+    batch_size = 1
 
     # no attributes or trainable variables so not trainable?
     discrete_image_vae = tf.saved_model.load(saved_model_dir)
 
-    config = dict(model_type='simple_complete_model',
-                  model_parameters=dict(num_properties=8,
-                                        num_components=16,
-                                        component_size=64,
+    config = dict(model_type='voxelised_model',
+                  model_parameters=dict(num_properties=1,
+                                        # num_components=8,
+                                        voxel_per_dimension=4,
+                                        decoder_3d_hidden_size=4,
+                                        component_size=16,
                                         num_embedding_3d=1024,
-                                        edge_size=8,
+                                        edge_size=4,
                                         global_size=16,
-                                        num_heads=4,
-                                        multi_head_output_size=64,
+                                        num_heads=2,
+                                        multi_head_output_size=16,
                                         name='simple_complete_model'),
                   optimizer_parameters=dict(learning_rate=1e-4, opt_type='adam'),
                   loss_parameters=dict())
-    kwargs = dict(num_token_samples=4,
+    kwargs = dict(num_token_samples=2,
                   n_node_per_graph=256,
                   batch=batch_size,
                   discrete_image_vae=discrete_image_vae)
